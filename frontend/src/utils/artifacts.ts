@@ -1,5 +1,69 @@
 import type { ArtifactContentSegment, ChatArtifact } from '../types/artifacts';
 
+const CYRILLIC_RE = /[\u0400-\u04FF]/;
+const HEX_COLOR_RE = /#[0-9a-fA-F]{3,8}\b/g;
+
+/** Строка данных pie: `"Отварной" : 226` — не prose, даже с кириллицей. */
+function isMermaidPieDataLine(line: string): boolean {
+  const t = line.trim();
+  if (!t || t.startsWith('%%')) return false;
+  return /^"[^"]+"\s*:\s*-?[\d.]+(?:\s*%%.*)?$/.test(t) || /^[\w-]+\s*:\s*-?[\d.]+(?:\s*%%.*)?$/.test(t);
+}
+
+/** Строка — часть mermaid-диаграммы (не пояснение модели после блока). */
+function isMermaidDiagramLine(line: string): boolean {
+  const t = line.trim();
+  if (!t) return false;
+  if (/^%%/.test(t)) return true;
+  if (isMermaidPieDataLine(t)) return true;
+  if (
+    /^(%%\{|graph|flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|mindmap|timeline|gitGraph|xychart|quadrantChart|sankey|block-beta|title|x-axis|y-axis|bar|line|section|subgraph|end|style|classDef|class|linkStyle|click|acc_title|acc_descr|direction)\b/i.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  if (/^pie\s+title\b/i.test(t)) return true;
+  if (/^pie\s+showData\b/i.test(t)) return true;
+  if (/^(title|x-axis|y-axis|bar|line)\b/i.test(t)) return true;
+  // Связи / рёбра flowchart (самый частый контент после graph TD).
+  if (/(-->|---|-\.?->|==>|<\-->|<--|o--|--o|x--|--x)/.test(t)) return true;
+  // Узел: A[...], A(...), A{...}, A((...)), A:::class, A -->|label| B
+  if (/^[A-Za-z_][\w-]*\s*(?:\[|\(|\{|>|{{)/.test(t)) return true;
+  if (/^[A-Za-z_][\w-]*\s*:::\w+/.test(t)) return true;
+  // sequenceDiagram: Alice->>Bob: text
+  if (/^[A-Za-z_][\w-]*\s*(-{1,2}>{1,2}|-{1,2}>>)\s*[A-Za-z_]/.test(t)) return true;
+  // participant / actor
+  if (/^(participant|actor|autonumber)\b/i.test(t)) return true;
+  return false;
+}
+
+/**
+ * LLM часто вставляет эмодзи в plotColorPalette / pieN (`🟦#3b82f6`) — Mermaid
+ * не парсит такую палитру и рисует все серии одним дефолтным цветом.
+ */
+export function normalizeMermaidInitColors(code: string): string {
+  if (!code || !/%%\{[\s\S]*?init/i.test(code)) return code;
+  return code.replace(/%%\{[\s\S]*?\}%%/g, (block) => {
+    if (!/init\s*:/i.test(block)) return block;
+    let out = block;
+    out = out.replace(/plotColorPalette['"]\s*:\s*['"]([^'"]*)['"]/gi, (_m, palette: string) => {
+      const hexes = palette.match(HEX_COLOR_RE) || [];
+      if (!hexes.length) return _m;
+      return `plotColorPalette': '${hexes.join(', ')}'`;
+    });
+    out = out.replace(
+      /(['"]pie(\d+)['"]\s*:\s*['"])([^'"]*)(['"])/gi,
+      (_m, pre: string, _n: string, color: string, post: string) => {
+        const hex = color.match(HEX_COLOR_RE);
+        const clean = hex ? hex[0] : color.replace(/[^\#0-9a-fA-F]/g, '');
+        return `${pre}${clean || color.trim()}${post}`;
+      },
+    );
+    return out;
+  });
+}
+
 const ATTR_RE = /(\w+)=["']([^"']*)["']/g;
 
 /** Открывающий блок артефакта + fence ``` / ~~~ (закрытый или стримящийся). */
@@ -58,8 +122,11 @@ function pushArtifactSegment(
   const identifier = (attrs.identifier || 'untitled').trim() || 'untitled';
   const declaredType = (attrs.type || 'text/plain').trim() || 'text/plain';
   const title = (attrs.title || identifier).trim() || identifier;
-  const content = sanitizeArtifactBody(opts.body, opts.fenceLang);
+  let content = sanitizeArtifactBody(opts.body, opts.fenceLang);
   const type = inferArtifactType(content, opts.fenceLang, declaredType);
+  if (type === 'application/vnd.mermaid') {
+    content = sanitizeMermaidSource(content);
+  }
 
   segments.push({
     kind: 'artifact',
@@ -137,6 +204,74 @@ function makeId(identifier: string, type: string, title: string, messageId?: str
   return base || 'artifact';
 }
 
+function trimArtifactTail(code: string): string {
+  let out = (code || '').replace(/\r\n/g, '\n');
+
+  // Закрытие блока :::artifact (часто без закрывающего ``` при стриме).
+  const blockClose = out.search(/\n:::\s*(?:\n|$)/);
+  if (blockClose >= 0) {
+    out = out.slice(0, blockClose);
+  }
+
+  // НЕ режем по любому `:::` внутри тела: в Mermaid это class shorthand
+  // (`A:::myClass`). Иначе диаграмма обрывалась посередине.
+
+  // Закрывающий markdown-fence внутри тела (после него — пояснения).
+  const fenceClose = out.search(/\n`{3,}\s*\w*\s*(?:\n|$)/);
+  if (fenceClose >= 0) {
+    out = out.slice(0, fenceClose);
+  }
+
+  return out;
+}
+
+/** Строка пояснения модели после диаграммы — не часть Mermaid. */
+function isLikelyMermaidProseLine(line: string): boolean {
+  const t = line.trim();
+  if (!t) return false;
+  if (isMermaidDiagramLine(t)) return false;
+  // Любая строка с рёбрами/узловым синтаксисом — не prose.
+  if (/(-->|---|-\.?->|==>|[\[\](){}])/.test(t) && /^[A-Za-z_`%]/.test(t)) return false;
+  if (/^:::\s*$/.test(t) || /^`{3,}\s*\w*\s*$/.test(t)) return true;
+  if (/^(готово|готова|итог|вывод|note:|примечание)/i.test(t)) return true;
+  if (/^(\*\*|•|\*\s|-\s+\*\*)/.test(t)) return true;
+  if (/^[•\-*]\s+\S/.test(t) && /[а-яё]/i.test(t)) return true;
+  // Свободный русский текст без синтаксиса mermaid
+  if (CYRILLIC_RE.test(t) && !/^"[^"]+"\s*:/.test(t)) return true;
+  return false;
+}
+
+/** Обрезает пояснения модели после последней строки диаграммы. */
+function trimMermaidTrailingProse(code: string): string {
+  const lines = code.split('\n');
+  const out: string[] = [];
+  let sawDiagram = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    // Только отдельная строка `:::` — закрытие артефакта. Не трогаем A:::class.
+    if (/^:::\s*$/.test(trimmed)) break;
+    if (/^`{3,}/.test(trimmed)) break;
+    if (/^`{1,2}\s*$/.test(trimmed)) break;
+
+    const looksLikeDiagram = isMermaidDiagramLine(trimmed);
+
+    if (looksLikeDiagram) {
+      sawDiagram = true;
+      out.push(line);
+      continue;
+    }
+
+    if (sawDiagram && isLikelyMermaidProseLine(line)) break;
+    if (!sawDiagram) out.push(line);
+    else if (!trimmed) out.push(line);
+    else if (isLikelyMermaidProseLine(line)) break;
+    else out.push(line);
+  }
+
+  return out.join('\n');
+}
+
 /**
  * Убирает из тела артефакта вложенные markdown-fence (``` / ````),
  * хвосты ::: и прочий мусор, который модели часто оставляют внутри.
@@ -146,6 +281,7 @@ export function sanitizeArtifactBody(raw: string, fenceLang?: string): string {
 
   // Срезаем обёртки, если просочились в content
   code = code.replace(/^:::artifact\{[^}]*\}\s*\n?/i, '');
+  code = trimArtifactTail(code);
   code = code.replace(/\n?:::\s*$/g, '');
 
   // Выкидываем строки, которые целиком — fence (``` / ````mermaid / …)
@@ -183,7 +319,7 @@ export function sanitizeMermaidSource(raw: string): string {
   const initBlocks: string[] = [];
   code = code.replace(/^\s*(%%\{[\s\S]*?\}%%)\s*/gm, (full, block) => {
     if (/init\s*:/i.test(block)) {
-      initBlocks.push(block.trim());
+      initBlocks.push(normalizeMermaidInitColors(block.trim()));
       return '';
     }
     return full;
@@ -206,11 +342,10 @@ export function sanitizeMermaidSource(raw: string): string {
   }
 
   const prefix = initBlocks.length ? `${initBlocks.join('\n')}\n` : '';
-  return `${prefix}${code}`.trim();
+  code = trimMermaidTrailingProse(`${prefix}${code}`.trim());
+  return normalizeMermaidInitColors(code.trim());
 }
 
-const CYRILLIC_RE = /[\u0400-\u04FF]/;
-/** CSS-свойства, которые модели пихают в `style`, хотя Mermaid их не понимает. */
 const INVALID_STYLE_CSS_RE =
   /\b(text-align|font-weight|font-size|font-family|line-height|padding|margin|display|width|height|border-radius)\b/i;
 
@@ -288,7 +423,77 @@ export function injectPieThemeColorsFromStyles(raw: string): string {
 
 /** Исходник для первого прохода рендера: цвета диаграмм из style + мягкий repair. */
 export function prepareMermaidSourceForRender(raw: string): string {
-  return repairMermaidSource(injectChartThemeColorsFromStyles(raw));
+  return repairMermaidSource(normalizeMermaidInitColors(injectChartThemeColorsFromStyles(raw)));
+}
+
+/**
+ * Разбивает список категорий x-axis `[A, "B", C]` с учётом кавычек.
+ */
+function splitXyAxisCategories(inner: string): string[] {
+  const parts: string[] = [];
+  const s = inner.trim();
+  let i = 0;
+  while (i < s.length) {
+    while (i < s.length && /[\s,]/.test(s[i]!)) i += 1;
+    if (i >= s.length) break;
+    const ch = s[i]!;
+    if (ch === '"' || ch === "'") {
+      const q = ch;
+      let j = i + 1;
+      let token = q;
+      while (j < s.length) {
+        const c = s[j]!;
+        if (c === '\\' && j + 1 < s.length) {
+          token += c + s[j + 1];
+          j += 2;
+          continue;
+        }
+        token += c;
+        j += 1;
+        if (c === q) break;
+      }
+      parts.push(token);
+      i = j;
+      continue;
+    }
+    let j = i;
+    while (j < s.length && s[j] !== ',') j += 1;
+    const token = s.slice(i, j).trim();
+    if (token) parts.push(token);
+    i = j;
+  }
+  return parts;
+}
+
+/** Категория xychart: ASCII-идентификатор можно без кавычек, остальное — в "". */
+function quoteXyCategoryIfNeeded(token: string): string {
+  const t = token.trim();
+  if (!t) return t;
+  if (
+    (t.startsWith('"') && t.endsWith('"') && t.length >= 2) ||
+    (t.startsWith("'") && t.endsWith("'") && t.length >= 2)
+  ) {
+    return t;
+  }
+  if (/^[A-Za-z0-9_]+$/.test(t)) return t;
+  return `"${t.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+/**
+ * Лексер xychart не принимает кириллицу/пробелы в unquoted x-axis `[Янв, Фев]`.
+ * Чиним в `["Янв", "Фев"]`. Числовые диапазоны `0 --> 100` не трогаем.
+ */
+export function quoteXyChartCategoryLabels(raw: string): string {
+  const code = raw || '';
+  const body = diagramBodyWithoutInit(code);
+  if (!/^xychart(-beta)?\b/im.test(body)) return code;
+
+  return code.replace(/^([ \t]*x-axis[ \t]*)\[([^\]]*)\]/gim, (full, prefix: string, inner: string) => {
+    if (/-->/.test(inner)) return full;
+    const parts = splitXyAxisCategories(inner);
+    if (!parts.length) return full;
+    return `${prefix}[${parts.map(quoteXyCategoryIfNeeded).join(', ')}]`;
+  });
 }
 
 /**
@@ -297,6 +502,7 @@ export function prepareMermaidSourceForRender(raw: string): string {
  * - style/class с кириллическими id узлов
  * - кривой `Node :: class` вместо `:::class`
  * - classDef / linkStyle / click, если мешают
+ * - xychart x-axis с кириллицей без кавычек
  */
 export function repairMermaidSource(raw: string): string {
   let code = sanitizeMermaidSource(raw);
@@ -340,7 +546,7 @@ export function repairMermaidSource(raw: string): string {
     out.push(fixed);
   }
 
-  return out.join('\n').trim();
+  return quoteXyChartCategoryLabels(out.join('\n').trim());
 }
 
 /**

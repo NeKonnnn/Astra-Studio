@@ -38,6 +38,7 @@ import {
   MENU_ACTION_TEXT_SIZE,
 } from '../../constants/menuStyles';
 import { useInViewport } from '../../hooks/useInViewport';
+import ThinkingShimmerText from '../chat/ThinkingShimmerText';
 
 const DOWNLOAD_PANEL_W = 160;
 
@@ -87,8 +88,6 @@ export default function ArtifactCard({ artifact, isStreaming = false }: Props) {
   const previewRootRef = React.useRef<HTMLDivElement>(null);
   const { ref: cardViewportRef, inView } = useInViewport<HTMLDivElement>(
     '280px 0px',
-    // Только текущая генерация сразу с preview; старые — после IO,
-    // иначе при Virtuoso→map все iframe/Sandpack встают разом.
     Boolean(isStreaming && !artifact.closed),
   );
   const editorPath = useMemo(
@@ -97,19 +96,22 @@ export default function ArtifactCard({ artifact, isStreaming = false }: Props) {
   );
 
   useEffect(() => {
-    setLocalContent(artifact.content || '');
-  }, [artifact.id, artifact.content]);
+    if (isStreaming) return;
+    const next = artifact.content || '';
+    setLocalContent((prev) => (prev === next ? prev : next));
+  }, [artifact.id, artifact.content, isStreaming]);
 
   const language = useMemo(() => guessCodeLanguage(artifact.type), [artifact.type]);
   const pending = isStreaming && !artifact.closed;
   const sourceKind = sourceLabelForArtifactType(artifact.type);
+  const previewContent = isStreaming ? (artifact.content || '') : localContent;
 
   const displayArtifact = useMemo(
     () => ({
       ...artifact,
-      content: localContent,
+      content: previewContent,
     }),
-    [artifact, localContent],
+    [artifact, previewContent],
   );
 
   const statusLabel = (() => {
@@ -211,20 +213,45 @@ export default function ArtifactCard({ artifact, isStreaming = false }: Props) {
       >
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
           {pending ? (
-            <CircularProgress size={14} thickness={5} sx={{ color: 'primary.main', flexShrink: 0 }} />
+            <Box
+              sx={{
+                display: 'inline-flex',
+                flexShrink: 0,
+                animation: 'thinking 2s ease-in-out infinite',
+              }}
+            >
+              <CircularProgress size={14} thickness={5} sx={{ color: 'primary.main' }} />
+            </Box>
           ) : null}
-          <Typography
-            variant="caption"
-            sx={{
-              fontWeight: 600,
-              letterSpacing: 0.02,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              color: 'text.primary',
-            }}
-          >
-            {statusLabel}
-          </Typography>
+          {pending ? (
+            <ThinkingShimmerText
+              isDarkMode={isDarkMode}
+              fontSize="0.75rem"
+              fontWeight={600}
+              sx={{
+                letterSpacing: 0.02,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                minWidth: 0,
+                color: 'text.primary',
+              }}
+            >
+              {statusLabel}
+            </ThinkingShimmerText>
+          ) : (
+            <Typography
+              variant="caption"
+              sx={{
+                fontWeight: 600,
+                letterSpacing: 0.02,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                color: 'text.primary',
+              }}
+            >
+              {statusLabel}
+            </Typography>
+          )}
         </Box>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25 }}>
           {!pending ? (
@@ -360,88 +387,14 @@ export default function ArtifactCard({ artifact, isStreaming = false }: Props) {
             height: '100%',
             overflow: 'auto',
             color: '#111827 !important',
-            // Пока идёт генерация и контента ещё нет — прячем сырой preview под оверлеем
-            visibility: pending && !(localContent || '').trim() ? 'hidden' : 'visible',
           }}
         >
           {inView || pending ? (
-            <ArtifactPreview artifact={displayArtifact} isStreaming={pending} />
+            <ArtifactPreview artifact={displayArtifact} isStreaming={isStreaming} />
           ) : (
             <Box sx={{ height: '100%', minHeight: 320, bgcolor: '#e8eaed' }} />
           )}
         </Box>
-
-        {/* Полноэкранный лоадер — как у презентаций; цвета не из темы */}
-        {pending && !(localContent || '').trim() ? (
-          <Box
-            sx={{
-              position: 'absolute',
-              inset: 0,
-              zIndex: 2,
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 1.5,
-              bgcolor: '#e8eaed',
-            }}
-          >
-            <CircularProgress size={36} thickness={4} sx={{ color: '#2355D7 !important' }} />
-            <Box
-              component="span"
-              sx={{
-                display: 'inline-block',
-                fontSize: 13,
-                fontWeight: 600,
-                lineHeight: 1.4,
-                px: 2,
-                py: 0.75,
-                borderRadius: 1.5,
-                bgcolor: '#ffffff',
-                color: '#111827 !important',
-                boxShadow: '0 1px 4px rgba(0,0,0,0.14)',
-                border: '1px solid rgba(0,0,0,0.08)',
-              }}
-            >
-              Генерация артефакта…
-            </Box>
-          </Box>
-        ) : null}
-
-        {/* Плашка, пока стримится уже появившийся контент */}
-        {pending && !!(localContent || '').trim() ? (
-          <Box
-            sx={{
-              position: 'absolute',
-              left: 12,
-              bottom: 56,
-              zIndex: 2,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 1,
-              px: 1.25,
-              py: 0.75,
-              borderRadius: 1.5,
-              bgcolor: '#ffffff',
-              boxShadow: '0 1px 4px rgba(0,0,0,0.14)',
-              border: '1px solid rgba(0,0,0,0.08)',
-              pointerEvents: 'none',
-            }}
-          >
-            <CircularProgress size={14} thickness={5} sx={{ color: '#2355D7 !important' }} />
-            <Box
-              component="span"
-              sx={{
-                fontSize: 12,
-                fontWeight: 600,
-                color: '#111827 !important',
-                lineHeight: 1.3,
-              }}
-            >
-              Генерация…
-            </Box>
-          </Box>
-        ) : null}
       </Box>
 
       {!pending ? (

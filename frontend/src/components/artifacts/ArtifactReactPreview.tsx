@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { Box, Typography } from '@mui/material';
+import { Box } from '@mui/material';
 import { SandpackProvider, SandpackPreview } from '@codesandbox/sandpack-react';
 import { useCommittedContent } from '../../hooks/useCommittedContent';
 
@@ -30,8 +30,9 @@ function normalizeReactEntry(raw: string): string {
 }
 
 export default function ArtifactReactPreview({ content, isStreaming = false }: Props) {
-  // Sandpack дорого пересобирать на каждый токен — коммитим с задержкой / по концу стрима.
-  const committed = useCommittedContent(content || '', isStreaming, 700);
+  // Sandpack на каждый токен → remount Virtuoso → #185. Как HTML: превью только после стрима.
+  const committed = useCommittedContent(content || '', isStreaming, isStreaming ? 1200 : 500);
+
   const files = useMemo(
     () => ({
       '/App.tsx': normalizeReactEntry(committed),
@@ -63,14 +64,13 @@ body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
     [committed],
   );
 
+  // На стриме Sandpack не монтируем (remount → Virtuoso #185); статус — только в шапке карточки.
+  if (isStreaming) {
+    return <Box sx={{ width: '100%', height: '100%', minHeight: 240, bgcolor: '#e8eaed' }} />;
+  }
+
   if (!(committed || '').trim()) {
-    return (
-      <Box sx={{ p: 2 }}>
-        <Typography variant="body2" color="text.secondary">
-          Ожидание кода React…
-        </Typography>
-      </Box>
-    );
+    return <Box sx={{ height: '100%', minHeight: 240, bgcolor: '#e8eaed' }} />;
   }
 
   return (

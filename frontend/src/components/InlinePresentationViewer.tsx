@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Box, CircularProgress, IconButton, Tooltip, Typography, Collapse } from '@mui/material';
+import { Box, CircularProgress, IconButton, Tooltip, Typography, Collapse, useTheme } from '@mui/material';
 import {
   OpenInNew as OpenInNewIcon,
   Code as CodeIcon,
@@ -10,6 +10,7 @@ import {
   openPresentationViewer,
 } from '../utils/presentationViewer';
 import { useInViewport } from '../hooks/useInViewport';
+import ThinkingShimmerText from './chat/ThinkingShimmerText';
 
 /** Номинальный размер слайда GPB (как в presentation-viewer.html). */
 const SLIDE_W_MM = 297;
@@ -155,6 +156,8 @@ export function buildInlinePresentationViewerSrcDoc(rawHtml: string): string {
     var current = 0;
     var exporting = false;
     var applyGen = 0;
+    var stickToLatest = true;
+    var lastSlideCount = 0;
 
     function showError(msg) {
       var el = document.getElementById('error');
@@ -170,6 +173,18 @@ export function buildInlinePresentationViewerSrcDoc(rawHtml: string): string {
 
     function stripEmbeddedScripts(h) {
       return h.replace(/<script[^>]*>[\\s\\S]*?<\\/script>/gi, '');
+    }
+
+    // Fence-sanitize снаружи (sanitizePresentationHtmlSource).
+    // Здесь только BOM + незакрытый <!-- — без backticks в regex (ломают Babel).
+    function sanitizePresentationHtml(h) {
+      var s = String(h || '').replace(/^\\uFEFF/, '').trim();
+      if (!s) return s;
+      var lastOpen = s.lastIndexOf('<!--');
+      if (lastOpen >= 0 && s.slice(lastOpen).indexOf('-->') < 0) {
+        s = s.slice(0, lastOpen).replace(/\\s+$/, '');
+      }
+      return s;
     }
 
     function fitStage() {
@@ -191,7 +206,7 @@ export function buildInlinePresentationViewerSrcDoc(rawHtml: string): string {
     }
 
     function applyHtml(raw) {
-      var html = stripEmbeddedScripts((raw || '').trim());
+      var html = sanitizePresentationHtml(stripEmbeddedScripts((raw || '').trim()));
       if (!html) return;
       var gen = ++applyGen;
       hideError();
@@ -201,7 +216,11 @@ export function buildInlinePresentationViewerSrcDoc(rawHtml: string): string {
         if (gen !== applyGen) return;
         try {
           var doc = frame.contentDocument;
+          // Все контейнеры с токеном class=slide (включая slide title-slide).
           slides = Array.from(doc.querySelectorAll('.slide'));
+          if (!slides.length) {
+            slides = Array.from(doc.querySelectorAll('[class~="slide"]'));
+          }
           if (!slides.length) {
             showError('В HTML не найдены слайды с классом .slide');
             return;
@@ -213,13 +232,26 @@ export function buildInlinePresentationViewerSrcDoc(rawHtml: string): string {
             ns.textContent = s.textContent;
             document.head.appendChild(ns);
           });
-          var idx = Math.min(Math.max(keep, 0), slides.length - 1);
+          var grew = slides.length > lastSlideCount;
+          lastSlideCount = slides.length;
+          var idx;
+          if (stickToLatest && grew) {
+            idx = slides.length - 1;
+          } else {
+            idx = Math.min(Math.max(keep, 0), slides.length - 1);
+          }
           show(idx);
           document.getElementById('exportBtn').disabled = false;
           document.getElementById('prevBtn').disabled = false;
           document.getElementById('nextBtn').disabled = false;
           fitStage();
           requestAnimationFrame(fitStage);
+          try {
+            window.parent.postMessage(
+              { type: 'astra-pptx-applied', count: slides.length },
+              '*'
+            );
+          } catch (ackErr) {}
         } catch (e) {
           showError('Ошибка загрузки HTML презентации');
           console.error(e);
@@ -245,6 +277,7 @@ export function buildInlinePresentationViewerSrcDoc(rawHtml: string): string {
     function show(i) {
       if (i < 0 || i >= slides.length) return;
       current = i;
+      stickToLatest = i >= slides.length - 1;
       var viewer = document.getElementById('viewer');
       var clone = slides[i].cloneNode(true);
       clone.style.position = 'absolute';
@@ -333,10 +366,10 @@ interface InlinePresentationViewerProps {
 /**
  * Встроенный просмотр GPB-презентации в ответе чата.
  * При стриме: спиннер + послайдовый показ без мерцания.
- * Shell iframe + postMessage: не пересоздаём iframe на каждый слайд.
  */
 const PPTX_PUSH_MIN_MS = 700;
-const PPTX_STALL_MS = 8000;
+/** Пауза без роста HTML: только дожимаем iframe, спиннер не гасим (стрим ещё идёт). */
+const PPTX_CATCHUP_MS = 1200;
 
 export default function InlinePresentationViewer({
   html,
@@ -344,8 +377,12 @@ export default function InlinePresentationViewer({
   isStreaming = false,
   embedded = false,
 }: InlinePresentationViewerProps) {
+  const theme = useTheme();
+  const isDarkMode = theme.palette.mode === 'dark';
   const [showSource, setShowSource] = useState(false);
   const [committedHtml, setCommittedHtml] = useState<string | null>(null);
+  // readyCount = слайды, ФАКТИЧЕСКИ отрисованные в iframe (по ack от него),
+  // чтобы плашка «готово N» не убегала вперёд реального кадра.
   const [readyCount, setReadyCount] = useState(0);
   const [startedCount, setStartedCount] = useState(0);
   const [pending, setPending] = useState(isStreaming);
@@ -370,51 +407,85 @@ export default function InlinePresentationViewer({
   };
 
   useEffect(() => {
-    const snap = getStablePresentationSnapshot(html, isStreaming);
+    const base = getStablePresentationSnapshot(html, isStreaming);
 
     if (!isStreaming) {
-      if (snap.html) {
-        setCommittedHtml(snap.html);
-        setReadyCount(snap.readyCount);
-        setStartedCount(snap.startedCount);
-        lastReadyRef.current = snap.readyCount;
+      if (base.html) {
+        setCommittedHtml(base.html);
+        setReadyCount(base.readyCount);
+        setStartedCount(base.startedCount);
+        lastReadyRef.current = base.readyCount;
       }
       setPending(false);
       return;
     }
 
-    setStartedCount(snap.startedCount);
+    setStartedCount(base.startedCount);
     setPending(true);
 
-    if (snap.html && snap.readyCount > lastReadyRef.current) {
-      const now = Date.now();
-      const jumped = snap.readyCount >= lastReadyRef.current + 2;
-      const elapsed = now - lastPushAtRef.current >= PPTX_PUSH_MIN_MS;
-      const first = lastReadyRef.current < 0;
-      setReadyCount(snap.readyCount);
-      if (first || jumped || elapsed) {
-        lastReadyRef.current = snap.readyCount;
-        lastPushAtRef.current = now;
-        setCommittedHtml(snap.html);
-      }
+    // По одному слайду: не прыгаем 1→4 через jumped/throttle.
+    if (base.readyCount <= 0) {
+      setReadyCount(0);
+      return;
     }
+
+    const now = Date.now();
+    const first = lastReadyRef.current < 0;
+    const elapsed = first || now - lastPushAtRef.current >= PPTX_PUSH_MIN_MS;
+    if (!elapsed) {
+      // Не двигаем плашку вперёд iframe: readyCount = уже показанное.
+      return;
+    }
+
+    const target = first
+      ? 1
+      : Math.min(lastReadyRef.current + 1, base.readyCount);
+    if (target <= lastReadyRef.current) {
+      return;
+    }
+
+    const snap = getStablePresentationSnapshot(html, true, { maxReadyCount: target });
+    if (!snap.html) {
+      return;
+    }
+    lastReadyRef.current = snap.readyCount;
+    lastPushAtRef.current = now;
+    // readyCount НЕ трогаем здесь — обновит ack от iframe (astra-pptx-applied),
+    // чтобы «готово N» совпадало с реально показанным кадром.
+    setCommittedHtml(snap.html);
   }, [html, isStreaming]);
 
-  // Стрим завис (HTML не растёт) — фиксируем то, что уже есть, без вечного спиннера.
+  // Если HTML уже готов дальше iframe — догоняем по одному слайду.
   useEffect(() => {
     if (!isStreaming) return;
-    const timer = window.setTimeout(() => {
-      const snap = getStablePresentationSnapshot(html, false);
-      if (snap.html) {
-        setCommittedHtml(snap.html);
-        setReadyCount(snap.readyCount);
-        setStartedCount(snap.startedCount);
-        lastReadyRef.current = snap.readyCount;
-      }
-      setPending(false);
-    }, PPTX_STALL_MS);
-    return () => window.clearTimeout(timer);
+    const id = window.setInterval(() => {
+      const base = getStablePresentationSnapshot(html, true);
+      if (base.readyCount <= lastReadyRef.current) return;
+      if (Date.now() - lastPushAtRef.current < PPTX_PUSH_MIN_MS) return;
+      const target = Math.min(lastReadyRef.current + 1, base.readyCount);
+      const snap = getStablePresentationSnapshot(html, true, { maxReadyCount: target });
+      if (!snap.html) return;
+      lastReadyRef.current = snap.readyCount;
+      lastPushAtRef.current = Date.now();
+      setStartedCount(base.startedCount);
+      setCommittedHtml(snap.html);
+      setPending(true);
+    }, PPTX_CATCHUP_MS);
+    return () => window.clearInterval(id);
   }, [html, isStreaming]);
+
+  // Ack от iframe: слайды реально отрисованы — только теперь двигаем «готово N».
+  useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      if (e.source !== iframeRef.current?.contentWindow) return;
+      const data = e.data as { type?: string; count?: number } | null;
+      if (!data || data.type !== 'astra-pptx-applied') return;
+      const n = typeof data.count === 'number' ? data.count : 0;
+      setReadyCount((prev: number) => (n > prev ? n : !isStreaming ? n : prev));
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [isStreaming]);
 
   useEffect(() => {
     if (!committedHtml) return;
@@ -425,15 +496,16 @@ export default function InlinePresentationViewer({
     if (!keepIframe) iframeReadyRef.current = false;
   }, [keepIframe]);
 
-  const showLoader = pending && !committedHtml;
-  const showGeneratingBadge = pending && !!committedHtml;
   const showMissingSlides = !pending && !committedHtml;
 
   const statusLabel = (() => {
     if (showMissingSlides) return 'Презентация · нет слайдов';
     if (!pending) return 'Презентация';
+    // readyCount = слайды в iframe; startedCount = открыто в HTML (включая текущий недописанный).
     if (readyCount > 0) {
-      return `Презентация · готово ${readyCount}${startedCount > readyCount ? ` · слайд ${readyCount + 1}…` : '…'}`;
+      const generating =
+        startedCount > readyCount ? ` · слайд ${readyCount + 1}…` : '…';
+      return `Презентация · готово ${readyCount}${generating}`;
     }
     if (startedCount > 0) return `Презентация · слайд ${startedCount}…`;
     return 'Презентация · генерация…';
@@ -493,28 +565,6 @@ export default function InlinePresentationViewer({
         />
       ) : null}
 
-      {showLoader ? (
-        <Box
-          sx={{
-            position: 'absolute',
-            inset: 0,
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 1.5,
-            bgcolor: '#e8eaed',
-          }}
-        >
-          <CircularProgress size={36} thickness={4} sx={{ color: '#2355D7' }} />
-          <Typography variant="body2" sx={{ color: '#111', fontSize: 13 }}>
-            {startedCount > 0
-              ? `Генерируется слайд ${startedCount}…`
-              : 'Генерируется презентация…'}
-          </Typography>
-        </Box>
-      ) : null}
-
       {showMissingSlides ? (
         <Box
           sx={{
@@ -535,30 +585,6 @@ export default function InlinePresentationViewer({
           <Typography variant="caption" sx={{ color: 'text.secondary', textAlign: 'center', maxWidth: 420 }}>
             Каждый слайд должен быть обёрнут в <code>{'<div class="slide">'}</code> — не путать с{' '}
             <code>slide-title</code> / <code>content-zone</code>.
-          </Typography>
-        </Box>
-      ) : null}
-
-      {showGeneratingBadge ? (
-        <Box
-          sx={{
-            position: 'absolute',
-            left: 12,
-            bottom: embedded ? 12 : 56,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 1,
-            px: 1.25,
-            py: 0.75,
-            borderRadius: 1.5,
-            bgcolor: 'rgba(255,255,255,0.92)',
-            boxShadow: '0 1px 4px rgba(0,0,0,0.12)',
-            pointerEvents: 'none',
-          }}
-        >
-          <CircularProgress size={14} thickness={5} sx={{ color: '#2355D7' }} />
-          <Typography variant="caption" sx={{ color: '#111', fontWeight: 500 }}>
-            Генерируется слайд {Math.max(startedCount, readyCount + 1)}…
           </Typography>
         </Box>
       ) : null}
@@ -599,14 +625,38 @@ export default function InlinePresentationViewer({
       >
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
           {pending ? (
-            <CircularProgress size={14} thickness={5} sx={{ color: 'primary.main', flexShrink: 0 }} />
+            <Box
+              sx={{
+                display: 'inline-flex',
+                flexShrink: 0,
+                animation: 'thinking 2s ease-in-out infinite',
+              }}
+            >
+              <CircularProgress size={14} thickness={5} sx={{ color: 'primary.main' }} />
+            </Box>
           ) : null}
-          <Typography
-            variant="caption"
-            sx={{ fontWeight: 600, letterSpacing: 0.02, overflow: 'hidden', textOverflow: 'ellipsis' }}
-          >
-            {statusLabel}
-          </Typography>
+          {pending ? (
+            <ThinkingShimmerText
+              isDarkMode={isDarkMode}
+              fontSize="0.75rem"
+              fontWeight={600}
+              sx={{
+                letterSpacing: 0.02,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                minWidth: 0,
+              }}
+            >
+              {statusLabel}
+            </ThinkingShimmerText>
+          ) : (
+            <Typography
+              variant="caption"
+              sx={{ fontWeight: 600, letterSpacing: 0.02, overflow: 'hidden', textOverflow: 'ellipsis' }}
+            >
+              {statusLabel}
+            </Typography>
+          )}
         </Box>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25 }}>
           {sourceSlot && !pending ? (

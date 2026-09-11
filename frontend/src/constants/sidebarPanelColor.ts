@@ -1,10 +1,36 @@
 /** Ключ в localStorage для пользовательского цвета боковых панелей. Пустая строка = цвет по умолчанию. */
 export const SIDEBAR_PANEL_COLOR_KEY = 'sidebar_panel_color';
 
-/** Градиент по умолчанию для левой и правой боковых панелей. */
+/** Ключ темы приложения (см. App.tsx). */
+export const DARK_MODE_STORAGE_KEY = 'gazikii-dark-mode';
+
+/** Дефолт боковых панелей в светлой теме. */
+export const DEFAULT_SIDEBAR_LIGHT = '#F7F7F9';
+
+/** Дефолт боковых панелей в тёмной теме («Тёмный графит»). */
+export const DEFAULT_SIDEBAR_DARK = '#212128';
+
+/** Фиолетовый градиент из палитры настроек (не дефолт панелей). */
 export const DEFAULT_SIDEBAR_GRADIENT = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
 
 const HEX_RE = /#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})\b/g;
+
+/** Текущая тема приложения из localStorage. */
+export function isAppDarkMode(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const saved = localStorage.getItem(DARK_MODE_STORAGE_KEY);
+    return saved ? JSON.parse(saved) === true : false;
+  } catch {
+    return false;
+  }
+}
+
+/** Цвет панелей «По умолчанию» для текущей (или переданной) темы. */
+export function getDefaultSidebarPanelBackground(isDark?: boolean): string {
+  const dark = typeof isDark === 'boolean' ? isDark : isAppDarkMode();
+  return dark ? DEFAULT_SIDEBAR_DARK : DEFAULT_SIDEBAR_LIGHT;
+}
 
 type Rgb = { r: number; g: number; b: number };
 
@@ -29,7 +55,7 @@ function expandHex(hex: string): Rgb | null {
 /** Извлечь все #RGB / #RRGGBB и rgb(...) из строки фона (solid или gradient). */
 function extractSidebarSampleRgbs(background: string): Rgb[] {
   const value = (background || '').trim();
-  if (!value) return extractSidebarSampleRgbs(DEFAULT_SIDEBAR_GRADIENT);
+  if (!value) return extractSidebarSampleRgbs(getDefaultSidebarPanelBackground());
 
   const out: Rgb[] = [];
   const hexMatches = value.match(HEX_RE);
@@ -102,9 +128,9 @@ export function isSidebarPanelLight(background?: string | null): boolean {
 export const isLightSidebarPanelBackground = isSidebarPanelLight;
 
 export function getSidebarPanelBackground(): string {
-  if (typeof window === 'undefined') return DEFAULT_SIDEBAR_GRADIENT;
+  if (typeof window === 'undefined') return getDefaultSidebarPanelBackground(false);
   const saved = localStorage.getItem(SIDEBAR_PANEL_COLOR_KEY);
-  return saved || DEFAULT_SIDEBAR_GRADIENT;
+  return saved || getDefaultSidebarPanelBackground();
 }
 
 export function getSidebarPanelForeground(background?: string): string {
@@ -242,6 +268,9 @@ export function getSidebarForcedContrastSx(background?: string): Record<string, 
   const hover = chrome.hoverBg;
   return {
     '& .MuiSvgIcon-root': { color: `${fg} !important` },
+    // Danger-кнопки (удаление и т.п.) сохраняют свой красный цвет.
+    '& [data-sidebar-danger]': { color: '#d32f2f !important' },
+    '& [data-sidebar-danger] .MuiSvgIcon-root': { color: '#d32f2f !important' },
     '& .MuiTypography-root': { color: `${fg} !important` },
     '& .MuiIconButton-root': { color: `${fg} !important` },
     '& .MuiListItemIcon-root': { color: `${fg} !important` },
@@ -262,7 +291,7 @@ export function getSidebarForcedContrastSx(background?: string): Record<string, 
     '& .MuiOutlinedInput-root:hover .MuiOutlinedInput-notchedOutline': {
       borderColor: `${muted} !important`,
     },
-    '& .MuiButton-root:not(.MuiButton-contained)': {
+    '& .MuiButton-root:not(.MuiButton-contained):not([data-sidebar-danger])': {
       color: `${fg} !important`,
       borderColor: `${border} !important`,
       '&:hover': {

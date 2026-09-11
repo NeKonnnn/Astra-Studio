@@ -127,7 +127,7 @@ class MinIOClient:
         bucket_name: str = None,
         *,
         cef_display_name: Optional[str] = None,
-        cef_audit: bool = True
+        cef_audit: bool = True,
     ) -> str:
         """
         Загружает файл в MinIO

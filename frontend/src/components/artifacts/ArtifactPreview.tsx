@@ -22,13 +22,13 @@ interface Props {
 export default function ArtifactPreview({ artifact, isStreaming = false }: Props) {
   const { type, content, closed } = artifact;
 
-  // Пустой стрим: оверлей «Генерация…» рисует ArtifactCard (не здесь),
-  // чтобы текст не терялся из‑за наследования color из пузыря сообщения.
+  // Пустой стрим: статус только в шапке ArtifactCard.
   if (!closed && isStreaming && !(content || '').trim()) {
     return <Box sx={{ height: '100%', minHeight: 240, bgcolor: '#e8eaed' }} />;
   }
 
-  const streaming = isStreaming && !closed;
+  // isStreaming приходит от ArtifactCard (= стрим сообщения), не смешиваем с artifact.closed.
+  const streaming = Boolean(isStreaming);
 
   if (isHtmlArtifactType(type)) {
     return <ArtifactHtmlPreview content={content} isStreaming={streaming} />;

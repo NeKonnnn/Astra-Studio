@@ -5,7 +5,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { usePluginRuns } from '../contexts/PluginRunContext';
 import { formatDuration } from '../plugins/verdict';
-import { TOP_ERROR_BANNER_AUTO_DISMISS_MS } from './TopErrorBanner';
+import { STATUS_TOAST_AUTO_DISMISS_MS } from '../constants/statusToast';
 
 const GALLERY_PATH = '/gallery?tab=plugins';
 
@@ -31,7 +31,7 @@ export default function PluginRunBanner() {
   // Старый результат из localStorage не должен вечно висеть зелёной плашкой.
   const finishedIsFresh =
     Boolean(finished?.finishedAtMs) &&
-    Date.now() - (finished!.finishedAtMs as number) < TOP_ERROR_BANNER_AUTO_DISMISS_MS;
+    Date.now() - (finished!.finishedAtMs as number) < STATUS_TOAST_AUTO_DISMISS_MS;
 
   const active = running || (finishedIsFresh ? finished : null) || null;
   const activeKey = active
@@ -53,7 +53,7 @@ export default function PluginRunBanner() {
     if (!visible || !activeKey || running) return undefined;
     const timer = window.setTimeout(() => {
       setDismissedKey(activeKey);
-    }, TOP_ERROR_BANNER_AUTO_DISMISS_MS);
+    }, STATUS_TOAST_AUTO_DISMISS_MS);
     return () => window.clearTimeout(timer);
   }, [visible, activeKey, running]);
 

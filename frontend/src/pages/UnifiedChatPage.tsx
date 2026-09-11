@@ -12,7 +12,6 @@ import {
   Chip,
   Tooltip,
   Alert,
-  Snackbar,
   Dialog,
   DialogTitle,
   DialogContent,
@@ -83,6 +82,7 @@ import {
   INLINE_ATTACH_WAIT_BEFORE_SEND_MESSAGE,
 } from '../utils/inlineAttachmentRules';
 import TopErrorBanner from '../components/TopErrorBanner';
+import { STATUS_TOAST_MESSAGES } from '../constants/statusToast';
 import { logChatAttach, logChatAttachError } from '../utils/chatAttachDebug';
 import InlineAttachmentsList from '../components/InlineAttachmentsList';
 import InlineImageLightbox from '../components/InlineImageLightbox';
@@ -1639,7 +1639,6 @@ export default function UnifiedChatPage({
 
   // Состояние для текстового чата
   const [inputMessage, setInputMessage] = useState('');
-  const [showCopyAlert, setShowCopyAlert] = useState(false);
   
   // Состояние для редактирования сообщений
   const [editDialogOpen, setEditDialogOpen] = useState(false);
@@ -1782,10 +1781,17 @@ export default function UnifiedChatPage({
   const messageRefs = useRef<(HTMLDivElement | null)[]>([]);
   // Флаг: пользователь находится у нижнего края → автоскролл разрешён
   const isAtBottomRef = useRef(true);
+  /** Реактивно: пользователь не у низа ленты → показать кнопку «вниз». */
+  const [isAwayFromBottom, setIsAwayFromBottom] = useState(false);
   // Флаг: мы сами инициировали прокрутку (чтобы не ловить её в scroll-listener)
   const isProgrammaticScrollRef = useRef(false);
   // Временная пауза автоскролла при взаимодействии с UI (например, сворачивание reasoning)
   const autoScrollPauseUntilRef = useRef(0);
+
+  const syncAwayFromBottom = useCallback((away: boolean) => {
+    isAtBottomRef.current = !away;
+    setIsAwayFromBottom((prev) => (prev === away ? prev : away));
+  }, []);
 
   useEffect(() => {
     const onAttach = () => fileInputRef.current?.click();
@@ -1796,11 +1802,11 @@ export default function UnifiedChatPage({
   useEffect(() => {
     const onPauseAutoScroll = () => {
       autoScrollPauseUntilRef.current = Date.now() + 5000;
-      isAtBottomRef.current = false;
+      syncAwayFromBottom(true);
     };
     window.addEventListener('astra_pause_chat_autoscroll', onPauseAutoScroll);
     return () => window.removeEventListener('astra_pause_chat_autoscroll', onPauseAutoScroll);
-  }, []);
+  }, [syncAwayFromBottom]);
 
   // Ref со всеми callback-ами для MessageCard (обновляется перед каждым рендером)
   const messageCardDataRef = useRef<MessageCardData>({} as MessageCardData);
@@ -1869,11 +1875,11 @@ export default function UnifiedChatPage({
     const handleScroll = () => {
       if (isProgrammaticScrollRef.current) return;
       const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      isAtBottomRef.current = distanceFromBottom < 120;
+      syncAwayFromBottom(distanceFromBottom >= 120);
     };
     scrollerScrollHandlerRef.current = handleScroll;
     el.addEventListener('scroll', handleScroll, { passive: true });
-  }, []);
+  }, [syncAwayFromBottom]);
 
   const setVirtuosoScrollerRef = useCallback((ref: HTMLElement | Window | null) => {
     const el = ref instanceof HTMLElement ? (ref as HTMLDivElement) : null;
@@ -2776,13 +2782,13 @@ export default function UnifiedChatPage({
     if (len > prevMessagesLengthRef.current) {
       const last = messages[len - 1];
       if (last?.role === 'user' || grokTurnActiveRef.current) {
-        isAtBottomRef.current = false;
+        syncAwayFromBottom(true);
       } else {
-        isAtBottomRef.current = true;
+        syncAwayFromBottom(false);
       }
     }
     prevMessagesLengthRef.current = len;
-  }, [messages]);
+  }, [messages, syncAwayFromBottom]);
 
   // Автоскролл к последнему сообщению — только когда пользователь у дна.
   // Не реагируем на follow-up подсказки, чтобы поле ввода не «прыгало».
@@ -2801,6 +2807,47 @@ export default function UnifiedChatPage({
         .join(';;'),
     [messages],
   );
+
+  useEffect(() => {
+    const el = messagesContainerRef.current;
+    if (!el || messages.length === 0) {
+      setIsAwayFromBottom(false);
+      return;
+    }
+    if (isProgrammaticScrollRef.current) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    syncAwayFromBottom(distanceFromBottom >= 120);
+  }, [autoscrollTrigger, messages.length, syncAwayFromBottom]);
+
+  const scrollChatToBottom = useCallback(() => {
+    const lastIndex = Math.max(0, visibleMessages.length - 1);
+    syncAwayFromBottom(false);
+    isProgrammaticScrollRef.current = true;
+    if (shouldUseVirtuosoList && virtuosoRef.current) {
+      virtuosoRef.current.scrollToIndex({
+        index: lastIndex,
+        align: 'end',
+        behavior: 'smooth',
+      });
+    }
+    const container = messagesContainerRef.current;
+    if (container) {
+      container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+    }
+    window.setTimeout(() => {
+      isProgrammaticScrollRef.current = false;
+      const el = messagesContainerRef.current;
+      if (!el) return;
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      syncAwayFromBottom(distanceFromBottom >= 120);
+    }, 700);
+  }, [visibleMessages.length, shouldUseVirtuosoList, syncAwayFromBottom]);
+
+  const showScrollToBottomButton = isAwayFromBottom && messages.length > 0 && !showNewChatWelcome;
+  const showScrollToBottomLoader =
+    showScrollToBottomButton &&
+    streamingActive &&
+    !interfaceSettings.autoScrollWhileStreaming;
 
   useEffect(() => {
     // Grok-ход: вопрос у верха — не тянем ленту к низу.
@@ -3212,13 +3259,13 @@ export default function UnifiedChatPage({
       } else {
         await navigator.clipboard.writeText(plain);
       }
-      setShowCopyAlert(true);
+      showNotification('success', STATUS_TOAST_MESSAGES.COPY_SUCCESS);
     } catch (error) {
       try {
         await navigator.clipboard.writeText(content);
-        setShowCopyAlert(true);
+        showNotification('success', STATUS_TOAST_MESSAGES.COPY_SUCCESS);
       } catch {
-        showNotification('error', 'Не удалось скопировать текст');
+        showNotification('error', STATUS_TOAST_MESSAGES.COPY_FAILED);
       }
     }
   };
@@ -4904,6 +4951,71 @@ export default function UnifiedChatPage({
            {!showNewChatWelcome && (messages.length > 0 || showChatHistoryLoadingDelayed) ? (
            <>
              {renderMultiLlmModelToolbar()}
+             <Box sx={{ position: 'relative', width: '100%', mt: 0 }}>
+               {showScrollToBottomButton ? (
+                 <Box
+                   sx={{
+                     position: 'absolute',
+                     left: '50%',
+                     bottom: 'calc(100% + 10px)',
+                     transform: 'translateX(-50%)',
+                     zIndex: 30,
+                     lineHeight: 0,
+                   }}
+                 >
+                   <IconButton
+                     onClick={scrollChatToBottom}
+                     aria-label="Прокрутить к концу чата"
+                     title="К концу чата"
+                     sx={{
+                       width: 40,
+                       height: 40,
+                       bgcolor: isDarkMode ? 'rgba(45, 48, 55, 0.92)' : 'rgba(255, 255, 255, 0.95)',
+                       color: isDarkMode ? 'rgba(255,255,255,0.88)' : 'rgba(0,0,0,0.7)',
+                       border: '1px solid',
+                       borderColor: isDarkMode ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.12)',
+                       boxShadow: isDarkMode
+                         ? '0 4px 16px rgba(0,0,0,0.45)'
+                         : '0 4px 16px rgba(0,0,0,0.12)',
+                       backdropFilter: 'blur(8px)',
+                       transform: 'none',
+                       '&:hover': {
+                         bgcolor: isDarkMode ? 'rgba(55, 58, 66, 0.98)' : 'rgba(245, 245, 245, 0.98)',
+                         transform: 'none',
+                       },
+                       '&:active': {
+                         transform: 'none',
+                       },
+                       '&.Mui-focusVisible': {
+                         transform: 'none',
+                       },
+                     }}
+                   >
+                     <Box
+                       sx={{
+                         position: 'relative',
+                         width: 24,
+                         height: 24,
+                         display: 'flex',
+                         alignItems: 'center',
+                         justifyContent: 'center',
+                       }}
+                     >
+                       {showScrollToBottomLoader && (
+                         <CircularProgress
+                           size={28}
+                           thickness={2.4}
+                           sx={{
+                             position: 'absolute',
+                             color: isDarkMode ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.35)',
+                           }}
+                         />
+                       )}
+                       <KeyboardArrowDownIcon sx={{ fontSize: 22 }} />
+                     </Box>
+                   </IconButton>
+                 </Box>
+               ) : null}
              <ChatInputBar
                toolsMenuAnchorRef={chatInputToolsAnchorRef}
                value={inputMessage}
@@ -4947,6 +5059,7 @@ export default function UnifiedChatPage({
                extraActions={multiLlmSettingsExtraAction}
                contextCounter={chatContextCounter}
              />
+             </Box>
            </>
            ) : null}
 
@@ -5406,16 +5519,6 @@ export default function UnifiedChatPage({
         </DialogActions>
        </Dialog>
 
-       {/* Уведомления */}
-       <Snackbar
-         open={showCopyAlert}
-         autoHideDuration={2000}
-         onClose={() => setShowCopyAlert(false)}
-       >
-         <Alert severity="success" onClose={() => setShowCopyAlert(false)}>
-           Текст скопирован в буфер обмена
-         </Alert>
-       </Snackbar>
       </Box>
 
       {/* Нижняя панель в режиме "Поделиться" */}

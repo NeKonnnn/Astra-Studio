@@ -56,8 +56,8 @@ class TestUploadFileAudit(unittest.TestCase):
                 content_type="text/plain",
                 cef_display_name="original name.txt",
             )
-        self.assertEqual(name, "doc_1.txt")
-        self.client.client.put_object.assert_called_once()
+            self.assertEqual(name, "doc_1.txt")
+            self.client.client.put_object.assert_called_once()
 
     def test_success_emits_fs003_with_display_name(self):
         with mock.patch(
@@ -69,13 +69,14 @@ class TestUploadFileAudit(unittest.TestCase):
                 bucket_name="astrachat-documents",
                 cef_display_name="original name.txt",
             )
-        logged.assert_called_once_with(
-            "doc_1.txt", "astrachat-documents", display_name="original name.txt"
-        )
+            logged.assert_called_once_with(
+                "doc_1.txt", "astrachat-documents", display_name="original name.txt"
+            )
 
     def test_failure_emits_fs004_and_reraises(self):
         self.client.client.put_object.side_effect = _S3Error("access denied")
-        with mock.patch.object(minio_module, "S3Error", _S3Error):
+        # create=True: в окружении без пакета minio имя S3Error в модуле отсутствует.
+        with mock.patch.object(minio_module, "S3Error", _S3Error, create=True):
             with mock.patch(
                 "backend.settings.cef_logger.storage_audit.log_minio_write_failure"
             ) as logged:
@@ -86,11 +87,11 @@ class TestUploadFileAudit(unittest.TestCase):
                         bucket_name="astrachat-documents",
                         cef_display_name="original name.txt",
                     )
-        self.assertEqual(logged.call_count, 1)
-        args, kwargs = logged.call_args
-        self.assertEqual(args[0], "doc_1.txt")
-        self.assertEqual(args[1], "astrachat-documents")
-        self.assertEqual(kwargs.get("display_name"), "original name.txt")
+                self.assertEqual(logged.call_count, 1)
+                args, kwargs = logged.call_args
+                self.assertEqual(args[0], "doc_1.txt")
+                self.assertEqual(args[1], "astrachat-documents")
+                self.assertEqual(kwargs.get("display_name"), "original name.txt")
 
     def test_cef_audit_false_emits_nothing(self):
         """Симметрично delete_file: аудит можно выключить точечно."""
@@ -98,7 +99,7 @@ class TestUploadFileAudit(unittest.TestCase):
             "backend.settings.cef_logger.storage_audit.log_minio_write_success"
         ) as logged:
             self.client.upload_file(b"data", "doc_1.txt", cef_audit=False)
-        logged.assert_not_called()
+            logged.assert_not_called()
 
     def test_positional_callers_still_work(self):
         """Новые параметры keyword-only: позиционные вызовы в routes/* не ломаются."""
@@ -106,7 +107,7 @@ class TestUploadFileAudit(unittest.TestCase):
             "backend.settings.cef_logger.storage_audit.log_minio_write_success"
         ):
             name = self.client.upload_file(b"data", "voice.wav", "audio/wav", "astrachat-temp")
-        self.assertEqual(name, "voice.wav")
+            self.assertEqual(name, "voice.wav")
 
 
 if __name__ == "__main__":

@@ -1,8 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Box, IconButton, Typography, Tooltip, Link, Paper, Table, TableBody, TableCell, TableContainer, TableHead, TableRow } from '@mui/material';
-import { ContentCopy as CopyIcon, Check as CheckIcon, Info as InfoIcon, Warning as WarningIcon, Error as ErrorIcon, CheckCircle as SuccessIcon, GetApp as DownloadIcon } from '@mui/icons-material';
+import { ContentCopy as CopyIcon, Check as CheckIcon, Info as InfoIcon, Warning as WarningIcon, Error as ErrorIcon, CheckCircle as SuccessIcon, GetApp as DownloadIcon,
+  KeyboardArrowDown as KeyboardArrowDownIcon,
+  KeyboardArrowUp as KeyboardArrowUpIcon,
+} from '@mui/icons-material';
 import {
   artifactMetaLooksLikePresentation,
+  coalescePresentationHtmlInMessage,
   extractUnfencedPresentationHtml,
   hasGpbSlideClass,
   isGpbPresentationHtml,
@@ -145,6 +149,328 @@ function markdownHeadingFontSize(level: string, baseFontSize: string): string {
   return `calc(${baseFontSize} * ${scale})`;
 }
 
+const COLLAPSED_CODE_HEIGHT = 320;
+
+type CollapsibleCodeBlockProps = {
+  code: string;
+  language: string;
+  editorLanguage: string;
+  editorPath: string;
+  codeLineCount: number;
+  fullEditorHeight: number;
+  isStreaming?: boolean;
+  isPresentationHtml?: boolean;
+  copiedCode: string | null;
+  onCopy: (code: string) => void;
+  onDownload: (code: string, language: string) => void;
+  blockKey?: React.Key;
+};
+
+/**
+ * Отдельный компонент: стейт expand живёт здесь.
+ * MessageRenderer кеширует parseMarkdown в useMemo — родительский setState
+ * иначе не пересобирает JSX блока кода.
+ */
+const CollapsibleCodeBlock = React.memo(function CollapsibleCodeBlock({
+  code,
+  language,
+  editorLanguage,
+  editorPath,
+  codeLineCount,
+  fullEditorHeight,
+  isStreaming,
+  isPresentationHtml,
+  copiedCode,
+  onCopy,
+  onDownload,
+  blockKey,
+}: CollapsibleCodeBlockProps) {
+  const [expanded, setExpanded] = useState(false);
+  const editorRef = useRef<{ layout: () => void } | null>(null);
+
+  const canCollapse = !isPresentationHtml && fullEditorHeight > COLLAPSED_CODE_HEIGHT;
+  const isExpanded = expanded || !canCollapse;
+  const editorHeight = canCollapse && !expanded ? COLLAPSED_CODE_HEIGHT : fullEditorHeight;
+  const needsInnerScroll = canCollapse && !expanded;
+
+  useEffect(() => {
+    if (!editorRef.current) return;
+    requestAnimationFrame(() => {
+      editorRef.current?.layout();
+      requestAnimationFrame(() => editorRef.current?.layout());
+    });
+  }, [editorHeight, expanded]);
+
+  const toggle = (event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setExpanded((prev) => !prev);
+  };
+
+  return (
+    <Box
+      key={isPresentationHtml ? undefined : blockKey}
+      sx={{ position: 'relative', my: isPresentationHtml ? 0 : 2, maxWidth: '100%', minWidth: 0 }}
+    >
+      <Box
+        sx={{
+          backgroundColor: '#1e1e1e',
+          borderRadius: 1,
+          p: 0,
+          position: 'relative',
+          overflow: 'hidden',
+          maxWidth: '100%',
+          minWidth: 0,
+        }}
+      >
+        <Box
+          sx={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            px: 2,
+            py: 1,
+            backgroundColor: '#2d2d30',
+            borderBottom: '1px solid #3e3e42',
+          }}
+        >
+          <Typography
+            variant="caption"
+            sx={{
+              color: '#cccccc',
+              fontFamily: 'monospace',
+              textTransform: 'uppercase',
+              fontSize: '0.75rem',
+              fontWeight: 'bold',
+            }}
+          >
+            {language}
+          </Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25 }}>
+            <Tooltip title={copiedCode === code ? '✓ Скопировано!' : 'Копировать код'}>
+              <IconButton
+                size="small"
+                onClick={() => onCopy(code)}
+                sx={{
+                  color: '#cccccc',
+                  transition: 'all 0.2s',
+                  '&:hover': {
+                    backgroundColor: 'rgba(255,255,255,0.1)',
+                    color: '#4ec9b0',
+                  },
+                }}
+              >
+                {copiedCode === code ? (
+                  <CheckIcon fontSize="small" sx={{ color: '#4ec9b0' }} />
+                ) : (
+                  <CopyIcon fontSize="small" />
+                )}
+              </IconButton>
+            </Tooltip>
+            <Tooltip title="Скачать файл">
+              <IconButton
+                size="small"
+                onClick={() => onDownload(code, language)}
+                sx={{
+                  color: '#cccccc',
+                  transition: 'all 0.2s',
+                  '&:hover': {
+                    backgroundColor: 'rgba(255,255,255,0.1)',
+                    color: '#4ec9b0',
+                  },
+                }}
+              >
+                <DownloadIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          </Box>
+        </Box>
+
+        <Box
+          sx={{
+            cursor: 'text',
+            userSelect: 'text',
+            position: 'relative',
+            maxWidth: '100%',
+            minWidth: 0,
+            overflowX: 'auto',
+            '& .monaco-editor': {
+              maxWidth: '100% !important',
+            },
+            '& .monaco-editor .margin': {
+              backgroundColor: '#1e1e1e',
+            },
+            '& .monaco-editor .margin-view-overlays .line-numbers': {
+              width: '100% !important',
+              textAlign: 'right',
+              paddingRight: '8px',
+              boxSizing: 'border-box',
+            },
+          }}
+        >
+          {isStreaming ? (
+            <Box
+              component="pre"
+              sx={{
+                m: 0,
+                px: 2,
+                py: 1.5,
+                color: '#c8c8c8',
+                fontFamily: 'Consolas, "Courier New", monospace',
+                fontSize: '0.85rem',
+                lineHeight: 1.6,
+                background: '#1e1e1e',
+                overflow: 'auto',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-all',
+                height: `${editorHeight}px`,
+                maxHeight: isExpanded || !canCollapse ? undefined : COLLAPSED_CODE_HEIGHT,
+              }}
+            >
+              {code}
+            </Box>
+          ) : (
+            <Editor
+              height={`${editorHeight}px`}
+              language={editorLanguage}
+              value={code}
+              path={editorPath}
+              theme="memo-monaco-dark"
+              loading={
+                <Box
+                  component="pre"
+                  sx={{
+                    m: 0,
+                    px: 2,
+                    py: 1.5,
+                    color: '#c8c8c8',
+                    fontFamily: 'Consolas, "Courier New", monospace',
+                    fontSize: '0.85rem',
+                    lineHeight: 1.6,
+                    background: '#1e1e1e',
+                    overflow: needsInnerScroll ? 'auto' : 'hidden',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-all',
+                    height: `${editorHeight}px`,
+                  }}
+                >
+                  {code}
+                </Box>
+              }
+              beforeMount={(monaco) => {
+                monaco.editor.defineTheme('memo-monaco-dark', {
+                  base: 'vs-dark',
+                  inherit: true,
+                  rules: [],
+                  colors: {
+                    'editor.background': '#1e1e1e',
+                    'editor.selectionBackground': '#3b6ea899',
+                    'editor.inactiveSelectionBackground': '#3b6ea855',
+                    'editor.selectionHighlightBackground': '#4e7fbf55',
+                    'editor.wordHighlightBackground': '#6f6f6f40',
+                    'editor.wordHighlightStrongBackground': '#4e7fbf66',
+                    'editor.lineHighlightBackground': '#2a2d2e66',
+                    'editorGutter.background': '#1e1e1e',
+                    'editorLineNumber.foreground': '#6a9955',
+                    'editorLineNumber.activeForeground': '#b5cea8',
+                  },
+                });
+              }}
+              onMount={(editor) => {
+                editorRef.current = editor;
+                requestAnimationFrame(() => {
+                  editor.layout();
+                  requestAnimationFrame(() => editor.layout());
+                });
+              }}
+              options={{
+                readOnly: true,
+                readOnlyMessage: { value: 'Код только для чтения' },
+                minimap: { enabled: false },
+                contextmenu: true,
+                folding: true,
+                foldingStrategy: 'auto',
+                glyphMargin: false,
+                lineNumbers: codeLineCount > 5 ? 'on' : 'off',
+                lineNumbersMinChars: Math.max(3, String(codeLineCount).length + 1),
+                renderLineHighlight: 'all',
+                scrollBeyondLastLine: false,
+                wordWrap: 'on',
+                wrappingIndent: 'same',
+                occurrencesHighlight: 'singleFile',
+                selectionHighlight: true,
+                matchBrackets: 'always',
+                guides: { indentation: true },
+                cursorStyle: 'line',
+                automaticLayout: !isStreaming,
+                padding: { top: 12, bottom: 12 },
+                fontSize: 14,
+                lineHeight: 22,
+                scrollbar: {
+                  vertical: isPresentationHtml || needsInnerScroll ? 'auto' : 'hidden',
+                  horizontal: isPresentationHtml || needsInnerScroll ? 'auto' : 'hidden',
+                  alwaysConsumeMouseWheel: false,
+                },
+                overviewRulerLanes: 0,
+              }}
+            />
+          )}
+
+          {canCollapse && (
+            <Box
+              sx={{
+                position: 'absolute',
+                left: 0,
+                right: 0,
+                bottom: 0,
+                zIndex: 5,
+                display: 'flex',
+                justifyContent: 'center',
+                alignItems: 'flex-end',
+                pt: expanded ? 0 : 5,
+                pb: 1,
+                background: expanded
+                  ? 'transparent'
+                  : 'linear-gradient(to top, rgba(30,30,30,0.95) 20%, rgba(30,30,30,0))',
+              }}
+            >
+              <Tooltip title={expanded ? 'Свернуть' : 'Развернуть'}>
+                <IconButton
+                  size="small"
+                  onClick={toggle}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                  }}
+                  aria-label={expanded ? 'Свернуть код' : 'Развернуть код'}
+                  sx={{
+                    width: 32,
+                    height: 32,
+                    bgcolor: 'rgba(45, 45, 48, 0.95)',
+                    color: '#cccccc',
+                    border: '1px solid #3e3e42',
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.35)',
+                    '&:hover': {
+                      bgcolor: 'rgba(60, 60, 64, 0.98)',
+                      color: '#4ec9b0',
+                    },
+                  }}
+                >
+                  {expanded ? (
+                    <KeyboardArrowUpIcon fontSize="small" />
+                  ) : (
+                    <KeyboardArrowDownIcon fontSize="small" />
+                  )}
+                </IconButton>
+              </Tooltip>
+            </Box>
+          )}
+        </Box>
+      </Box>
+    </Box>
+  );
+});
+
 const MessageRendererComponent: React.FC<MessageRendererProps> = ({
   content,
   isStreaming = false,
@@ -227,10 +553,15 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
       presentationStickyKeysRef.current.add(key);
       return true;
     }
-    // Не держим presentation «навсегда» после ложного ```html + skill — иначе Excel не вернётся в ArtifactCard.
+    // Пока стрим: раз открыли viewer — не откатываемся на <pre>/Monaco
+    // (ложный негатив на обрезанном HTML / гонке чанков).
+    if (isStreaming && presentationStickyKeysRef.current.has(key)) {
+      return true;
+    }
+    // После стрима переоцениваем: Excel/обычный HTML снова может стать ArtifactCard.
     presentationStickyKeysRef.current.delete(key);
     return false;
-  }, []);
+  }, [isStreaming]);
 
   const sanitizeRawContent = useCallback((raw: string): string => {
     if (!raw) return raw;
@@ -1065,8 +1396,13 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
 
   // Функция для парсинга Markdown
   const parseMarkdown = (text: string) => {
+    // Auto-continue часто дописывает второй ```html — склеиваем в один viewer.
+    const coalesced =
+      presentationExpected || hasGpbSlideClass(text)
+        ? coalescePresentationHtmlInMessage(text)
+        : text;
     // Сначала вырезаем :::artifact — внутри них свои fence ```, обычный split ломается.
-    const rawSegments = splitContentWithArtifacts(text, { messageId, isStreaming });
+    const rawSegments = splitContentWithArtifacts(coalesced, { messageId, isStreaming });
     // Презентация сверху, остальные артефакты (Mermaid/HTML/…) под ней.
     const segments = hoistPresentationArtifacts(rawSegments, (content) =>
       isGpbPresentationHtml(content) ||
@@ -1087,22 +1423,20 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
             </React.Fragment>
           );
         }
-        // GPB-презентация всегда отдельным окном «Презентация», не внутри ArtifactCard —
-        // иначе двойной chrome при включённых артефактах + skill.
+        // Live-спиннер только пока сообщение реально стримится.
+        // Незакрытый :::artifact после обрыва/F5 не должен крутить спиннер вечно.
         const presentationPending = Boolean(isStreaming && !art.closed);
         const stickyKey = `artifact:${art.id || art.identifier || segIndex}`;
         let isPresentationArtifact =
           isGpbPresentationHtml(art.content) ||
-          (presentationPending &&
+          (isStreaming &&
             presentationExpected &&
-            isGpbPresentationStreaming(art.content || '')) ||
-          (presentationPending &&
-            presentationExpected &&
-            artifactMetaLooksLikePresentation({
-              title: art.title,
-              identifier: art.identifier,
-              type: art.type,
-            }));
+            (isGpbPresentationStreaming(art.content || '') ||
+              artifactMetaLooksLikePresentation({
+                title: art.title,
+                identifier: art.identifier,
+                type: art.type,
+              })));
         isPresentationArtifact = markPresentationSticky(stickyKey, isPresentationArtifact);
         if (isPresentationArtifact) {
           return (
@@ -1307,8 +1641,14 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
 
       // Обычный HTML (диаграммы, страницы) → inline-артефакт, НЕ presentation viewer.
       // Presentation viewer: GPB-слайды ИЛИ skill презентации у агента/в чате (сразу со стрима).
-      const stickyFenceKey = `fence-html:${messageId || 'msg'}:${index}`;
+      // Ключ без index: при росте текста индексы parts плывут → sticky терялся.
+      const stickyFenceKey = `fence-html:${messageId || 'msg'}:presentation`;
       const langForPresentation = language || editorLanguage;
+      const fenceLooksHtml =
+        isHtmlFenceBlock(codeBlock) ||
+        isHtmlFenceLanguage(language) ||
+        isHtmlFenceLanguage(editorLanguage);
+
       let isPresentationHtml = shouldOpenPresentationViewer(code, {
         isStreaming: Boolean(isStreaming),
         presentationExpected,
@@ -1323,12 +1663,21 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
       ) {
         isPresentationHtml = true;
       }
+      // Обрезанная презентация после complete (нет закрывающего ```) — всё равно viewer.
+      if (!isPresentationHtml && !isStreaming && presentationExpected && isGpbPresentationStreaming(code)) {
+        isPresentationHtml = true;
+      }
+      // Skill презентации + стрим + html-fence: форсируем viewer до появления .slide,
+      // иначе мелькает ArtifactCard/Monaco с сырым HTML.
+      if (
+        !isPresentationHtml &&
+        isStreaming &&
+        presentationExpected &&
+        fenceLooksHtml
+      ) {
+        isPresentationHtml = true;
+      }
       isPresentationHtml = markPresentationSticky(stickyFenceKey, isPresentationHtml);
-
-      const fenceLooksHtml =
-        isHtmlFenceBlock(codeBlock) ||
-        isHtmlFenceLanguage(language) ||
-        isHtmlFenceLanguage(editorLanguage);
 
       // Презентация GPB — единый return ниже (со sourceSlot для кнопки «код»).
 
@@ -1357,11 +1706,12 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
         );
       }
 
-      // Презентация GPB: при стриме — viewer со спиннером сразу (skill агента/чата или признаки слайдов).
-      if (artifactsAllowed && isPresentationHtml && isStreaming) {
+      // Live viewer только при реальном стриме сообщения (не из-за хвоста без ```).
+      const canShowPresentation = Boolean(artifactsAllowed || presentationExpected || viewerAllowed);
+      if (canShowPresentation && isPresentationHtml && isStreaming) {
         return (
           <InlinePresentationViewer
-            key={`presentation-${index}`}
+            key={`presentation-${messageId || 'msg'}`}
             html={code}
             isStreaming
           />
@@ -1387,222 +1737,26 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
       }
 
       const codeEditorBlock = (
-        <Box key={isPresentationHtml ? undefined : index} sx={{ position: 'relative', my: isPresentationHtml ? 0 : 2, maxWidth: '100%', minWidth: 0 }}>
-          <Box
-            sx={{
-              backgroundColor: '#1e1e1e',
-              borderRadius: 1,
-              p: 0,
-              position: 'relative',
-              overflow: 'hidden',
-              maxWidth: '100%',
-              minWidth: 0,
-            }}
-          >
-            {/* Заголовок блока кода */}
-            <Box
-              sx={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                px: 2,
-                py: 1,
-                backgroundColor: '#2d2d30',
-                borderBottom: '1px solid #3e3e42',
-              }}
-            >
-              <Typography
-                variant="caption"
-                sx={{
-                  color: '#cccccc',
-                  fontFamily: 'monospace',
-                  textTransform: 'uppercase',
-                  fontSize: '0.75rem',
-                  fontWeight: 'bold',
-                }}
-              >
-                {language}
-              </Typography>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25 }}>
-                <Tooltip title={copiedCode === code ? '✓ Скопировано!' : 'Копировать код'}>
-                  <IconButton
-                    size="small"
-                    onClick={() => handleCopyCode(code)}
-                    sx={{
-                      color: '#cccccc',
-                      transition: 'all 0.2s',
-                      '&:hover': {
-                        backgroundColor: 'rgba(255,255,255,0.1)',
-                        color: '#4ec9b0',
-                      },
-                    }}
-                  >
-                    {copiedCode === code ? (
-                      <CheckIcon fontSize="small" sx={{ color: '#4ec9b0' }} />
-                    ) : (
-                      <CopyIcon fontSize="small" />
-                    )}
-                  </IconButton>
-                </Tooltip>
-                <Tooltip title="Скачать файл">
-                  <IconButton
-                    size="small"
-                    onClick={() => handleDownloadCode(code, language)}
-                    sx={{
-                      color: '#cccccc',
-                      transition: 'all 0.2s',
-                      '&:hover': {
-                        backgroundColor: 'rgba(255,255,255,0.1)',
-                        color: '#4ec9b0',
-                      },
-                    }}
-                  >
-                    <DownloadIcon fontSize="small" />
-                  </IconButton>
-                </Tooltip>
-              </Box>
-            </Box>
-
-            {/* Код с подсветкой синтаксиса */}
-            <Box
-              sx={{
-                cursor: 'text',
-                userSelect: 'text',
-                position: 'relative',
-                maxWidth: '100%',
-                minWidth: 0,
-                overflowX: 'auto',
-                '& .monaco-editor': {
-                  maxWidth: '100% !important',
-                },
-                '& .monaco-editor .margin': {
-                  backgroundColor: '#1e1e1e',
-                },
-                '& .monaco-editor .margin-view-overlays .line-numbers': {
-                  width: '100% !important',
-                  textAlign: 'right',
-                  paddingRight: '8px',
-                  boxSizing: 'border-box',
-                },
-              }}
-            >
-              {isStreaming ? (
-                <Box
-                  component="pre"
-                  sx={{
-                    m: 0,
-                    px: 2,
-                    py: 1.5,
-                    color: '#c8c8c8',
-                    fontFamily: 'Consolas, "Courier New", monospace',
-                    fontSize: '0.85rem',
-                    lineHeight: 1.6,
-                    background: '#1e1e1e',
-                    overflow: 'auto',
-                    whiteSpace: 'pre-wrap',
-                    wordBreak: 'break-all',
-                    height: `${Math.min(editorHeight, 480)}px`,
-                    maxHeight: 480,
-                  }}
-                >
-                  {code}
-                </Box>
-              ) : (
-              <Editor
-                height={`${editorHeight}px`}
-                language={editorLanguage}
-                value={code}
-                path={editorPath}
-                theme="memo-monaco-dark"
-                loading={
-                  <Box
-                    component="pre"
-                    sx={{
-                      m: 0,
-                      px: 2,
-                      py: 1.5,
-                      color: '#c8c8c8',
-                      fontFamily: 'Consolas, "Courier New", monospace',
-                      fontSize: '0.85rem',
-                      lineHeight: 1.6,
-                      background: '#1e1e1e',
-                      overflow: 'hidden',
-                      whiteSpace: 'pre-wrap',
-                      wordBreak: 'break-all',
-                      height: `${editorHeight}px`,
-                    }}
-                  >
-                    {code}
-                  </Box>
-                }
-                beforeMount={(monaco) => {
-                  monaco.editor.defineTheme('memo-monaco-dark', {
-                    base: 'vs-dark',
-                    inherit: true,
-                    rules: [],
-                    colors: {
-                      'editor.background': '#1e1e1e',
-                      'editor.selectionBackground': '#3b6ea899',
-                      'editor.inactiveSelectionBackground': '#3b6ea855',
-                      'editor.selectionHighlightBackground': '#4e7fbf55',
-                      'editor.wordHighlightBackground': '#6f6f6f40',
-                      'editor.wordHighlightStrongBackground': '#4e7fbf66',
-                      'editor.lineHighlightBackground': '#2a2d2e66',
-                      'editorGutter.background': '#1e1e1e',
-                      'editorLineNumber.foreground': '#6a9955',
-                      'editorLineNumber.activeForeground': '#b5cea8',
-                    },
-                  });
-                }}
-                onMount={(editor) => {
-                  // После открытия Collapse Monaco часто остаётся с нулевым viewport.
-                  requestAnimationFrame(() => {
-                    editor.layout();
-                    requestAnimationFrame(() => editor.layout());
-                  });
-                }}
-                options={{
-                  readOnly: true,
-                  readOnlyMessage: { value: 'Код только для чтения' },
-                  minimap: { enabled: false },
-                  contextmenu: true,
-                  folding: true,
-                  foldingStrategy: 'auto',
-                  glyphMargin: false,
-                  lineNumbers: codeLineCount > 5 ? 'on' : 'off',
-                  lineNumbersMinChars: Math.max(3, String(codeLineCount).length + 1),
-                  renderLineHighlight: 'all',
-                  scrollBeyondLastLine: false,
-                  wordWrap: 'on',
-                  wrappingIndent: 'same',
-                  occurrencesHighlight: 'singleFile',
-                  selectionHighlight: true,
-                  matchBrackets: 'always',
-                  guides: { indentation: true },
-                  cursorStyle: 'line',
-                  automaticLayout: !isStreaming,
-                  padding: { top: 12, bottom: 12 },
-                  fontSize: 14,
-                  lineHeight: 22,
-                  scrollbar: {
-                    vertical: isPresentationHtml ? 'auto' : 'hidden',
-                    horizontal: isPresentationHtml ? 'auto' : 'hidden',
-                    alwaysConsumeMouseWheel: false,
-                  },
-                  overviewRulerLanes: 0,
-                }}
-              />
-              )}
-            </Box>
-          </Box>
-        </Box>
+        <CollapsibleCodeBlock
+          key={isPresentationHtml ? undefined : index}
+          blockKey={index}
+          code={code}
+          language={language}
+          editorLanguage={editorLanguage}
+          editorPath={editorPath}
+          codeLineCount={codeLineCount}
+          fullEditorHeight={editorHeight}
+          isStreaming={isStreaming}
+          isPresentationHtml={isPresentationHtml}
+          copiedCode={copiedCode}
+          onCopy={handleCopyCode}
+          onDownload={handleDownloadCode}
+        />
       );
-
-      // Готовая презентация — viewer в чате, HTML по кнопке «код».
-      if (artifactsAllowed && isPresentationHtml) {
+      if ((artifactsAllowed || presentationExpected || viewerAllowed) && isPresentationHtml) {
         return (
           <InlinePresentationViewer
-            key={`presentation-${index}`}
+            key={`presentation-${messageId || 'msg'}`}
             html={code}
             isStreaming={false}
             sourceSlot={codeEditorBlock}

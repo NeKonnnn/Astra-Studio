@@ -442,6 +442,34 @@ class MemoryRagVectorRepository:
             )
         return [r["document_id"] for r in rows]
 
+    async def bm25_store_load(self, cache_key: str):
+        """Отпечаток корпуса Библиотеки и готовый индекс, если он свежий.
+
+        Скоупа здесь нет: Библиотека одна общая, её корпус - вся таблица.
+        """
+        from app.database import bm25_store
+
+        async with await self.db.acquire() as conn:
+            return await bm25_store.load(
+                conn,
+                cache_key=cache_key,
+                vectors_table=await self._table(conn),
+            )
+
+    async def bm25_store_save(
+        self, cache_key: str, fingerprint: str, payload: bytes, chunk_count: int
+    ) -> None:
+        from app.database import bm25_store
+
+        async with await self.db.acquire() as conn:
+            await bm25_store.save(
+                conn,
+                cache_key=cache_key,
+                fingerprint=fingerprint,
+                payload=payload,
+                chunk_count=chunk_count,
+            )
+
     async def get_all_contents_for_bm25(self) -> List[Tuple[int, int, str]]:
         """Возвращает (document_id, chunk_index, content) для всех чанков memory — для BM25."""
         async with await self.db.acquire() as conn:

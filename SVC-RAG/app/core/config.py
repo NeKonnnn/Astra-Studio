@@ -272,10 +272,18 @@ def _apply_rag_env_overrides(data: dict) -> dict:
     удобно крутить на поде без пересборки образа
     """
     overrides = {
+        "RAG_MEMPROBE": ("memprobe", lambda v: str(v).strip().lower()),
         "RAG_HYBRID_MAX_CHUNKS_PER_DOCUMENT": ("hybrid_max_chunks_per_document", int),
         "RAG_VECTOR_MAX_CHUNKS_PER_DOCUMENT": ("vector_max_chunks_per_document", int),
-        # Ручка на случай нехватки памяти. 
-        "RAG_BM25_INDEX_CACHE_SIZE": ("bm25_index_cache_size", int),
+        "RAG_BM25_RETAIN_SECONDS": ("bm25_retain_seconds", float),
+        "RAG_BM25_STORE_ENABLED": (
+            "bm25_store_enabled",
+            lambda v: str(v).strip().lower() == "true",
+        ),
+        "RAG_BM25_MALLOC_TRIM": (
+            "bm25_malloc_trim",
+            lambda v: str(v).strip().lower() == "true",
+        ),
     }
     out = dict(data)
     rag = dict(out.get("rag") or {})
@@ -467,19 +475,28 @@ class RagServiceConfig(BaseModel):
         os.environ.get("RAG_VECTOR_MAX_CHUNKS_PER_DOCUMENT", "0")
     )
 
-    # Сколько BM25-индексов держать в памяти одновременно. Индекс строится на
-    # (набор документов, размерность) и живёт в синглтоне сервиса, то есть до
-    # перезапуска пода: без предела каждый когда-либо искавшийся агент или
-    # проект держал бы свой корпус в RAM навсегда. Вытесненный собирается
-    # заново при следующем обращении.
-    #
-    # Считать так: размер типичного индекса умножить на это число.
-    #   3 тыс. чанков (30 файлов по 100)  ~  6 МБ
-    #   20 тыс. чанков                    ~ 40 МБ
-    #   50 тыс. чанков                    ~ 100 МБ
-    # Значение подбирают под число сущностей: лучше, чтобы все рабочие агенты
-    # и проекты помещались, иначе кэш начнёт перестраивать их по кругу.
-    bm25_index_cache_size: int = int(os.environ.get("RAG_BM25_INDEX_CACHE_SIZE", "32"))
+    # Хранить готовые BM25-индексы в Postgres и отпускать их из памяти
+    # false - прежнее поведение: собирать из текста и держать в памяти.
+    # ENV перекрывает: RAG_BM25_STORE_ENABLED
+    bm25_store_enabled: bool = (
+        os.environ.get("RAG_BM25_STORE_ENABLED", "true").lower() == "true"
+    )
+
+    # Подробный учёт памяти в лог DEBUG: кто сколько занял и сколько вернул.
+    # ENV перекрывает: RAG_MEMPROBE
+    memprobe: str = os.environ.get("RAG_MEMPROBE", "on").strip().lower()
+
+    # Сколько секунд держать индекс после последнего поиска по нему.
+    # ENV перекрывает: RAG_BM25_RETAIN_SECONDS
+    bm25_retain_seconds: float = float(
+        os.environ.get("RAG_BM25_RETAIN_SECONDS", "2")
+    )
+
+    # Возвращать ли ядру память отпущенного индекса сразу (glibc malloc_trim).
+    # ENV перекрывает: RAG_BM25_MALLOC_TRIM
+    bm25_malloc_trim: bool = (
+        os.environ.get("RAG_BM25_MALLOC_TRIM", "true").lower() == "true"
+    )
 
     # Реранкинг через SVC-RAG-MODELS
     use_reranking: bool = os.environ.get("RAG_USE_RERANKING", "false").lower() == "true"

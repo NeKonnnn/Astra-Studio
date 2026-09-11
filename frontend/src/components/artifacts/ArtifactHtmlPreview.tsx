@@ -2,19 +2,17 @@ import React, { useMemo } from 'react';
 import { Box } from '@mui/material';
 import {
   isGpbPresentationHtml,
-  isGpbPresentationStreaming,
 } from '../../utils/presentationViewer';
-import { rewriteHtmlArtifactScriptsForOffline } from '../../utils/htmlArtifactScripts';
+import {
+  escapeHtmlForSrcDoc,
+  rewriteHtmlArtifactScriptsForOffline,
+} from '../../utils/htmlArtifactScripts';
 import { useCommittedContent } from '../../hooks/useCommittedContent';
 import InlinePresentationViewer from '../InlinePresentationViewer';
 
-function escapeForSrcDoc(html: string): string {
-  return html.replace(/<\/script/gi, '<\\/script');
-}
-
 function buildGenericHtmlSrcDoc(rawHtml: string): string {
   const rewritten = rewriteHtmlArtifactScriptsForOffline(rawHtml || '');
-  const html = escapeForSrcDoc(rewritten);
+  const html = escapeHtmlForSrcDoc(rewritten);
   const looksComplete =
     /<!doctype/i.test(html) || /<html[\s>]/i.test(html);
   if (looksComplete) {
@@ -41,14 +39,12 @@ interface Props {
 }
 
 export default function ArtifactHtmlPreview({ content, isStreaming = false }: Props) {
-  // Во время стрима — chrome презентации сразу (спиннер), не сырой HTML/код.
-  const isPresentation =
-    isGpbPresentationHtml(content) ||
-    (isStreaming && isGpbPresentationStreaming(content));
-
-  // Chart.js/iframe: не пересоздаём документ на каждый токен.
-  const committed = useCommittedContent(content || '', isStreaming, 500);
-  const srcDoc = useMemo(() => buildGenericHtmlSrcDoc(committed), [committed]);
+  const isPresentation = isGpbPresentationHtml(content);
+  const committed = useCommittedContent(content || '', isStreaming, isStreaming ? 1200 : 500);
+  const srcDoc = useMemo(
+    () => (isPresentation || isStreaming ? '' : buildGenericHtmlSrcDoc(committed)),
+    [committed, isStreaming, isPresentation],
+  );
 
   if (isPresentation) {
     return (
@@ -56,6 +52,11 @@ export default function ArtifactHtmlPreview({ content, isStreaming = false }: Pr
         <InlinePresentationViewer html={content} isStreaming={isStreaming} embedded />
       </Box>
     );
+  }
+
+  // На стриме iframe не монтируем (reload srcdoc → Virtuoso #185); статус — только в шапке карточки.
+  if (isStreaming) {
+    return <Box sx={{ width: '100%', height: '100%', minHeight: 240, bgcolor: '#e8eaed' }} />;
   }
 
   return (

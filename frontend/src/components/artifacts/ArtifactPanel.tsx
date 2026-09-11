@@ -7,8 +7,6 @@ import {
   Tabs,
   Tooltip,
   Typography,
-  Snackbar,
-  Alert,
 } from '@mui/material';
 import {
   Close as CloseIcon,
@@ -18,7 +16,9 @@ import {
 } from '@mui/icons-material';
 import Editor from '@monaco-editor/react';
 import { useArtifactContext } from '../../contexts/ArtifactContext';
+import { useAppActions } from '../../contexts/AppContext';
 import { artifactTypeLabel, guessCodeLanguage } from '../../utils/artifacts';
+import { STATUS_TOAST_MESSAGES } from '../../constants/statusToast';
 import ArtifactPreview from './ArtifactPreview';
 
 const PANEL_WIDTH = 480;
@@ -45,7 +45,7 @@ function extensionForType(type: string): string {
 
 export default function ArtifactPanel() {
   const { current, isOpen, tab, setTab, closeArtifact, updateArtifact } = useArtifactContext();
-  const [copyOk, setCopyOk] = useState(false);
+  const { showNotification } = useAppActions();
   const [previewKey, setPreviewKey] = useState(0);
 
   const language = useMemo(
@@ -57,11 +57,11 @@ export default function ArtifactPanel() {
     if (!current) return;
     try {
       await navigator.clipboard.writeText(current.content || '');
-      setCopyOk(true);
+      showNotification('success', STATUS_TOAST_MESSAGES.COPY_SUCCESS_SHORT);
     } catch {
-      /* ignore */
+      showNotification('error', STATUS_TOAST_MESSAGES.COPY_FAILED);
     }
-  }, [current]);
+  }, [current, showNotification]);
 
   const handleDownload = useCallback(() => {
     if (!current) return;
@@ -172,12 +172,6 @@ export default function ArtifactPanel() {
           </Box>
         </Box>
       </Drawer>
-
-      <Snackbar open={copyOk} autoHideDuration={1800} onClose={() => setCopyOk(false)}>
-        <Alert severity="success" onClose={() => setCopyOk(false)} sx={{ width: '100%' }}>
-          Скопировано
-        </Alert>
-      </Snackbar>
     </>
   );
 }

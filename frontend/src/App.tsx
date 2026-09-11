@@ -41,6 +41,7 @@ import ShareViewPage from './pages/ShareViewPage';
 import { initSettings } from './settings';
 import LlmStatusBanner from './components/LlmStatusBanner';
 import RagReindexStatusBanner from './components/RagReindexStatusBanner';
+import StatusToastHost from './components/StatusToastHost';
 import { RagReindexStatusProvider } from './contexts/RagReindexStatusContext';
 import PluginRunBanner from './components/PluginRunBanner';
 import { PluginRunProvider } from './contexts/PluginRunContext';
@@ -231,6 +232,8 @@ function App() {
 
   useEffect(() => {
     localStorage.setItem('gazikii-dark-mode', JSON.stringify(isDarkMode));
+    // Дефолтный цвет панелей зависит от темы — обновляем слушателей.
+    window.dispatchEvent(new CustomEvent('sidebarColorChanged'));
   }, [isDarkMode]);
 
   useEffect(() => {
@@ -308,6 +311,7 @@ function App() {
           <Router>
             <RagReindexStatusProvider>
               <RagReindexStatusBanner />
+              <StatusToastHost />
               <PluginRunProvider>
               <PluginRunBanner />
               <SocketProvider>

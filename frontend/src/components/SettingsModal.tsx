@@ -132,7 +132,7 @@ export default function SettingsModal({ open, onClose, isDarkMode, onToggleTheme
       case 'profile':
         return <ProfileSettings />;
       case 'interface':
-        return <InterfaceSettings />;
+        return <InterfaceSettings isDarkMode={isDarkMode} />;
       case 'models':
         return <ModelsSettings />;
       case 'rag':

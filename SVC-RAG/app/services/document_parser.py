@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import os
 import re
 from io import BytesIO
 from typing import Any, Dict, List, Optional
@@ -66,6 +68,13 @@ try:
 except ImportError:
     PIL_AVAILABLE = False
 
+try:
+    from pptx import Presentation  # noqa: F401
+
+    PPTX_AVAILABLE = True
+except ImportError:
+    PPTX_AVAILABLE = False
+
 
 def _create_confidence_info_for_text(text: str, confidence_per_word: float, file_type: str) -> Dict[str, Any]:
     """Создаёт структуру confidence_info, совместимую с backend."""
@@ -111,6 +120,215 @@ async def _call_ocr_service(image_bytes: bytes, filename: str, languages: str = 
     except Exception as e:
         logger.error("Ошибка OCR при обращении к %s: %s", ocr_url, e)
         raise
+
+
+
+_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
+
+
+def empty_document_index_error(
+    parsed: Optional[Dict[str, Any]], filename: str = ""
+) -> str:
+    """Текст 422, когда парсер вернул пустой text (особенно для фото/OCR)."""
+    conf: Dict[str, Any] = {}
+    if isinstance(parsed, dict):
+        raw = parsed.get("confidence_info")
+        if isinstance(raw, dict):
+            conf = raw
+    err = conf.get("error")
+    if err:
+        return f"OCR изображения: {err}"
+    ftype = ""
+    if isinstance(parsed, dict):
+        ftype = str(parsed.get("file_type") or conf.get("file_type") or "").lower()
+    name = (filename or "").lower()
+    is_image = ftype == "image" or any(name.endswith(ext) for ext in _IMAGE_EXTS)
+    if is_image:
+        return (
+            "Не удалось распознать текст на изображении. "
+            "Проверьте доступность SVC-OCR (ocr.url) и загрузите фото с читаемым текстом."
+        )
+    return "Документ пустой"
+
+
+def _mupdf_store_shrink() -> None:
+    """Опустошить кэш распакованных объектов MuPDF (общий на процесс)."""
+    if not PYMUPDF_AVAILABLE:
+        return
+    try:
+        tools = getattr(fitz, "TOOLS", None)
+        if tools is None or not hasattr(tools, "store_shrink"):
+            return
+        before = int(getattr(tools, "store_size", 0) or 0)
+        tools.store_shrink(100)
+        after = int(getattr(tools, "store_size", 0) or 0)
+        logger.debug(
+            "MuPDF: кэш сброшен, %s -> %s байт (освободили %s)",
+            before,
+            after,
+            before - after,
+        )
+    except Exception as e:
+        logger.debug("MuPDF: сбросить кэш не вышло (%s)", e)
+
+
+def _pdf_image_blobs(file_data: bytes) -> List[bytes]:
+    """Встроенные изображения страниц PDF (для OCR) через PyMuPDF.
+
+    Гибридный PDF: хороший текстовый слой + скриншоты/сканы фрагментов.
+    Мелкие иконки отсекаются по площади, дедуп по xref.
+    """
+    if not PYMUPDF_AVAILABLE:
+        return []
+    min_area = int(os.getenv("RAG_OCR_IMAGE_MIN_AREA", "12000"))  # ~110x110
+    max_imgs = int(os.getenv("RAG_MAX_OCR_IMAGES_PER_DOC", "50"))
+    try:
+        doc = fitz.open(stream=file_data, filetype="pdf")
+        out: List[bytes] = []
+        seen = set()
+        for _i in range(doc.page_count):
+            page = doc.load_page(_i)
+            try:
+                infos = page.get_images(full=True) or []
+            except Exception:
+                continue
+            for info in infos:
+                xref = int(info[0] if isinstance(info, (tuple, list)) else (info.get("xref") or 0))
+                if not xref or xref in seen:
+                    continue
+                seen.add(xref)
+                if isinstance(info, (tuple, list)):
+                    w = int(info[2] or 0)
+                    h = int(info[3] or 0)
+                else:
+                    w = int(info.get("width") or 0)
+                    h = int(info.get("height") or 0)
+                if w and h and w * h < min_area:
+                    continue
+                if len(out) >= max_imgs:
+                    doc.close()
+                    return out
+                try:
+                    im = doc.extract_image(xref)
+                    blob = im.get("image") or b""
+                    if blob:
+                        out.append(blob)
+                except Exception:
+                    continue
+        doc.close()
+        return out
+    except Exception as e:
+        logger.warning("PDF: не удалось извлечь изображения: %s", e)
+        return []
+
+
+def _pptx_table_to_markdown(table) -> str:
+    """Таблица pptx -> markdown-pipe строки."""
+    lines = []
+    for r_idx, row in enumerate(table.rows):
+        cells = []
+        prev_cell = None
+        for cell in row.cells:
+            if cell is prev_cell:
+                continue
+            prev_cell = cell
+            cells.append(" ".join((cell.text or "").split()))
+        if not any(cells):
+            continue
+        lines.append("| " + " | ".join(cells) + " |")
+        if r_idx == 0 and len(table.rows) > 1:
+            lines.append("|" + " --- |" * len(cells))
+    return "\n".join(lines)
+
+
+async def extract_text_from_pptx(file_data: bytes) -> str:
+    """PPTX: текст/таблицы слайдов + OCR картинок через SVC-OCR (Surya)."""
+    if not PPTX_AVAILABLE:
+        raise RuntimeError("python-pptx не установлен")
+
+    def _collect():
+        from pptx import Presentation
+
+        prs = Presentation(BytesIO(file_data))
+        max_imgs = int(os.getenv("RAG_MAX_OCR_IMAGES_PER_DOC", "50"))
+        per_slide: List[List[tuple]] = []
+        img_items: List[tuple] = []
+        for si, slide in enumerate(prs.slides, 1):
+            items: List[tuple] = []
+            for idx, shape in enumerate(slide.shapes):
+                try:
+                    if getattr(shape, "has_table", False):
+                        md = _pptx_table_to_markdown(shape.table)
+                        if md:
+                            items.append(("text", md))
+                        continue
+                except Exception:
+                    pass
+                try:
+                    if getattr(shape, "has_text_frame", False):
+                        t = (shape.text_frame.text or "").strip()
+                        if t:
+                            items.append(("text", t))
+                except Exception:
+                    pass
+                try:
+                    if int(shape.shape_type) == 13:  # PICTURE
+                        blob = shape.image.blob
+                        if blob:
+                            if len(img_items) < max_imgs:
+                                name = f"slide{si}_s{idx}.png"
+                                items.append(("img", name))
+                                img_items.append((name, blob))
+                            else:
+                                logger.warning(
+                                    "PPTX: лимит картинок %s превышен — дальше без OCR",
+                                    max_imgs,
+                                )
+                except Exception:
+                    pass
+            per_slide.append(items)
+        notes: List[str] = []
+        for slide in prs.slides:
+            try:
+                notes.append(
+                    (
+                        slide.notes_slide.notes_text_frame.text
+                        if slide.has_notes_slide
+                        else ""
+                    )
+                    or ""
+                )
+            except Exception:
+                notes.append("")
+        return per_slide, img_items, notes
+
+    per_slide, img_items, notes = await asyncio.to_thread(_collect)
+
+    ocr_by_name: Dict[str, str] = {}
+    for name, blob in img_items:
+        try:
+            res = await _call_ocr_service(blob, name, languages="ru,en")
+            t = (res.get("text") or "").strip() if isinstance(res, dict) else ""
+            if t:
+                ocr_by_name[name] = t
+        except Exception as e:
+            logger.warning("PPTX: OCR картинки %s пропущена: %s", name, e)
+
+    parts = []
+    for si, items in enumerate(per_slide, 1):
+        slide_parts = [f"[Слайд {si}]"]
+        for kind, value in items:
+            if kind == "text":
+                slide_parts.append(value)
+            else:
+                t = (ocr_by_name.get(value) or "").strip()
+                if t:
+                    slide_parts.append(f"[Текст с изображения (OCR)]: {t}")
+        nt = notes[si - 1].strip() if si - 1 < len(notes) else ""
+        if nt:
+            slide_parts.append(f"[Заметки докладчика]: {nt}")
+        parts.append("\n\n".join(slide_parts))
+    return "\n\n".join(parts)
 
 
 def _docx_table_to_markdown(table) -> str:
@@ -369,6 +587,23 @@ async def extract_text_from_pdf_bytes(file_data: bytes) -> Dict[str, Any]:
         except Exception as e:
             logger.warning("PDF: OCR недоступен или сбой (poppler/pdf2image/ocr-service): %s", e)
 
+
+    # Гибридный PDF: хороший текстовый слой + встроенные картинки (скриншоты).
+    # Сканы целиком уже обработаны полным OCR выше — здесь только text+images.
+    if text.strip() and not weak_layer:
+        try:
+            img_blobs = await asyncio.to_thread(_pdf_image_blobs, file_data)
+            _mupdf_store_shrink()
+            img_text = await _ocr_office_images(img_blobs, "document.pdf")
+            if img_text:
+                text = (text + "\n\n" + img_text) if text.strip() else img_text
+                logger.info(
+                    "PDF: гибридный — добавлен OCR-текст %s встроенных картинок",
+                    len(img_blobs) if img_blobs else 0,
+                )
+        except Exception as e:
+            logger.warning("PDF: OCR встроенных картинок не удался: %s", e)
+
     if text.strip() and not confidence_scores:
         confidence_scores = [95.0] * max(1, n_pages or 1)
 
@@ -451,11 +686,10 @@ async def extract_text_from_image_bytes(file_data: bytes) -> Dict[str, Any]:
         }
 
     img = Image.open(BytesIO(file_data)).convert("RGB")
-    filename = "image.jpg"
-    if img.format:
-        filename = f"image.{img.format.lower()}"
+    # После convert() у Image.format обычно None; ниже всегда шлём PNG.
+    filename = "image.png"
 
-    print(f"DEBUG: Изображение открыто, формат: {img.format}, размер: {img.size}")
+    print(f"DEBUG: Изображение открыто, размер: {img.size}")
 
     # Увеличиваем маленькие изображения, как в backend
     min_side = 1024
@@ -563,6 +797,19 @@ async def parse_document(file_data: bytes, filename: str) -> Optional[Dict[str, 
         }
     if ext == ".pdf":
         return await extract_text_from_pdf_bytes(file_data)
+    if ext in (".pptx", ".pptm"):
+        if not PPTX_AVAILABLE:
+            logger.warning("Парсинг .pptx/.pptm: python-pptx не установлен")
+            return None
+        try:
+            text = await extract_text_from_pptx(file_data)
+        except Exception as e:
+            logger.error("Ошибка парсинга .pptx/.pptm: %s", e)
+            return None
+        return {
+            "text": text,
+            "confidence_info": _create_confidence_info_for_text(text, 100.0, "pptx"),
+        }
     if ext in (".xlsx", ".xlsm"):
         if not OPENPYXL_AVAILABLE:
             logger.warning("Парсинг .xlsx/.xlsm: openpyxl не установлен")

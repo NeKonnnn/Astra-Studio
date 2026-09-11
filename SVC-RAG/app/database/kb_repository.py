@@ -696,6 +696,47 @@ class KbVectorRepository:
                 )
         return [(r["document_id"], r["chunk_index"], r["content"]) for r in rows]
 
+    async def bm25_store_load(
+        self, cache_key: str, document_ids: Optional[List[int]] = None
+    ):
+        """Отпечаток корпуса и готовый индекс из хранилища, если он свежий.
+
+        Одним запросом: отпечаток и блоб должны браться атомарно, иначе
+        документ, изменённый ровно между ними, дал бы устаревший индекс,
+        принятый за свежий.
+        """
+        from app.database import bm25_store
+
+        async with await self.db.acquire() as conn:
+            table = await self._table(conn)
+            logger.debug("BM25 store: table=%r repr_bytes=%r", table, table.encode("utf-8"))
+            if document_ids:
+                where = "WHERE v.document_id = ANY($1::int[])"
+                params = [[int(d) for d in document_ids if d is not None]]
+            else:
+                where, params = "", []
+            return await bm25_store.load(
+                conn,
+                cache_key=cache_key,
+                vectors_table=table,
+                scope_where=where,
+                scope_params=params,
+            )
+
+    async def bm25_store_save(
+        self, cache_key: str, fingerprint: str, payload: bytes, chunk_count: int
+    ) -> None:
+        from app.database import bm25_store
+
+        async with await self.db.acquire() as conn:
+            await bm25_store.save(
+                conn,
+                cache_key=cache_key,
+                fingerprint=fingerprint,
+                payload=payload,
+                chunk_count=chunk_count,
+            )
+
     async def get_vector_by_document_and_chunk(self, document_id: int, chunk_index: int) -> Optional[DocumentVector]:
         """Точечный запрос одного вектора по (document_id, chunk_index)."""
         row = None

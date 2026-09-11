@@ -1,12 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Box, IconButton, Typography } from '@mui/material';
-import { Close as CloseIcon } from '@mui/icons-material';
 import { getApiUrl } from '../config/api';
 import { getSettings, initSettings } from '../settings';
-import { TOP_ERROR_BANNER_AUTO_DISMISS_MS } from './TopErrorBanner';
+import { STATUS_TOAST_AUTO_DISMISS_MS } from '../constants/statusToast';
+import StatusToast from './StatusToast';
 
 /**
- * Плашка сверху (как в Qwen UI), если бэкенд сообщает, что до LLM (llm-svc) достучаться нельзя.
+ * Красный StatusToast сверху, если бэкенд сообщает, что до LLM (llm-svc) достучаться нельзя.
  * URL сервиса моделей фронт не знает — только GET /api/llm/status.
  */
 export default function LlmStatusBanner() {
@@ -74,58 +73,21 @@ export default function LlmStatusBanner() {
     };
   }, [dismissed]);
 
-  useEffect(() => {
-    if (!open) return undefined;
-    const timer = window.setTimeout(() => {
-      setOpen(false);
-      setDismissed(true);
-    }, TOP_ERROR_BANNER_AUTO_DISMISS_MS);
-    return () => window.clearTimeout(timer);
-  }, [open, message]);
-
-  if (!open) return null;
+  if (!open || !message) return null;
 
   return (
-    <Box
-      role="alert"
-      sx={{
-        position: 'fixed',
-        top: 12,
-        left: '50%',
-        transform: 'translateX(-50%)',
-        zIndex: (theme) => theme.zIndex.snackbar + 2,
-        maxWidth: 'min(720px, calc(100vw - 24px))',
-        px: 2,
-        py: 1.25,
-        borderRadius: 1,
-        border: '2px solid',
-        borderColor: 'error.main',
-        bgcolor: (theme) =>
-          theme.palette.mode === 'dark' ? 'rgba(183, 28, 28, 0.25)' : 'rgba(211, 47, 47, 0.08)',
-        boxShadow: '0 4px 24px rgba(0,0,0,0.18)',
+    <StatusToast
+      type="error"
+      message={message}
+      onClose={() => {
+        setOpen(false);
+        setDismissed(true);
       }}
-    >
-      <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1 }}>
-        <Typography variant="body2" color="error" sx={{ fontWeight: 600, textAlign: 'center', flex: 1 }}>
-          {message}
-        </Typography>
-        <IconButton
-          size="small"
-          aria-label="Закрыть уведомление о подключении к LLM"
-          onClick={() => {
-            setOpen(false);
-            setDismissed(true);
-          }}
-          sx={{
-            color: 'error.main',
-            mt: -0.5,
-            mr: -0.5,
-            '&:hover': { bgcolor: 'rgba(211, 47, 47, 0.12)' },
-          }}
-        >
-          <CloseIcon fontSize="small" />
-        </IconButton>
-      </Box>
-    </Box>
+      ariaLabel="Закрыть уведомление о подключении к LLM"
+      fixed
+      top={12}
+      zIndexOffset={2}
+      autoDismissMs={STATUS_TOAST_AUTO_DISMISS_MS}
+    />
   );
 }

@@ -35,7 +35,10 @@ import {
   getDropdownItemStateSx,
 } from '../../constants/menuStyles';
 import { useAppActions } from '../../contexts/AppContext';
-import { SIDEBAR_PANEL_COLOR_KEY, DEFAULT_SIDEBAR_GRADIENT } from '../../constants/sidebarPanelColor';
+import {
+  SIDEBAR_PANEL_COLOR_KEY,
+  getDefaultSidebarPanelBackground,
+} from '../../constants/sidebarPanelColor';
 import {
   WORK_ZONE_BG_MODE_KEY,
   WORK_ZONE_BG_CUSTOM_IMAGE_KEY,
@@ -127,9 +130,9 @@ const readImageDimensions = (file: File): Promise<{ width: number; height: numbe
     image.src = objectUrl;
   });
 
-export default function InterfaceSettings() {
+export default function InterfaceSettings({ isDarkMode: isDarkModeProp }: { isDarkMode?: boolean } = {}) {
   const theme = useTheme();
-  const isDarkMode = theme.palette.mode === 'dark';
+  const isDarkMode = isDarkModeProp ?? theme.palette.mode === 'dark';
   const dropdownItemSx = useMemo(() => getDropdownItemSx(isDarkMode), [isDarkMode]);
   const dropdownTriggerSx = useMemo(() => getDropdownTriggerButtonSx(isDarkMode), [isDarkMode]);
   const dropdownTriggerTextSx = useMemo(() => getDropdownTriggerTextSx(isDarkMode), [isDarkMode]);
@@ -1354,7 +1357,7 @@ export default function InterfaceSettings() {
                   width: 48,
                   height: 48,
                   borderRadius: 2,
-                  background: item.value || DEFAULT_SIDEBAR_GRADIENT,
+                  background: item.value || getDefaultSidebarPanelBackground(isDarkMode),
                   cursor: 'pointer',
                   border: '2px solid',
                   borderColor: interfaceSettings.sidebarPanelColor === item.value ? 'primary.main' : 'transparent',

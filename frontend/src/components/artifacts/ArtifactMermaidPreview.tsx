@@ -1,11 +1,21 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
-import { Box, CircularProgress, Typography } from '@mui/material';
+import { Box, Typography } from '@mui/material';
 import {
   prepareMermaidSourceForRender,
   repairMermaidSource,
   sanitizeMermaidSource,
   stripMermaidStyling,
 } from '../../utils/artifacts';
+
+function diagramBodyWithoutInit(code: string): string {
+  return code.replace(/^%%\{[\s\S]*?\}%%\s*/gm, '').trimStart();
+}
+
+function pieChartHasData(code: string): boolean {
+  const body = diagramBodyWithoutInit(code);
+  if (!/^pie\b/im.test(body)) return true;
+  return body.split('\n').some((line) => /^"[^"]+"\s*:\s*-?[\d.]+/.test(line.trim()));
+}
 
 interface Props {
   content: string;
@@ -73,6 +83,7 @@ export default function ArtifactMermaidPreview({ content, isStreaming = false }:
   const reactId = useId().replace(/:/g, '');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const loadingRef = useRef(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -83,7 +94,10 @@ export default function ArtifactMermaidPreview({ content, isStreaming = false }:
       renderId = `mermaid-${reactId}-${Date.now()}`;
 
       const run = async () => {
-        setLoading(true);
+        if (!loadingRef.current) {
+          loadingRef.current = true;
+          setLoading(true);
+        }
         setError(null);
         const el = hostRef.current;
         if (!el) return;
@@ -97,6 +111,18 @@ export default function ArtifactMermaidPreview({ content, isStreaming = false }:
         ].filter((v, i, arr) => v && arr.indexOf(v) === i);
 
         if (!variants.length) {
+          loadingRef.current = false;
+          setLoading(false);
+          return;
+        }
+
+        const primary = variants[0];
+        if (!pieChartHasData(primary)) {
+          setError(
+            'Круговая диаграмма без данных: в коде есть `pie title …`, но нет строк вида `"Название" : 123`.\n' +
+              'Попросите модель добавить сегменты или допишите их во вкладке «Код».',
+          );
+          loadingRef.current = false;
           setLoading(false);
           return;
         }
@@ -128,7 +154,8 @@ export default function ArtifactMermaidPreview({ content, isStreaming = false }:
               'Не удалось отрисовать диаграмму Mermaid — синтаксис исходника невалиден.\n' +
                 'Откройте вкладку «Код» и проверьте исходник.\n' +
                 'Частые причины: style с CSS (text-align/font-size), style с кириллическими id, ' +
-                'незакрытые кавычки, style у pie/xychart.\n\n' +
+                'незакрытые кавычки, style у pie/xychart, ' +
+                'x-axis [Янв, …] без кавычек (нужно ["Янв", …]).\n\n' +
                 errorMessage(lastErr),
             );
           }
@@ -137,7 +164,10 @@ export default function ArtifactMermaidPreview({ content, isStreaming = false }:
           if (!cancelled) setError(errorMessage(e));
         } finally {
           cleanupMermaidDomJunk(renderId);
-          if (!cancelled) setLoading(false);
+          if (!cancelled) {
+            loadingRef.current = false;
+            setLoading(false);
+          }
         }
       };
 
@@ -169,40 +199,6 @@ export default function ArtifactMermaidPreview({ content, isStreaming = false }:
         color: '#1f2937',
       }}
     >
-      {loading ? (
-        <Box
-          sx={{
-            display: 'flex',
-            flexDirection: 'column',
-            justifyContent: 'center',
-            alignItems: 'center',
-            gap: 1.5,
-            minHeight: 240,
-            height: '100%',
-            py: 4,
-          }}
-        >
-          <CircularProgress size={36} thickness={4} sx={{ color: '#2355D7 !important' }} />
-          <Box
-            component="span"
-            sx={{
-              display: 'inline-block',
-              fontSize: 13,
-              fontWeight: 600,
-              lineHeight: 1.4,
-              px: 2,
-              py: 0.75,
-              borderRadius: 1.5,
-              bgcolor: '#ffffff',
-              color: '#111827 !important',
-              boxShadow: '0 1px 4px rgba(0,0,0,0.14)',
-              border: '1px solid rgba(0,0,0,0.08)',
-            }}
-          >
-            Генерация схемы…
-          </Box>
-        </Box>
-      ) : null}
       {error ? (
         <Typography
           variant="body2"

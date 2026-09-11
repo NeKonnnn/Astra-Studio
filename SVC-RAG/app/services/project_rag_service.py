@@ -21,7 +21,7 @@ from app.services.chunker import (
     resolve_chunk_params,
     split_into_chunks_with_meta,
 )
-from app.services.document_parser import parse_document
+from app.services.document_parser import empty_document_index_error, parse_document
 from app.services.retrieval_pipeline import RetrievalTrace, run_retrieval_pipeline
 from app.services.hierarchical_indexing import index_document_hierarchically
 from app.services.stage_timer import StageTimer
@@ -85,7 +85,7 @@ class ProjectRagService:
         self.graph_repo = graph_repo
         # Кэш с вытеснением, а не обычный словарь: сервис - синглтон на процесс
         # Размер - RAG_BM25_INDEX_CACHE_SIZE.
-        self._bm25_by_key = Bm25IndexCache(get_settings().rag.bm25_index_cache_size)
+        self._bm25_by_key = Bm25IndexCache(get_settings().rag.bm25_retain_seconds)
 
     async def _route(self, model=None, provider=None):
         """Профиль эмбеддинга (клиент + имя модели + dim) и репозиторий нужной таблицы.
@@ -120,7 +120,24 @@ class ProjectRagService:
             async def _fetch():
                 return await repo.get_all_contents_for_bm25(project_id=project_id)
 
-            return InMemoryBm25Index(_fetch)
+            if not get_settings().rag.bm25_store_enabled:
+                return InMemoryBm25Index(_fetch)
+
+            from app.database.bm25_store import cache_key
+
+            store_key = cache_key("project", str(project_id), dim)
+
+            async def _load():
+                return await repo.bm25_store_load(store_key, project_id=project_id)
+
+            async def _save(fingerprint, payload, chunk_count):
+                await repo.bm25_store_save(
+                    store_key, fingerprint, payload, chunk_count
+                )
+
+            return InMemoryBm25Index(
+                _fetch, load_from_store=_load, save_to_store=_save
+            )
 
         return self._bm25_by_key.get_or_create(key, _make)
 
@@ -163,7 +180,7 @@ class ProjectRagService:
         text = parsed.get("text", "")
         if not text.strip():
             timer.log(logger)
-            return {"ok": False, "error": "Документ пустой", "document_id": None}
+            return {"ok": False, "error": empty_document_index_error(parsed, filename), "document_id": None}
 
         # Модель выбираем ДО создания документа: иначе при ошибке сохранения
         # в БД останется документ без единого вектора.
@@ -826,6 +843,11 @@ class ProjectRagService:
         deleted_count = await self.doc_repo.delete_documents_by_project(project_id)
         # Проекта больше нет - индексы не помечаем грязными, а убираем совсем
         self._bm25_by_key.drop(lambda k: k[0] == project_id)
+        if get_settings().rag.bm25_store_enabled:
+            try:
+                await self.vector_repo.bm25_store_drop(project_id)
+            except Exception as e:
+                logger.warning("BM25-хранилище: записи проекта не убраны (%s)", e)
         logger.info(
             "project_rag: удалено %s документов для project_id=%s",
             deleted_count,

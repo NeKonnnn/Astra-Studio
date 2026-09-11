@@ -35,10 +35,10 @@ app:
 surya:
   enabled: true
   models_dir: "/app/models/surya"  # Каталог с моделями (внутри: text_detection/..., text_recognition/...)
-  # Для офлайн-режима укажи локальные чекпоинты (подпапки внутри models_dir):
-  # detection_checkpoint: "text_detection/2025_02_28"
-  # recognition_checkpoint: "text_recognition/2025_02_18"
-  # offline: true  # Не качать модели из интернета
+  # Локальные чекпоинты (подпапки внутри models_dir) — совпадают с томом surya_models
+  detection_checkpoint: "text_detection/2025_05_07"
+  recognition_checkpoint: "text_recognition/2025_09_23"
+  offline: true  # Не качать модели из интернета
   device: "auto"  # auto, cpu, cuda
   max_file_size: 52428800  # 50MB
   supported_languages:

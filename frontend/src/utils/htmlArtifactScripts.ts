@@ -3,6 +3,22 @@
  * Подменяем на локальный /vendor/chart.umd.min.js (копируется prestart/prebuild).
  */
 
+/**
+ * Для iframe.srcdoc: экранирует `</script` только внутри тел <script>,
+ * чтобы HTML-парсер не закрыл тег раньше времени (если в JS есть строка "</script>").
+ *
+ * Важно: НЕ трогать сами закрывающие теги `</script>` — иначе документ
+ * ломается (скрипт не закрывается → SyntaxError → графики/JS не работают).
+ */
+export function escapeHtmlForSrcDoc(html: string): string {
+  const src = html || '';
+  return src.replace(/<script(\b[^>]*)>([\s\S]*?)<\/script>/gi, (_full, attrs: string, body: string) => {
+    const escapedBody = body.replace(/<\/script/gi, '<\\/script');
+    return `<script${attrs}>${escapedBody}</script>`;
+  });
+}
+
+
 const CHART_CDN_SCRIPT_RE =
   /<script\b[^>]*\bsrc\s*=\s*["'][^"']*(?:cdnjs\.cloudflare\.com|cdn\.jsdelivr\.net|unpkg\.com|cdn\.bootcdn\.net)[^"']*chart[^"']*["'][^>]*>\s*<\/script>/gi;
 

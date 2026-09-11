@@ -508,6 +508,53 @@ class ProjectRagVectorRepository:
                     break
         return out
 
+    async def bm25_store_load(self, cache_key: str, project_id: Optional[str] = None):
+        """Отпечаток корпуса проекта и готовый индекс, если он свежий.
+
+        Скоуп у проекта - сам проект, поэтому в подзапрос отпечатка входит
+        соединение с таблицей документов: в таблице векторов project_id нет.
+        """
+        from app.database import bm25_store
+
+        async with await self.db.acquire() as conn:
+            table = await self._table(conn)
+            if project_id:
+                where = (
+                    "JOIN project_rag_documents d ON d.id = v.document_id "
+                    "WHERE d.project_id = $1"
+                )
+                params = [str(project_id)]
+            else:
+                where, params = "", []
+            return await bm25_store.load(
+                conn,
+                cache_key=cache_key,
+                vectors_table=table,
+                scope_where=where,
+                scope_params=params,
+            )
+
+    async def bm25_store_save(
+        self, cache_key: str, fingerprint: str, payload: bytes, chunk_count: int
+    ) -> None:
+        from app.database import bm25_store
+
+        async with await self.db.acquire() as conn:
+            await bm25_store.save(
+                conn,
+                cache_key=cache_key,
+                fingerprint=fingerprint,
+                payload=payload,
+                chunk_count=chunk_count,
+            )
+
+    async def bm25_store_drop(self, project_id: str) -> int:
+        """Убрать записи проекта во всех размерностях - при его удалении."""
+        from app.database import bm25_store
+
+        async with await self.db.acquire() as conn:
+            return await bm25_store.delete_by_prefix(conn, f"project:{project_id}:")
+
     async def get_vectors_by_document(self, document_id: int) -> List[DocumentVector]:
         """Все чанки документа по chunk_index. Нужен для parent-document expansion."""
         rows = []

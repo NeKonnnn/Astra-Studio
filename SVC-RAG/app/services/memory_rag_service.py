@@ -13,14 +13,14 @@ from app.database.memory_rag_repository import (
 )
 from app.database.models import Document, DocumentVector
 from app.database.graph_repository import GraphRepository
-from app.services.bm25_index import InMemoryBm25Index
+from app.services.bm25_index import Bm25IndexCache, InMemoryBm25Index
 from app.services.chunker import (
     describe_embed_client,
     normalize_chunking_strategy,
     resolve_chunk_params,
     split_into_chunks_with_meta,
 )
-from app.services.document_parser import parse_document
+from app.services.document_parser import empty_document_index_error, parse_document
 from app.services.retrieval_pipeline import RetrievalTrace, run_retrieval_pipeline
 from app.services.stage_timer import StageTimer
 from app.text_sanitize import strip_null_bytes
@@ -124,8 +124,8 @@ class MemoryRagService:
         self.vector_repo = vector_repo
         self.rag_client = rag_models_client
         self.graph_repo = graph_repo
-        # BM25 строится по конкретной таблице, поэтому индекс на каждую размерность.
-        self._bm25_by_dim: Dict[int, InMemoryBm25Index] = {}
+        # Индекс на каждую размерность: BM25 строится по конкретной таблице.
+        self._bm25_by_dim = Bm25IndexCache(get_settings().rag.bm25_retain_seconds)
 
     async def _route(self, model: Optional[str] = None, provider: Optional[str] = None):
         """Профиль эмбеддинга (клиент + имя модели + dim) и репозиторий нужной таблицы.
@@ -140,11 +140,29 @@ class MemoryRagService:
 
     def _bm25_for(self, repo) -> InMemoryBm25Index:
         dim = int(getattr(repo, "embedding_dim", 0) or 0)
-        idx = self._bm25_by_dim.get(dim)
-        if idx is None:
-            idx = InMemoryBm25Index(repo.get_all_contents_for_bm25)
-            self._bm25_by_dim[dim] = idx
-        return idx
+        def _make() -> InMemoryBm25Index:
+            if not get_settings().rag.bm25_store_enabled:
+                return InMemoryBm25Index(repo.get_all_contents_for_bm25)
+
+            from app.database.bm25_store import cache_key
+
+            store_key = cache_key("memory", "all", dim)
+
+            async def _load():
+                return await repo.bm25_store_load(store_key)
+
+            async def _save(fingerprint, payload, chunk_count):
+                await repo.bm25_store_save(
+                    store_key, fingerprint, payload, chunk_count
+                )
+
+            return InMemoryBm25Index(
+                repo.get_all_contents_for_bm25,
+                load_from_store=_load,
+                save_to_store=_save,
+            )
+
+        return self._bm25_by_dim.get_or_create(dim, _make)
 
     def _mark_bm25_dirty(self) -> None:
         for idx in self._bm25_by_dim.values():
@@ -197,7 +215,7 @@ class MemoryRagService:
         text = strip_null_bytes(parsed.get("text", "") or "")
         if not text.strip():
             timer.log(logger)
-            return {"ok": False, "error": "Документ пустой", "document_id": None}
+            return {"ok": False, "error": empty_document_index_error(parsed, filename), "document_id": None}
 
         meta: Dict[str, Any] = {
             "file_type": parsed.get("file_type", ""),

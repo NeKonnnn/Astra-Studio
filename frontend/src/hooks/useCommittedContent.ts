@@ -1,24 +1,20 @@
 import { useEffect, useState } from 'react';
 
 /**
- * Во время стрима отдаёт content с debounce; по завершении — сразу.
- * Снижает thrashing iframe/Sandpack/Mermaid на каждый токен.
+ * После стрима — сразу финальный content.
+ * На стриме setState не вызываем (preview = спиннер); возвращаем live content as-is.
  */
 export function useCommittedContent(
   content: string,
   isStreaming: boolean,
-  delayMs = 450,
+  _delayMs = 450,
 ): string {
   const [committed, setCommitted] = useState(content);
 
   useEffect(() => {
-    if (!isStreaming) {
-      setCommitted(content);
-      return;
-    }
-    const timer = window.setTimeout(() => setCommitted(content), delayMs);
-    return () => window.clearTimeout(timer);
-  }, [content, isStreaming, delayMs]);
+    if (isStreaming) return;
+    setCommitted((prev) => (prev === content ? prev : content));
+  }, [content, isStreaming]);
 
-  return committed;
+  return isStreaming ? content : committed;
 }

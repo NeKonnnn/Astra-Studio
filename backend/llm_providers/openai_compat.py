@@ -18,12 +18,15 @@ OpenAI и любых custom-серверов, поддерживающих ``/v1
 
 from __future__ import annotations
 
+import asyncio
 import html as _html_module
 import json
+import logging
 import os
 import re
+import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import httpx
 
@@ -31,8 +34,32 @@ from backend.settings.cef_logger.cef_logger import (
     log_cef_int003_llm_request,
     log_cef_int006_llm_api_failure,
 )
-from backend.llm_providers.routing import is_thinking_requested
 
+try:
+    from backend.llm_providers.routing import is_thinking_requested
+except Exception:  # pragma: no cover
+    def is_thinking_requested(request_extra):
+        if not request_extra:
+            return False
+        if 'enable_thinking' in request_extra:
+            return bool(request_extra.get('enable_thinking'))
+        ctk = request_extra.get('chat_template_kwargs')
+        if isinstance(ctk, dict) and 'enable_thinking' in ctk:
+            return bool(ctk.get('enable_thinking'))
+        return False
+
+from .presentation_continue import (
+    _auto_continue_max,
+    _count_html_slides,
+    _finalize_presentation_message,
+    _looks_like_presentation_html,
+    _merge_presentation_continue,
+    _open_presentation_for_continue,
+    _presentation_looks_finished,
+    _presentation_looks_truncated,
+    _requested_slide_count,
+    _stream_read_timeout_sec,
+)
 from .base import (
     LLMProvider,
     LLMProviderConfig,
@@ -43,17 +70,8 @@ from .base import (
     StreamCallback,
     ToolCall,
 )
-from backend.settings.logging import get_logger
 
-logger = get_logger(__name__)
-
-
-def _invoke_stream_callback(callback: Any, chunk: str, acc: str, stream_role: str = "content") -> bool:
-    """Вызывает callback стрима; поддерживает 2- и 3-аргументные колбэки."""
-    try:
-        return bool(callback(chunk, acc, stream_role))
-    except TypeError:
-        return bool(callback(chunk, acc))
+logger = logging.getLogger(__name__)
 
 
 def _safe_response_text(response: Any) -> str:
@@ -62,6 +80,20 @@ def _safe_response_text(response: Any) -> str:
         return response.text or ""
     except Exception:
         return "<тело ответа недоступно: поток не прочитан>"
+
+
+def _invoke_stream_callback(callback: Any, chunk: str, acc: str, stream_role: str = "content") -> bool:
+    """Вызывает callback стрима; поддерживает 2- и 3-аргументные колбэки.
+
+    ``False`` — прервать поток. Любое другое значение (включая ``None``) — продолжать.
+    """
+    try:
+        result = callback(chunk, acc, stream_role)
+    except TypeError:
+        if stream_role == "heartbeat":
+            return True
+        result = callback(chunk, acc)
+    return result is not False
 
 
 # =============================================================================
@@ -646,7 +678,7 @@ class OpenAICompatProvider(LLMProvider):
         logger.info(
             "[%s] chat flags: enable_thinking=%r payload_keys=%s",
             self.id,
-            is_thinking_requested(request_extra),
+            payload.get("enable_thinking"),
             sorted(list(payload.keys())),
         )
         logger.info("[%s] POST /v1/chat/completions model=%r", self.id, model)
@@ -673,6 +705,218 @@ class OpenAICompatProvider(LLMProvider):
         *,
         request_extra: Optional[Dict[str, Any]] = None,
     ) -> str:
+        # Auto-continue:
+        # 1) finish_reason=length — упёрлись в max_tokens одного ответа
+        # 2) презентация: модель часто ставит stop, не дописав N слайдов —
+        #    дожимаем, пока class="slide" не достигнет запрошенного числа
+        # Лимит продолжений защищает от бесконечного цикла.
+        max_continuations = _auto_continue_max()
+        requested_slides = _requested_slide_count(messages)
+        if requested_slides and requested_slides > 8:
+            # На длинных презах 5 продолжений часто мало (тяжёлый HTML).
+            max_continuations = max(max_continuations, min(requested_slides, 20))
+        base_messages = list(messages)
+        thinking_requested = is_thinking_requested(request_extra)
+
+        accumulated = ""
+        reasoning_accumulated = ""
+        _final_finish_reason: Optional[str] = None
+
+        for _cont_idx in range(max_continuations + 1):
+            if _cont_idx == 0:
+                pass_messages = base_messages
+            else:
+                have = _count_html_slides(accumulated)
+                is_pres = _looks_like_presentation_html(accumulated)
+                # Важно: открываем документ В accumulated до стрима, иначе модель
+                # допишет </body></html> / новый fence УЖЕ ПОСЛЕ закрытого ``` → хвост в UI.
+                if is_pres:
+                    opened = _open_presentation_for_continue(accumulated)
+                    if opened != accumulated:
+                        accumulated = opened
+                        if (
+                            _invoke_stream_callback(callback, "", accumulated, "content")
+                            is False
+                        ):
+                            break
+                if requested_slides and have < requested_slides and is_pres:
+                    continue_hint = (
+                        f"В HTML сейчас {have} слайдов с class=\"slide\", нужно ровно {requested_slides}. "
+                        f"Допиши ТОЛЬКО следующие элементы <… class=\"slide\"> с номерами {have + 1}–{requested_slides} "
+                        "сразу после последнего слайда.\n"
+                        "СТРОГО ЗАПРЕЩЕНО: новый блок ``` / ```html, слово html отдельной строкой, "
+                        "<!DOCTYPE, <html>, <head>, <body>, пояснения, повтор слайдов.\n"
+                        f"Когда будет ровно {requested_slides} слайдов — закрой </body></html> и fence ```."
+                    )
+                elif is_pres and _presentation_looks_truncated(accumulated):
+                    continue_hint = (
+                        f"В HTML сейчас {have} слайдов с class=\"slide\", но ответ оборван "
+                        "(незакрытый комментарий, mid-tag или незакрытые <div> в последнем слайде).\n"
+                        "Допиши ТОЛЬКО недостающие <div class=\"slide\"> сразу после последнего готового слайда, "
+                        "затем финальный слайд и закрой </body></html> и fence ```.\n"
+                        "СТРОГО ЗАПРЕЩЕНО: новый блок ``` / ```html, слово html отдельной строкой, "
+                        "<!DOCTYPE, <html>, <head>, <body>, пояснения, повтор слайдов."
+                    )
+                else:
+                    continue_hint = (
+                        "Продолжи ровно с того места, где ответ оборвался. "
+                        "Не повторяй уже написанное, не добавляй пояснений — только продолжение. "
+                        "Не открывай новый блок ``` / ```html — допиши текущий HTML."
+                    )
+                pass_messages = base_messages + [
+                    {"role": "assistant", "content": accumulated},
+                    {"role": "user", "content": continue_hint},
+                ]
+
+            _acc_snapshot = accumulated
+            _reason_snapshot = reasoning_accumulated
+            finish_reason, pass_accumulated, pass_reasoning = await self._stream_chat_once(
+                pass_messages,
+                model,
+                callback,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                request_extra=request_extra,
+                _shared=lambda: (_acc_snapshot, _reason_snapshot),
+            )
+            fr = str(finish_reason or "").lower()
+
+            # Ошибка потока в ПРОДОЛЖЕНИИ: не теряем уже готовые слайды.
+            if fr == "error" or (
+                isinstance(pass_accumulated, str)
+                and pass_accumulated.startswith("Ошибка потока")
+            ):
+                if _cont_idx > 0 and _acc_snapshot.strip():
+                    logger.debug(
+                        "[%s] auto-continue: ошибка в pass #%s, оставляем накопленное (%s симв.)",
+                        self.id,
+                        _cont_idx,
+                        len(_acc_snapshot),
+                    )
+                    accumulated = _acc_snapshot
+                    reasoning_accumulated = _reason_snapshot
+                    _final_finish_reason = "stop"
+                    break
+                accumulated = pass_accumulated
+                reasoning_accumulated = pass_reasoning
+                _final_finish_reason = finish_reason
+                break
+
+            accumulated = pass_accumulated
+            reasoning_accumulated = pass_reasoning
+
+            # Continue-pass: модель часто начинает новый ```html / <!DOCTYPE> —
+            # вырезаем reopen из дельты, иначе UI «троится» и в чат утекает «html».
+            if _cont_idx > 0:
+                merged = _merge_presentation_continue(_acc_snapshot, accumulated)
+                if merged != accumulated:
+                    accumulated = merged
+                    if (
+                        _invoke_stream_callback(callback, "", accumulated, "content")
+                        is False
+                    ):
+                        break
+
+            # Детект обрыва на СЫРОМ тексте. Finalize (закрытый fence) только
+            # в конце всех pass'ов — иначе ```html попадает внутрь слайдов.
+            trunc_before_finalize = _presentation_looks_truncated(accumulated)
+            _final_finish_reason = finish_reason
+
+            # Пользовательский стоп — не крутим continue.
+            if fr == "stop_user":
+                break
+
+            have_slides = _count_html_slides(accumulated)
+            need_more_slides = bool(
+                requested_slides
+                and have_slides < requested_slides
+                and (_looks_like_presentation_html(accumulated) or have_slides > 0)
+            )
+            need_fix_truncation = bool(
+                trunc_before_finalize
+                and have_slides > 0
+                and not _presentation_looks_finished(accumulated)
+            )
+
+            # length после финального слайда без явного N — не дожимать слайды.
+            if (
+                fr == "length"
+                and not need_more_slides
+                and not need_fix_truncation
+                and not requested_slides
+                and _presentation_looks_finished(accumulated)
+            ):
+                break
+
+            if fr == "length" or need_more_slides or need_fix_truncation:
+                if _cont_idx >= max_continuations:
+                    logger.debug(
+                        "[%s] auto-continue: лимит продолжений (%s), стоп "
+                        "(finish=%r slides=%s/%s trunc=%s накоплено=%s)",
+                        self.id,
+                        max_continuations,
+                        fr,
+                        have_slides,
+                        requested_slides,
+                        need_fix_truncation,
+                        len(accumulated),
+                    )
+                    break
+                logger.debug(
+                    "[%s] auto-continue #%s: finish=%r slides=%s/%s trunc=%s, дожимаем (накоплено %s симв.)",
+                    self.id,
+                    _cont_idx + 1,
+                    fr,
+                    have_slides,
+                    requested_slides,
+                    need_fix_truncation,
+                    len(accumulated),
+                )
+                continue
+
+            break
+
+        # Единая финальная склейка: один ```html, chrome (или fallback), без fence-шума.
+        if _looks_like_presentation_html(accumulated):
+            finalized = _finalize_presentation_message(accumulated)
+            if finalized != accumulated:
+                accumulated = finalized
+                _invoke_stream_callback(callback, "", accumulated, "content")
+
+        logger.debug(
+            "[%s] ИТОГ СТРИМА (all passes): finish_reason=%r slides=%s/%s накоплено=%s симв.",
+            self.id,
+            _final_finish_reason,
+            _count_html_slides(accumulated),
+            requested_slides,
+            len(accumulated),
+        )
+        cleaned = clean_llm_response(accumulated)
+        if thinking_requested:
+            return cleaned
+        if "<think>" in cleaned.lower():
+            return _strip_think_tags(cleaned)
+        if reasoning_accumulated.strip() and "<think>" not in cleaned:
+            return f"<think>{reasoning_accumulated.strip()}</think>\n\n{cleaned}"
+        return cleaned
+
+    async def _stream_chat_once(
+        self,
+        messages: List[Dict[str, Any]],
+        model: str,
+        callback: StreamCallback,
+        temperature: float = 0.7,
+        max_tokens: int = 1024,
+        *,
+        request_extra: Optional[Dict[str, Any]] = None,
+        _shared=None,
+    ):
+        """Один проход стрима. Возвращает (finish_reason, accumulated, reasoning).
+
+        accumulated/reasoning инициализируются значениями из _shared() (для
+        бесшовного продолжения при auto-continue): callback получает суммарный
+        текст всех проходов, а не только текущего.
+        """
         payload: Dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -681,39 +925,47 @@ class OpenAICompatProvider(LLMProvider):
             "stream": True,
         }
         self._apply_request_extra(payload, request_extra)
-        logger.info(
+        thinking_requested = is_thinking_requested(request_extra)
+        logger.debug(
             "[%s] stream enable_thinking=%r model=%r url=%s/v1/chat/completions",
             self.id,
-            is_thinking_requested(request_extra),
+            thinking_requested,
             model,
             self.base_url,
         )
         headers = self._headers(accept_sse=True)
-        # Большой RAG-контекст → первый токен может идти долго, read-timeout поднимаем.
-        stream_timeout = httpx.Timeout(300.0, connect=10.0, read=300.0, write=10.0)
-        accumulated = ""
-        reasoning_accumulated = ""
-        thinking_requested = is_thinking_requested(request_extra)
+        read_s = _stream_read_timeout_sec(self._timeout_read)
+        stream_timeout = httpx.Timeout(read_s, connect=10.0, read=read_s, write=10.0)
+        # Продолжаем накопление предыдущих проходов (auto-continue), чтобы callback
+        # получал суммарный текст, а UI не «моргал» на границе продолжений.
+        _seed_acc, _seed_reason = _shared() if _shared else ("", "")
+        accumulated = _seed_acc or ""
+        reasoning_accumulated = _seed_reason or ""
         logged_delta_shape = False
-        logger.info("[%s] POST /v1/chat/completions stream=True model=%r", self.id, model)
-        cef_rid = uuid.uuid4().hex
-        log_cef_int003_llm_request(
-            base_url=self.base_url,
-            provider_id=self.id,
-            model=model,
-            request_uuid=cef_rid,
+        # Диагностика обрыва: у цикла ниже пять выходов, и четыре из них
+        # сегодня не оставляют в логах ничего. Пишем, какой сработал.
+        _t0 = time.monotonic()
+        _chunks = 0
+        _end_reason = "iterator_end"
+        _finish_reason_seen = None
+        logger.debug(
+            "[%s] POST /v1/chat/completions stream=True model=%r read_timeout=%ss",
+            self.id,
+            model,
+            read_s,
         )
+        cef_rid = uuid.uuid4().hex
+        log_cef_int003_llm_request(base_url=self.base_url, provider_id=self.id, model=model, request_uuid=cef_rid)
         try:
             async with httpx.AsyncClient(timeout=stream_timeout, verify=self._http_verify()) as client:
                 async with client.stream(
-                    "POST",
-                    f"{self.base_url}/v1/chat/completions",
-                    headers=headers,
-                    json=payload,
+                    "POST", f"{self.base_url}/v1/chat/completions", headers=headers, json=payload
                 ) as response:
                     if response.status_code >= 400:
                         # Тело потокового ответа не прочитано, и .text в обработчике
-                        # ошибки бросил бы ResponseNotRead. Читаем здесь, пока поток открыт.
+                        # ошибки бросил бы ResponseNotRead — причина отказа шлюза
+                        # (в т.ч. guardrail) терялась вместе с ней. Читаем здесь,
+                        # пока поток открыт.
                         try:
                             await response.aread()
                         except Exception:
@@ -721,11 +973,33 @@ class OpenAICompatProvider(LLMProvider):
                                 "[%s] тело ошибки потока прочитать не удалось", self.id
                             )
                     response.raise_for_status()
-                    async for line in response.aiter_lines():
+                    line_iter = response.aiter_lines().__aiter__()
+                    while True:
+                        # Idle-wait по 1с: стоп пользователя не ждёт следующего токена
+                        # и не упирается в длинный read-timeout.
+                        try:
+                            line = await asyncio.wait_for(line_iter.__anext__(), timeout=1.0)
+                        except StopAsyncIteration:
+                            break
+                        except asyncio.TimeoutError:
+                            if (
+                                _invoke_stream_callback(
+                                    callback, "", accumulated, "heartbeat"
+                                )
+                                is False
+                            ):
+                                logger.debug(
+                                    "[%s] поток прерван callback'ом (heartbeat/stop)",
+                                    self.id,
+                                )
+                                _end_reason = "callback_stop"
+                                return ("stop_user", accumulated, reasoning_accumulated)
+                            continue
                         if not line or not line.startswith("data: "):
                             continue
                         data_str = line[6:]
                         if data_str.strip() == "[DONE]":
+                            _end_reason = "done"
                             break
                         try:
                             data = json.loads(data_str)
@@ -737,12 +1011,23 @@ class OpenAICompatProvider(LLMProvider):
                         delta = choices[0].get("delta") or {}
                         if not logged_delta_shape:
                             logged_delta_shape = True
-                            logger.info(
+                            logger.debug(
                                 "[%s] first delta keys=%s has_reasoning_fields=%s has_content_fields=%s",
                                 self.id,
                                 sorted(list(delta.keys())),
-                                any(k in delta for k in ("reasoning_content", "reasoning", "reasoning_text", "thinking", "thought")),
-                                any(k in delta for k in ("content", "text", "output_text", "message")),
+                                any(
+                                    (
+                                        k in delta
+                                        for k in (
+                                            "reasoning_content",
+                                            "reasoning",
+                                            "reasoning_text",
+                                            "thinking",
+                                            "thought",
+                                        )
+                                    )
+                                ),
+                                any((k in delta for k in ("content", "text", "output_text", "message"))),
                             )
                         reasoning_source = delta.get("reasoning_content")
                         if reasoning_source is None:
@@ -756,39 +1041,56 @@ class OpenAICompatProvider(LLMProvider):
                         reasoning_chunk = _normalize_reasoning_payload(reasoning_source)
                         if thinking_requested and reasoning_chunk:
                             reasoning_accumulated += reasoning_chunk
-                            if _invoke_stream_callback(callback, reasoning_chunk, reasoning_accumulated, "reasoning") is False:
-                                logger.info("[%s] поток прерван callback'ом (reasoning)", self.id)
-                                return clean_llm_response(accumulated)
+                            if (
+                                _invoke_stream_callback(callback, reasoning_chunk, reasoning_accumulated, "reasoning")
+                                is False
+                            ):
+                                logger.debug("[%s] поток прерван callback'ом (reasoning)", self.id)
+                                return ("stop_user", accumulated, reasoning_accumulated)
                         chunk = _normalize_content_payload(
                             delta.get("content")
                             or delta.get("text")
                             or delta.get("output_text")
                             or delta.get("message")
                         )
-                        if not chunk:
-                            pass
-                        else:
+                        if chunk:
                             accumulated += chunk
-                            # Если модель начала «галлюцинировать» служебные теги — останавливаемся.
+                            _chunks += 1
                             if "<|im_start|>" in accumulated or "<|im_end|>" in accumulated:
-                                logger.info("[%s] обнаружен chat-template tag, обрезаем поток", self.id)
-                                break
-                            if _invoke_stream_callback(callback, chunk, accumulated, "content") is False:
-                                logger.info("[%s] поток прерван callback'ом", self.id)
-                                return clean_llm_response(accumulated)
+                                logger.debug(
+                                    "[%s] СТРИМ ОБОРВАН callback'ом: чанков=%s накоплено=%s симв. за %.1f c",
+                                    self.id,
+                                    _chunks,
+                                    len(accumulated),
+                                    time.monotonic() - _t0,
+                                ) 
+                                _end_reason = "chat_template_tag"
+                                return ("stop", accumulated, reasoning_accumulated)
+                            # Отдаём контентный чанк наружу — это и есть стрим на фронт.
+                            # callback получает суммарный accumulated (в т.ч. хвост
+                            # предыдущих проходов auto-continue), поэтому UI видит
+                            # непрерывный текст. Отказ callback'а прерывает поток.
+                            if (
+                                _invoke_stream_callback(callback, chunk, accumulated, "content")
+                                is False
+                            ):
+                                logger.debug("[%s] поток прерван callback'ом (content)", self.id)
+                                _end_reason = "callback_stop"
+                                return ("stop_user", accumulated, reasoning_accumulated)
                         # finish_reason (в т.ч. length = лимит токенов) — конец стрима.
                         # Часть провайдеров не присылает [DONE] после этого и httpx ждёт
                         # read-timeout минутами, а UI остаётся в «генерации».
                         finish_reason = choices[0].get("finish_reason") or choices[0].get("stop_reason")
                         if finish_reason:
-                            if str(finish_reason).lower() not in ("stop", "tool_calls", "function_call"):
-                                logger.info(
-                                    "[%s] stream finish_reason=%r model=%r (накоплено %s симв.)",
-                                    self.id,
-                                    finish_reason,
-                                    model,
-                                    len(accumulated),
-                                )
+                            _finish_reason_seen = str(finish_reason)
+                            _end_reason = "finish_reason"
+                            logger.debug(
+                                "[%s] stream finish_reason=%r model=%r (накоплено %s симв.)",
+                                self.id,
+                                finish_reason,
+                                model,
+                                len(accumulated),
+                            )
                             break
         except httpx.HTTPStatusError as e:
             stream_body = _safe_response_text(e.response)
@@ -805,17 +1107,19 @@ class OpenAICompatProvider(LLMProvider):
                 try:
                     detail = str((e.response.json() or {}).get("detail", ""))
                 except Exception:
+                    logger.debug("[%s] 503: тело не разобрано как JSON", self.id)
                     detail = stream_body[:500]
                 low = detail.lower()
                 if "not loaded" in low or "не загруж" in low:
                     return (
-                        "Модель не загружена в LLM-бэкенде (503). "
-                        "Проверьте, что модель активна на стороне провайдера."
+                        "stop",
+                        "Модель не загружена в LLM-бэкенде (503). Проверьте, что модель активна на стороне провайдера.",
+                        "",
                     )
-                return "Сервис LLM недоступен (503). Повторите запрос через несколько секунд."
-            return f"Ошибка потока: {e}"
+                return ("stop", "Сервис LLM недоступен (503). Повторите запрос через несколько секунд.", "")
+            return ("stop", f"Ошибка потока: {e}", "")
         except Exception as e:
-            logger.error("[%s] stream error: %s", self.id, e)
+            logger.exception("[%s] stream error", self.id)
             log_cef_int006_llm_api_failure(
                 request_uuid=cef_rid,
                 code_status="EXCEPTION",
@@ -823,14 +1127,25 @@ class OpenAICompatProvider(LLMProvider):
                 service_name=f"openai-compat-{self.id}",
                 status_code=None,
             )
-            return f"Ошибка потока: {e}"
+            return ("stop", f"Ошибка потока: {e}", "")
         cleaned = clean_llm_response(accumulated)
-        # Режим мышления: рассуждения уже ушли в chat_thinking — в финальную строку только ответ.
-        if thinking_requested:
-            return cleaned
-        # Быстрый режим: если модель всё равно встроила <think> в content — убираем.
-        if "<think>" in cleaned.lower():
-            return _strip_think_tags(cleaned)
-        if reasoning_accumulated.strip() and "<think>" not in cleaned:
-            return f"<think>{reasoning_accumulated.strip()}</think>\n\n{cleaned}"
-        return cleaned
+        # Итог одной строкой. Ключевое - сравнить накоплено и после_очистки:
+        # если второе заметно меньше, текст режет наша постобработка, а не
+        # модель (незакрытый <think> вырезает всё до конца текста).
+        logger.debug(
+            "[%s] ИТОГ ПРОХОДА СТРИМА: конец=%s finish_reason=%r чанков=%s "
+            "накоплено=%s симв. после_очистки=%s симв. think=%s "
+            "reasoning=%s симв. max_tokens=%s за %.1f c",
+            self.id,
+            _end_reason,
+            _finish_reason_seen,
+            _chunks,
+            len(accumulated),
+            len(cleaned),
+            "<think>" in cleaned.lower(),
+            len(reasoning_accumulated),
+            max_tokens,
+            time.monotonic() - _t0,
+        )
+        # Постобработка (<think>, очистка) и решение о продолжении — в stream_chat.
+        return (_finish_reason_seen, accumulated, reasoning_accumulated)

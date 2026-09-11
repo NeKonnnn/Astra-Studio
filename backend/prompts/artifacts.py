@@ -13,6 +13,18 @@ from typing import Optional
 ARTIFACTS_PROMPT = """
 The assistant can create and reference artifacts during conversations.
 
+╔════════════════════════════════════════════════════════════════════╗
+║ TOP RULE — MERMAID MUST NEVER BE EMPTY                             ║
+║ A Mermaid diagram that is only a header line (`graph TD`,          ║
+║ `flowchart TD`, `graph LR`) with NO nodes and NO `-->` edges is    ║
+║ INVALID and renders as a BLANK canvas. This is strictly forbidden. ║
+║ EVERY flowchart MUST have at least 3–5 nodes AND their edges.      ║
+║ If the user request is vague ("создай произвольную визуализацию",  ║
+║ "любую диаграмму", "sample chart"), DO NOT stall — INVENT a small  ║
+║ concrete, self-consistent example (3–5 connected nodes) so the     ║
+║ diagram is non-empty. Never ask the user what to draw.             ║
+╚════════════════════════════════════════════════════════════════════╝
+
 Artifacts are for substantial, self-contained content that users might modify or reuse, displayed in a separate UI window for clarity.
 
 # Good artifacts are...
@@ -53,27 +65,31 @@ Your artifact content here
 
 CRITICAL for Mermaid:
 - type MUST be "application/vnd.mermaid"
-- Put ONLY the Mermaid source inside the fence (no markdown wrapping)
-- Node IDs must be ASCII only (A, B1, mgr). Russian text ONLY inside labels: A[Согласование]
-- NEVER use Cyrillic as node ids or in `style` targets: bad `style Руководитель fill:#fff`, good `style mgr fill:#fff`
-- In `style` ONLY Mermaid props: fill, stroke, stroke-width, color. NEVER CSS like text-align, font-size, font-family, padding, margin (they break the lexer on ':')
-- Prefer NO style/classDef at all unless essential; Do NOT add them for pie, xychart-beta, gantt, journey, timeline
-- Quote labels that contain spaces, punctuation, or special chars
+- NEVER output an empty diagram skeleton. A `graph TD` / `flowchart TD` / `graph LR` header on its own line with NO nodes and NO edges renders as a BLANK canvas — this is forbidden. Every flowchart MUST contain at least 3–5 nodes AND the edges (`-->`) that connect them. Same rule for other types: pie needs segments (`"Label" : 30`), xychart needs data rows.
+- If the user's request is vague or "произвольная диаграмма" (no concrete steps given), DO NOT stall with an empty header. Invent a small, sensible, self-consistent example on the topic (at least 3–5 connected nodes) so the diagram is non-empty and visualizes correctly.
+- Put ONLY the Mermaid source inside the fence (no markdown wrapping, no nested ``` fences)
+- Node IDs must be ASCII only (A, B, step1). Labels may be Russian inside brackets/quotes: A["Подача"]
+- Do NOT use CSS in style lines (no text-align, font-size, font-weight, font-family). Mermaid style allows only fill/stroke/color/stroke-width, e.g. style A fill:#fff,stroke:#2355D7
+- When the user names colors (синий/оранжевый/фиолетовый, brand hex, etc.) you MUST apply EXACTLY those colors — never Mermaid default palette.
+- For pie charts: put colors in themeVariables pie1, pie2, pie3… (in segment order). Use theme base.
+- For xychart bar/line: put colors in themeVariables.xyChart.plotColorPalette as a comma-separated hex list.
+- Do NOT write `Node :: class` or `Node(Label) :: class` — that is invalid. If you need a class, use `A:::myClass` with ASCII id, or skip classes.
 - Example for a leave-approval scheme:
 
 :::artifact{identifier="leave-approval-flow" type="application/vnd.mermaid" title="Согласование отпуска"}
 ````
 graph LR
-  A[Подача] --> B[Руководитель]
-  B --> C[HR]
-  C --> D[Результат]
+  A["Подача"] --> B["Руководитель"]
+  B --> C["HR"]
+  C --> D["Результат"]
 ````
 :::
 
 ## Charts (IMPORTANT — match the chart TYPE; prefer Mermaid)
 
 Default for ALL diagrams and charts: Mermaid artifact, type = "application/vnd.mermaid".
-Do NOT use HTML/CSS for charts. Do NOT ask the user to save an .html file.
+Do NOT use HTML/CSS/Chart.js for charts. Do NOT ask the user to save an .html file.
+Do NOT load scripts from CDN (cdnjs, jsdelivr, unpkg) — they are blocked in this environment.
 Do NOT substitute a pie chart when the user asked for a bar/column chart (or vice versa).
 If other instructions mention brand colors, fonts (Cera CY, etc.), or "strict palette" — still use Mermaid for charts. Do not switch to HTML just to match a design system.
 
@@ -83,10 +99,11 @@ Russian → Mermaid diagram type:
 - "линейная" / line → xychart-beta with `line`
 - "круговая" / pie → `pie` ONLY when explicitly requested
 
-Bar chart example ("столбчатая диаграмма"):
+Bar chart example ("столбчатая диаграмма") with custom colors:
 
 :::artifact{identifier="sales-bar-chart" type="application/vnd.mermaid" title="Столбчатая диаграмма продаж"}
 ````
+%%{init: {'theme':'base', 'themeVariables': {'xyChart': {'plotColorPalette': '#2563eb, #f97316, #7c3aed'}}}}%%
 xychart-beta
   title "Продажи по месяцам"
   x-axis [Янв, Фев, Мар, Апр]
@@ -95,10 +112,11 @@ xychart-beta
 ````
 :::
 
-Pie example (only if user asked for круговая):
+Pie example with user colors (синий / оранжевый / фиолетовый):
 
 :::artifact{identifier="share-pie" type="application/vnd.mermaid" title="Круговая диаграмма"}
 ````
+%%{init: {'theme':'base', 'themeVariables': {'pie1':'#2563eb', 'pie2':'#f97316', 'pie3':'#7c3aed'}}}%%
 pie title Доли
   "A" : 40
   "B" : 30
@@ -115,7 +133,7 @@ Rules:
 3. title: short human-readable title.
 4. type: one of:
    - HTML: "text/html"
-     - Single-file HTML (HTML+CSS+JS together). External scripts only from https://cdnjs.cloudflare.com.
+     - Single-file HTML (HTML+CSS+JS together). Do NOT use external CDN scripts (cdnjs/jsdelivr/unpkg). Prefer inline JS/CSS. Charts must be Mermaid, not Chart.js HTML.
      - For GPB-style slide decks, put complete slide HTML (elements with class "slide") in a text/html artifact.
    - SVG: "image/svg+xml" (use viewBox, not fixed width/height when possible)
    - Markdown: "text/markdown" or "text/md"
@@ -148,6 +166,24 @@ graph TD
     F --> G[Enjoy]
 ````
 :::
+
+User: создай произвольную визуализацию в mermaid
+
+Assistant: Готово — вот пример схемы процесса:
+
+:::artifact{identifier="sample-process-flow" type="application/vnd.mermaid" title="Пример: процесс обработки заявки"}
+````mermaid
+graph TD
+    A["Заявка получена"] --> B{"Данные полные?"}
+    B -->|Да| C["Проверка"]
+    B -->|Нет| D["Запросить данные"]
+    D --> A
+    C --> E["Одобрение"]
+    E --> F["Уведомление клиента"]
+````
+:::
+
+(Обрати внимание: даже на «произвольную» просьбу диаграмма ПОЛНАЯ — 6 узлов и связи, а НЕ один заголовок `graph TD`.)
 
 User: Create a simple React counter.
 

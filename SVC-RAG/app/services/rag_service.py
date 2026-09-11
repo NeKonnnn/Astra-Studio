@@ -30,7 +30,7 @@ from app.services.rag_search_helpers import (
 from app.database.fts import extract_filenames, extract_proper_nouns
 from app.database.graph_repository import GraphRepository
 from app.services.chunker import split_into_chunks, split_into_chunks_with_meta
-from app.services.document_parser import parse_document
+from app.services.document_parser import empty_document_index_error, parse_document
 from app.services.hierarchical import DocumentSummarizer, OptimizedDocumentIndex
 from app.services.retrieval_pipeline import _is_enumeration_query
 from app.services.stage_timer import StageTimer
@@ -173,17 +173,14 @@ class RagService:
 
         text = (parsed.get("text") or "").strip()
         confidence_info = parsed.get("confidence_info")
-        ftype = (parsed.get("file_type") or "").lower()
 
         if not text:
             timer.log(logger)
-            if ftype == "pdf":
-                return {
-                    "ok": False,
-                    "error": "PDF без извлекаемого текста (скан: ни локальный OCR (ocr-service/poppler), ни OCR через backend не дали текста). См. логи svc-rag.",
-                    "document_id": None,
-                }
-            return {"ok": False, "error": "Не удалось извлечь текст или формат не поддерживается", "document_id": None}
+            return {
+                "ok": False,
+                "error": empty_document_index_error(parsed, filename),
+                "document_id": None,
+            }
 
         use_hierarchical = (
             self._cfg.use_hierarchical_indexing

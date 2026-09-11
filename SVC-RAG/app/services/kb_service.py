@@ -20,7 +20,7 @@ from app.services.chunker import (
     resolve_chunk_params,
     split_into_chunks_with_meta,
 )
-from app.services.document_parser import parse_document
+from app.services.document_parser import empty_document_index_error, parse_document
 from app.services.retrieval_pipeline import RetrievalTrace, run_retrieval_pipeline
 from app.services.stage_timer import StageTimer
 
@@ -81,9 +81,7 @@ class KbService:
         self.rag_client = rag_models_client
         self.graph_repo = graph_repo
         # Индексы BM25 по (размерность, набор документов).
-        # Корпус сужается до белого списка документов, а кэш вытесняет
-        # давно не использованные. Размер - RAG_BM25_INDEX_CACHE_SIZE.
-        self._bm25_by_key = Bm25IndexCache(get_settings().rag.bm25_index_cache_size)
+        self._bm25_by_key = Bm25IndexCache(get_settings().rag.bm25_retain_seconds)
 
     async def _route(self, model=None, provider=None):
         """Профиль эмбеддинга (клиент + имя модели + dim) и репозиторий нужной таблицы.
@@ -112,7 +110,24 @@ class KbService:
             async def _fetch():
                 return await repo.get_all_contents_for_bm25(document_ids=ids)
 
-            return InMemoryBm25Index(_fetch)
+            if not get_settings().rag.bm25_store_enabled:
+                return InMemoryBm25Index(_fetch)
+
+            from app.database.bm25_store import cache_key, documents_entity
+
+            store_key = cache_key("kb", documents_entity(ids), dim)
+
+            async def _load():
+                return await repo.bm25_store_load(store_key, document_ids=ids)
+
+            async def _save(fingerprint, payload, chunk_count):
+                await repo.bm25_store_save(
+                    store_key, fingerprint, payload, chunk_count
+                )
+
+            return InMemoryBm25Index(
+                _fetch, load_from_store=_load, save_to_store=_save
+            )
 
         return self._bm25_by_key.get_or_create(key, _make)
 
@@ -169,7 +184,7 @@ class KbService:
         text = parsed.get("text", "")
         if not text.strip():
             timer.log(logger)
-            return {"ok": False, "error": "Документ пустой", "document_id": None}
+            return {"ok": False, "error": empty_document_index_error(parsed, filename), "document_id": None}
 
         # Модель выбираем ДО создания документа: иначе при ошибке сохранения
         # в БД останется документ без единого вектора.

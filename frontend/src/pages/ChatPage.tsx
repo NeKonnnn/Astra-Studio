@@ -13,8 +13,6 @@ import {
   Fab,
   Tooltip,
   LinearProgress,
-  Alert,
-  Snackbar,
 } from '@mui/material';
 import {
   Send as SendIcon,
@@ -28,10 +26,10 @@ import {
 import { useAppContext, useAppActions, Message } from '../contexts/AppContext';
 import { useSocket } from '../contexts/SocketContext';
 import MessageRenderer from '../components/MessageRenderer';
+import { STATUS_TOAST_MESSAGES } from '../constants/statusToast';
 
 export default function ChatPage() {
   const [inputMessage, setInputMessage] = useState('');
-  const [showCopyAlert, setShowCopyAlert] = useState(false);
   const { state } = useAppContext();
   const { clearMessages, showNotification, getCurrentMessages, getCurrentChat } = useAppActions();
   const { sendMessage, isConnected, isConnecting, reconnect, stopGeneration } = useSocket();
@@ -76,9 +74,9 @@ export default function ChatPage() {
   const handleCopyMessage = async (content: string) => {
     try {
       await navigator.clipboard.writeText(content);
-      setShowCopyAlert(true);
+      showNotification('success', STATUS_TOAST_MESSAGES.COPY_SUCCESS);
     } catch (error) {
-      showNotification('error', 'Не удалось скопировать текст');
+      showNotification('error', STATUS_TOAST_MESSAGES.COPY_FAILED);
     }
   };
 
@@ -476,17 +474,6 @@ export default function ChatPage() {
         </Container>
       </Paper>
 
-      {/* Уведомление о копировании */}
-      <Snackbar
-        open={showCopyAlert}
-        autoHideDuration={2000}
-        onClose={() => setShowCopyAlert(false)}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
-      >
-        <Alert severity="success" variant="filled">
-          Текст скопирован в буфер обмена
-        </Alert>
-      </Snackbar>
     </Box>
   );
 }

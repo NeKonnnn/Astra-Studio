@@ -72,8 +72,8 @@ const NON_PRESENTATION_FENCE_LANGS = new Set([
 ]);
 
 /**
- * Стрим презентации: viewer сразу (спиннер), без Monaco.
- * Срабатывает при presentation skill/агенте + ```html, ещё до первого .slide.
+ * Стрим презентации: viewer сразу (спиннер), без Monaco / ArtifactCard.
+ * Срабатывает при presentation skill/агенте + ```html — ещё до первого .slide / 297mm.
  */
 export function shouldTreatHtmlFenceAsPresentationStream(
   code: string,
@@ -84,6 +84,8 @@ export function shouldTreatHtmlFenceAsPresentationStream(
   if (!opts.isStreaming || !opts.presentationExpected) return false;
   const lang = (language || '').trim().toLowerCase();
   if (lang && NON_PRESENTATION_FENCE_LANGS.has(lang)) return false;
+  // Уже открыт html-fence при skill презентации — сразу viewer, не сырой код.
+  if (isHtmlFenceLanguage(lang) || isHtmlFenceBlock(codeBlock)) return true;
   const body = (code || '').trim();
   if (isGpbPresentationStreaming(body, lang)) return true;
   if (body && hasPresentationStreamHints(body)) return true;
@@ -129,8 +131,23 @@ export function shouldOpenPresentationViewer(
   } = {},
 ): boolean {
   if (isGpbPresentationHtml(code)) return true;
-  // Skill презентации: HTML с признаками GPB — и во время стрима, и после (без fence-only).
-  if (opts.presentationExpected && isGpbPresentationStreaming(code, opts.language)) {
+  // Skill презентации + стрим: с первого ```html / <!DOCTYPE>/<style> — viewer со спиннером,
+  // не ждём .slide (иначе мелькает Monaco/ArtifactCard с сырым HTML).
+  if (opts.presentationExpected && opts.isStreaming) {
+    if (isHtmlFenceLanguage(opts.language)) return true;
+    if (isGpbPresentationStreaming(code, opts.language)) return true;
+    const low = (code || '').toLowerCase();
+    if (
+      low.includes('<!doctype') ||
+      low.includes('<html') ||
+      low.includes('<head') ||
+      low.includes('<style') ||
+      low.includes('@font-face') ||
+      low.includes('cera cy')
+    ) {
+      return true;
+    }
+  } else if (opts.presentationExpected && isGpbPresentationStreaming(code, opts.language)) {
     return true;
   }
   // Обычный ```html (Excel-дашборд и т.п.) — ArtifactCard, не presentation viewer.
@@ -141,7 +158,10 @@ export function shouldOpenPresentationViewer(
  * Выделяет unfenced HTML презентации из текста ответа.
  * Модели часто отдают GPB HTML без ```html — иначе ChatInlineHtml рисует img/иконки в ленте.
  */
-export function extractUnfencedPresentationHtml(text: string): {
+export function extractUnfencedPresentationHtml(
+  text: string,
+  opts?: { presentationExpected?: boolean; isStreaming?: boolean },
+): {
   before: string;
   html: string | null;
   after: string;
@@ -171,7 +191,16 @@ export function extractUnfencedPresentationHtml(text: string): {
 
   const start = Math.min(...startCandidates);
   const html = text.slice(start);
-  if (!isGpbPresentationHtml(html) && !hasGpbSlideClass(html) && !isGpbPresentationStreaming(html)) {
+  const earlyPresentationStream =
+    Boolean(opts?.presentationExpected && opts?.isStreaming) &&
+    /<!doctype\s+html\b|<html\b|<head\b|<style\b|@font-face/i.test(html);
+
+  if (
+    !isGpbPresentationHtml(html) &&
+    !hasGpbSlideClass(html) &&
+    !isGpbPresentationStreaming(html) &&
+    !earlyPresentationStream
+  ) {
     return { before: text, html: null, after: '' };
   }
   return { before: text.slice(0, start), html, after: '' };
@@ -209,12 +238,144 @@ function extractPresentationHeadChrome(code: string, firstSlideIndex: number): s
   return [...links, ...styles].join('\n');
 }
 
+/** Минимальный GPB chrome, если модель отдала пустой <head> (типично после auto-continue). */
+const GPB_FALLBACK_STYLE = `
+@font-face{font-family:'Cera CY';src:url('/static/fonts/Cera-Regular-App.ttf') format('truetype');font-weight:400;font-style:normal}
+@font-face{font-family:'Cera CY';src:url('/static/fonts/Cera-Bold-App.ttf') format('truetype');font-weight:700;font-style:normal}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Cera CY',Calibri,sans-serif;background:#e8e8e8}
+.slide{width:297mm;height:167mm;background:#fff;position:relative;overflow:hidden}
+.slide-title{position:absolute;left:13.3mm;top:7.2mm;color:#2355D7;font-family:'Cera CY',Calibri,sans-serif;font-weight:700;line-height:1.2;z-index:3;max-width:220mm;word-wrap:break-word;overflow-wrap:break-word}
+.slide-title--xl{font-size:43px;max-width:220mm}.slide-title--lg{font-size:37px;max-width:220mm}
+.slide-title--md{font-size:32px;max-width:220mm}.slide-title--sm{font-size:27px;max-width:220mm}
+.slide-title--xs{font-size:24px;max-width:220mm}.slide-title--mini{font-size:21px;max-width:220mm;line-height:1.25}
+.content-zone{position:absolute;left:13.3mm;right:13.3mm;top:var(--content-top,22mm);width:calc(297mm - 26.6mm);z-index:3}
+.gpb-small{position:absolute;right:13.3mm;top:8.9mm;width:43.6mm;height:auto;z-index:4}
+.page-num,.page-number{position:absolute;right:13.3mm;bottom:7.3mm;z-index:5;font-size:8px;color:#696E82}
+.card{border-radius:2.5mm;padding:5mm}
+.title-slide .main-title{position:absolute;left:13.6mm;top:66.8mm;font-size:48px;font-weight:700;color:#2355D7;z-index:3;max-width:200mm}
+.title-slide .subtitle{position:absolute;left:13.6mm;top:95mm;font-size:20px;color:#333;z-index:3}
+.title-slide .website{position:absolute;left:13.6mm;bottom:12mm;font-size:14px;color:#2355D7;z-index:3}
+`.trim();
+
+function presentationFallbackChrome(): string {
+  return `<style>\n${GPB_FALLBACK_STYLE}\n</style>`;
+}
+
+/** Убирает fence/DOCTYPE-шум auto-continue из фрагмента слайда. */
+function cleanSlideFragment(frag: string): string {
+  let s = frag || '';
+  s = s.replace(/```(?:html|htm|xhtml)?\b[^\n]*\n?/gi, '\n');
+  s = s.replace(/```+/g, '\n');
+  s = s.replace(/^\s*html\s*$/gim, '');
+  s = s.replace(/<!DOCTYPE\s+html[^>]*>/gi, '');
+  s = s.replace(/<head\b[^>]*>[\s\S]*?<\/head>/gi, '');
+  s = s.replace(/<\/?(?:html|body)\b[^>]*>/gi, '');
+  const lastOpen = s.lastIndexOf('<!--');
+  if (lastOpen >= 0 && !s.slice(lastOpen).includes('-->')) {
+    s = s.slice(0, lastOpen).replace(/\s+$/, '');
+  }
+  return s.trim();
+}
+
+/** Срезает markdown-fence и незакрытый хвост <!-- ... без -->. */
+export function sanitizePresentationHtmlSource(code: string): string {
+  let s = (code || '').replace(/^\uFEFF/, '').trim();
+  if (!s) return s;
+  const fenced = s.match(/^```(?:html|htm|xhtml)?\b[^\n]*\n([\s\S]*?)(?:```\s*)?$/i);
+  if (fenced) s = fenced[1].trim();
+  else {
+    s = s.replace(/^```(?:html|htm|xhtml)?\b[^\n]*\n/i, '');
+    if (s.trimEnd().endsWith('```')) s = s.trimEnd().slice(0, -3).trimEnd();
+  }
+  const lastOpen = s.lastIndexOf('<!--');
+  if (lastOpen >= 0 && !s.slice(lastOpen).includes('-->')) {
+    s = s.slice(0, lastOpen).replace(/\s+$/, '');
+  }
+  return s;
+}
+
 function wrapPresentationSlidesHtml(chrome: string, slidesHtml: string): string {
   return `<!DOCTYPE html><html><head>${chrome}</head><body>${slidesHtml}</body></html>`;
 }
 
+function ensureHtmlDocumentClosed(html: string): string {
+  const body = (html || '').replace(/\s+$/, '');
+  if (!body) return body;
+  if (/<\/html\s*>\s*$/i.test(body)) return body;
+  if (/<\/body\s*>\s*$/i.test(body)) return `${body}\n</html>`;
+  return `${body}\n</body>\n</html>`;
+}
+
+/**
+ * Все слайды из сообщения (в любом виде: fenced ```html, unfenced <!DOCTYPE>,
+ * несколько блоков подряд) → один ```html с одним документом = один viewer.
+ * Также убирает хвост ``</body></html>`` и пустые ```text после презы.
+ *
+ * Ключевой инвариант: НЕ зависим от того, fenced блок или нет — собираем все
+ * фрагменты `.slide` из всего текста. Это чинит смешанный кейс
+ * (первый блок в ```html, второй — сырой <!DOCTYPE html>).
+ */
+export function coalescePresentationHtmlInMessage(text: string): string {
+  if (!text || !hasGpbSlideClass(text)) return text;
+
+  // Начало презентационной части: первый fence ```html ИЛИ первый <!DOCTYPE>/<html>
+  // ИЛИ первый элемент с class="slide" (если модель дала слайды без обёртки).
+  // Также ```\nhtml (язык на следующей строке) — иначе утекает слово «html» в чат.
+  const firstFence = text.search(/```(?:html|htm|xhtml)\b/i);
+  const firstFenceBare = text.search(/```\s*\n\s*html\b/i);
+  const firstDoc = text.search(/<!DOCTYPE\s+html\b|<html\b/i);
+  const firstSlide = text.search(/<[a-zA-Z][\w-]*\b[^>]*\bclass\s*=\s*(["'])[^"'>]*\bslide\b/i);
+
+  const candidates = [firstFence, firstFenceBare, firstDoc, firstSlide].filter((i) => i >= 0);
+  if (!candidates.length) return text;
+  const presStart = Math.min(...candidates);
+  const prefix = presStart > 0 ? text.slice(0, presStart).trimEnd() : '';
+
+  // Все слайды из всего хвоста сообщения, независимо от fence/doctype-границ.
+  const presPart = text.slice(presStart);
+  const allSlides: string[] = [];
+  const seen = new Set<string>();
+  for (const frag of extractGpbSlideFragments(presPart)) {
+    let cleaned = cleanSlideFragment(frag)
+      .replace(/```[\w.+-]*\s*$/i, '')
+      .replace(/<\/body>\s*<\/html>\s*$/i, '')
+      .trimEnd();
+    if (!classAttrHasSlideTokenInFragment(cleaned)) continue;
+    // Полный фрагмент — не схлопывать титул и финальный title-slide по префиксу.
+    const key = cleaned;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    allSlides.push(cleaned);
+  }
+  if (!allSlides.length) return text;
+
+  // Chrome (link/style) берём из первого HTML-блока презентации.
+  let chrome = extractPresentationHeadChrome(
+    presPart,
+    presPart.indexOf(allSlides[0]) >= 0 ? presPart.indexOf(allSlides[0]) : presPart.length,
+  ).trim();
+  if (!chrome || !/<style\b/i.test(chrome)) {
+    chrome = !chrome ? presentationFallbackChrome() : `${chrome}\n${presentationFallbackChrome()}`;
+  }
+  const merged = ensureHtmlDocumentClosed(wrapPresentationSlidesHtml(chrome, allSlides.join('\n')));
+  const body = `\`\`\`html\n${merged}\n\`\`\``;
+
+  return prefix ? `${prefix}\n\n${body}` : body;
+}
+
+/** Внутри фрагмента есть хотя бы один тег с class-токеном slide. */
+function classAttrHasSlideTokenInFragment(fragment: string): boolean {
+  const quoted = /class\s*=\s*(["'])([^"']*)\1/gi;
+  let m: RegExpExecArray | null;
+  while ((m = quoted.exec(fragment)) !== null) {
+    if (classAttrHasSlideToken(m[2])) return true;
+  }
+  return /class\s*=\s*slide(?![\w-])/i.test(fragment);
+}
+
 /** Мягкие признаки скилла — только для спиннера «генерация…» во время стрима. */
-function hasPresentationStreamHints(code: string): boolean {
+export function hasPresentationStreamHints(code: string): boolean {
   const lower = code.toLowerCase();
   return (
     hasGpbSlideClass(code) ||
@@ -257,28 +418,71 @@ export interface StablePresentationSnapshot {
  * Для стрима: последний .slide почти всегда обрезан — его не показываем,
  * чтобы iframe не мерцал на каждый токен. Обновляем snapshot только когда
  * появляется новый слайд (предыдущий считается готовым).
+ * @param opts.maxReadyCount — ограничить число готовых слайдов (пошаговый reveal).
  */
 export function getStablePresentationSnapshot(
   code: string,
-  isStreaming: boolean
+  isStreaming: boolean,
+  opts?: { maxReadyCount?: number },
 ): StablePresentationSnapshot {
-  const fragments = extractGpbSlideFragments(code);
-  const startedCount = Math.max(countGpbSlideOpens(code), fragments.length);
+  const cleaned = sanitizePresentationHtmlSource(code);
+  const fragments = extractGpbSlideFragments(cleaned);
+  const startedCount = Math.max(countGpbSlideOpens(cleaned), fragments.length);
+  const maxReady = opts?.maxReadyCount;
 
-  if (!code.trim()) {
+  if (!cleaned.trim()) {
     return { html: null, readyCount: 0, startedCount: 0, pending: isStreaming };
   }
 
   if (!isStreaming) {
     try {
-      const doc = new DOMParser().parseFromString(code, 'text/html');
+      let htmlOut = cleaned;
+      const chromeFromDoc = extractPresentationHeadChrome(
+        cleaned,
+        fragments.length ? cleaned.indexOf(fragments[0]) : 0,
+      ).trim();
+      const chrome =
+        chromeFromDoc && /<style\b/i.test(chromeFromDoc)
+          ? chromeFromDoc
+          : chromeFromDoc
+            ? `${chromeFromDoc}\n${presentationFallbackChrome()}`
+            : presentationFallbackChrome();
+
+      // Пустой <head> без <style> — собираем из фрагментов + fallback CSS.
+      if (!/<style\b/i.test(htmlOut) && fragments.length) {
+        htmlOut = wrapPresentationSlidesHtml(chrome, fragments.map(cleanSlideFragment).join('\n'));
+      }
+
+      const doc = new DOMParser().parseFromString(htmlOut, 'text/html');
       const n = doc.querySelectorAll('.slide').length;
+      // DOMParser на кривом хвосте иногда «съедает» последний .slide (title-slide),
+      // хотя в исходнике он есть — тогда пересобираем из regex-фрагментов.
+      if (fragments.length > n && fragments.length > 0) {
+        const rebuilt = wrapPresentationSlidesHtml(
+          chrome,
+          fragments.map(cleanSlideFragment).join('\n'),
+        );
+        return {
+          html: rebuilt,
+          readyCount: fragments.length,
+          startedCount: Math.max(startedCount, fragments.length),
+          pending: false,
+        };
+      }
       const readyCount = Math.max(n, fragments.length);
       if (readyCount === 0) {
         return { html: null, readyCount: 0, startedCount: 0, pending: false };
       }
+      if (n === 0 && fragments.length > 0) {
+        return {
+          html: wrapPresentationSlidesHtml(chrome, fragments.map(cleanSlideFragment).join('\n')),
+          readyCount: fragments.length,
+          startedCount: fragments.length,
+          pending: false,
+        };
+      }
       return {
-        html: code,
+        html: htmlOut,
         readyCount,
         startedCount: Math.max(startedCount, readyCount),
         pending: false,
@@ -287,7 +491,7 @@ export function getStablePresentationSnapshot(
       if (!fragments.length) {
         return { html: null, readyCount: 0, startedCount: 0, pending: false };
       }
-      const chrome = extractPresentationHeadChrome(code, code.indexOf(fragments[0]));
+      const chrome = extractPresentationHeadChrome(cleaned, cleaned.indexOf(fragments[0]));
       return {
         html: wrapPresentationSlidesHtml(chrome, fragments.join('\n')),
         readyCount: fragments.length,
@@ -298,8 +502,10 @@ export function getStablePresentationSnapshot(
   }
 
   // Пока стрим: последний .slide почти всегда обрезан — его не показываем.
-  // Фрагменты по regex, не DOMParser: на обрезанном HTML парсер «съедает» хвост.
-  const readyCount = Math.max(0, startedCount - 1);
+  let readyCount = Math.max(0, startedCount - 1);
+  if (typeof maxReady === 'number' && Number.isFinite(maxReady)) {
+    readyCount = Math.min(readyCount, Math.max(0, Math.floor(maxReady)));
+  }
   if (readyCount === 0 || !fragments.length) {
     return { html: null, readyCount: 0, startedCount, pending: true };
   }
@@ -308,7 +514,7 @@ export function getStablePresentationSnapshot(
   if (!readyFragments.length) {
     return { html: null, readyCount: 0, startedCount, pending: true };
   }
-  const chrome = extractPresentationHeadChrome(code, code.indexOf(readyFragments[0]));
+  const chrome = extractPresentationHeadChrome(cleaned, cleaned.indexOf(readyFragments[0]));
   return {
     html: wrapPresentationSlidesHtml(chrome, readyFragments.join('\n')),
     readyCount: readyFragments.length,
@@ -324,8 +530,9 @@ export function getStablePresentationSnapshot(
  */
 export function openPresentationViewer(html: string): void {
   const key = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  const payload = sanitizePresentationHtmlSource(html);
   try {
-    localStorage.setItem(STORAGE_PREFIX + key, html);
+    localStorage.setItem(STORAGE_PREFIX + key, payload);
   } catch {
     throw new Error('Не удалось сохранить HTML презентации (слишком большой объём?)');
   }

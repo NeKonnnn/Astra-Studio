@@ -5,8 +5,8 @@
 pick the flag up. api.openai.com, however, validates the request body strictly
 and answers
 
-    400 Unrecognized request arguments supplied: chat_template_kwargs,
-    enable_thinking
+  400 Unrecognized request arguments supplied: chat_template_kwargs,
+  enable_thinking
 
 rejecting the whole call, so every chat request through a ``kind: openai``
 provider failed.
@@ -37,7 +37,7 @@ _THINKING_KEYS = ("enable_thinking", "chat_template_kwargs")
 
 
 def _provider(cls, kind: str):
-    return cls(LLMProviderConfig(id="TEST", kind=kind, base_url="http://example.invalid"))
+    return cls(LLMProviderConfig(id="t", kind=kind, base_url="http://example.invalid"))
 
 
 def _payload(provider, request_extra):

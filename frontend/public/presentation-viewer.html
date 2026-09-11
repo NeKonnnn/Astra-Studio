@@ -125,8 +125,24 @@
       return html.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
     }
 
+    function sanitizePresentationHtml(html) {
+      var s = (html || '').replace(/^\uFEFF/, '').trim();
+      if (!s) return s;
+      var fenced = s.match(/^```(?:html|htm|xhtml)?\b[^\n]*\n([\s\S]*?)(?:```\s*)?$/i);
+      if (fenced) s = fenced[1].trim();
+      else {
+        s = s.replace(/^```(?:html|htm|xhtml)?\b[^\n]*\n/i, '');
+        if (/\s*```\s*$/.test(s)) s = s.replace(/\s*```\s*$/, '');
+      }
+      var lastOpen = s.lastIndexOf('<!--');
+      if (lastOpen >= 0 && s.slice(lastOpen).indexOf('-->') < 0) {
+        s = s.slice(0, lastOpen).replace(/\s+$/, '');
+      }
+      return s;
+    }
+
     function init() {
-      const html = stripEmbeddedScripts(loadPresentationHtml());
+      const html = sanitizePresentationHtml(stripEmbeddedScripts(loadPresentationHtml()));
       if (!html) {
         showError('HTML презентации не найден. Откройте просмотр из блока ```html в чате.');
         return;
@@ -138,6 +154,9 @@
         try {
           const doc = frame.contentDocument;
           slides = Array.from(doc.querySelectorAll('.slide'));
+          if (!slides.length) {
+            slides = Array.from(doc.querySelectorAll('[class~="slide"]'));
+          }
           if (!slides.length) {
             showError('В HTML не найдены слайды с классом .slide');
             return;

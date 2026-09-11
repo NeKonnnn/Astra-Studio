@@ -4,6 +4,7 @@
   "private": true,
   "dependencies": {
     "@codesandbox/sandpack-react": "^2.20.0",
+    "@craco/craco": "^7.1.0",
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",
     "@monaco-editor/react": "^4.7.0",
