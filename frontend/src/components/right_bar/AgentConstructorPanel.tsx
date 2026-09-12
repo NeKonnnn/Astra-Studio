@@ -31,7 +31,6 @@ import {
   Close as CloseIcon,
   Delete as DeleteIcon,
   Upload as UploadIcon,
-  SmartToy as AgentIcon,
   Code as CodeIcon,
   Search as SearchIcon,
   AttachFile as AttachIcon,
@@ -53,6 +52,7 @@ import {
   CheckBoxOutlineBlank as CheckBoxBlankIcon,
   ExpandMore as ExpandMoreIcon,
 } from '@mui/icons-material';
+import AgentIcon from '../../icons/AgentIcon';
 import { getApiUrl, API_ENDPOINTS, getAuthFetchHeaders } from '../../config/api';
 import { useAuth } from '../../contexts/AuthContext';
 import { useAppActions } from '../../contexts/AppContext';
@@ -259,7 +259,12 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
   const ragUserId = String(user?.user_id || user?.username || '').trim().toLowerCase();
   const { showNotification } = useAppActions();
   const { notifyReindexStarted } = useRagReindexStatus();
-  const [panelBg, setPanelBg] = useState(() => getSidebarPanelBackground());
+  const [sidebarColorTick, setSidebarColorTick] = useState(0);
+  const panelBg = useMemo(
+    () => getSidebarPanelBackground(isDarkMode),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [isDarkMode, sidebarColorTick],
+  );
   const panelChrome = useMemo(() => getSidebarPanelChrome(panelBg), [panelBg]);
   const secondaryBtnSx = useMemo(() => getSidebarSecondaryButtonSx(panelChrome), [panelChrome]);
   const secondaryDashedBtnSx = useMemo(
@@ -314,7 +319,7 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
     [footerActionBtnSx],
   );
   useEffect(() => {
-    const onColorChanged = () => setPanelBg(getSidebarPanelBackground());
+    const onColorChanged = () => setSidebarColorTick((n) => n + 1);
     window.addEventListener('sidebarColorChanged', onColorChanged);
     return () => window.removeEventListener('sidebarColorChanged', onColorChanged);
   }, []);

@@ -241,15 +241,10 @@ export function getProjectAvatarOutlineBox(sizePx: number, iconColor: string): R
   };
 }
 
-/** Визуально утолщает контур MUI-иконки (деньги, папка и т.д.) за счёт лёгкого ореола currentColor. */
-export function getProjectIconGlyphSx(fontSizePx: number, iconColor: string) {
-  // Слишком сильный «ореол» делает пиктограмму жирной и съедает детали.
-  // Делаем мягче: чуть меньше увеличение и меньше теней.
-  const bump = fontSizePx <= 14 ? 1.03 : 1.02;
-  const s = fontSizePx <= 14 ? 0.24 : 0.3;
+/** Размер глифа иконки проекта (outlined — без «ореола», иначе контур выглядит жирным). */
+export function getProjectIconGlyphSx(fontSizePx: number, _iconColor?: string) {
   return {
-    fontSize: `${Math.max(10, Math.round(fontSizePx * bump))}px`,
-    filter: `drop-shadow(0 0 ${s}px ${iconColor}) drop-shadow(${s}px 0 0 ${iconColor}) drop-shadow(-${s}px 0 0 ${iconColor})`,
+    fontSize: `${Math.max(10, Math.round(fontSizePx))}px`,
   };
 }
 

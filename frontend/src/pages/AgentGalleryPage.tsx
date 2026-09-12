@@ -8,7 +8,7 @@ import {
   Pagination,
   Typography,
 } from '@mui/material';
-import { SmartToy as AgentIcon } from '@mui/icons-material';
+import AgentIcon from '../icons/AgentIcon';
 import { useTheme } from '@mui/material/styles';
 import { useNavigate, Navigate } from 'react-router-dom';
 import { getApiUrl } from '../config/api';

@@ -159,10 +159,15 @@ export default function SkillsSidebarPanel({
   const { showNotification } = useAppActions();
   const importRef = useRef<HTMLInputElement>(null);
 
-  const [panelBg, setPanelBg] = useState(() => getSidebarPanelBackground());
+  const [sidebarColorTick, setSidebarColorTick] = useState(0);
+  const panelBg = useMemo(
+    () => getSidebarPanelBackground(isDarkMode),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [isDarkMode, sidebarColorTick],
+  );
   const panelChrome = useMemo(() => getSidebarPanelChrome(panelBg), [panelBg]);
   useEffect(() => {
-    const onColorChanged = () => setPanelBg(getSidebarPanelBackground());
+    const onColorChanged = () => setSidebarColorTick((n) => n + 1);
     window.addEventListener('sidebarColorChanged', onColorChanged);
     return () => window.removeEventListener('sidebarColorChanged', onColorChanged);
   }, []);

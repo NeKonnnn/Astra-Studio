@@ -9,10 +9,10 @@ import {
   Chip,
 } from '@mui/material';
 import {
-  HubOutlined as HubIcon,
   Search as SearchIcon,
   ExpandMore as ExpandMoreIcon,
 } from '@mui/icons-material';
+import HubIcon from '../icons/McpIcon';
 import {
   MENU_ACTION_TEXT_SIZE,
   CHAT_GEAR_SCROLL_AREA_NO_VISIBLE_SCROLLBAR_SX,

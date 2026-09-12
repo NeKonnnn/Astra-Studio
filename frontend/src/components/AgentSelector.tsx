@@ -5,10 +5,10 @@ import {
   ExpandMore as ExpandMoreIcon,
   ChevronRight as ChevronRightIcon,
   Computer as ComputerIcon,
-  SmartToy as AgentIcon,
   Check as CheckIcon,
   Image as ImageIcon,
 } from '@mui/icons-material';
+import AgentIcon from '../icons/AgentIcon';
 import { useAuth } from '../contexts/AuthContext';
 import { useAppActions } from '../contexts/AppContext';
 import { getApiUrl } from '../config/api';

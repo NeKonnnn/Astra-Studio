@@ -1,4 +1,4 @@
-import React, { startTransition, useCallback, useEffect, useState } from 'react';
+import React, { startTransition, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Box,
   Drawer,
@@ -13,10 +13,10 @@ import {
 import {
   ChevronLeft as ChevronLeftIcon,
   ChevronRight as ChevronRightIcon,
-  HistoryEdu as SkillsNavIcon,
   PushPin as PushPinIcon,
   PushPinOutlined as PushPinOutlinedIcon,
 } from '@mui/icons-material';
+import SkillsNavIcon from '../../icons/SkillsIcon';
 import {
   SIDEBAR_CHAT_ROW_LIST_ITEM_BUTTON_SX,
   SIDEBAR_HIDE_SCROLLBAR_SX,
@@ -44,7 +44,7 @@ import { usePendingSkillSidebarOpen } from '../../hooks/usePendingSkillSidebarOp
 import AgentConstructorPanel from './AgentConstructorPanel';
 import GalleryNavButton from './GalleryNavButton';
 import SkillsSidebarPanel from './SkillsSidebarPanel';
-import SidebarRailMenuGlyph from '../SidebarRailMenuGlyph';
+import SidebarRailMenuGlyph from '../../icons/SidebarRailMenuGlyph';
 import TranscriptionSidebarSection from './TranscriptionSidebarSection';
 import RightSidebarResizeHandle from './RightSidebarResizeHandle';
 import { clampRightSidebarWidthPx } from '../../hooks/useRightSidebarWidth';
@@ -79,7 +79,12 @@ export default function RightBar({
   setExpandedWidthPx,
   setWidthPinned,
 }: RightBarProps) {
-  const [panelBg, setPanelBg] = useState(() => getSidebarPanelBackground());
+  const [sidebarColorTick, setSidebarColorTick] = useState(0);
+  const panelBg = useMemo(
+    () => getSidebarPanelBackground(isDarkMode),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [isDarkMode, sidebarColorTick],
+  );
   const [transcriptionMenuOpen, setTranscriptionMenuOpen] = useState(false);
   const [skillsPanelOpen, setSkillsPanelOpen] = useState(false);
   const [agentConstructorOpen, setAgentConstructorOpen] = useState(false);
@@ -88,7 +93,12 @@ export default function RightBar({
   const drawerWidth = open ? clampRightSidebarWidthPx(expandedWidthPx) : RIGHT_SIDEBAR_COLLAPSED_WIDTH_PX;
 
   useEffect(() => {
-    const sync = () => setPanelBg(getSidebarPanelBackground());
+    const raw = (localStorage.getItem('sidebar_panel_color') || '').trim();
+    if (raw && (raw.toLowerCase() === '#f7f7f9' || raw.toLowerCase() === '#212128')) {
+      localStorage.setItem('sidebar_panel_color', '');
+      setSidebarColorTick((n) => n + 1);
+    }
+    const sync = () => setSidebarColorTick((n) => n + 1);
     window.addEventListener('sidebarColorChanged', sync);
     window.addEventListener('storage', sync);
     return () => {

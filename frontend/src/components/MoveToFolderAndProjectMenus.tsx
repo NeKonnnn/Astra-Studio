@@ -13,6 +13,7 @@ import {
 } from '@mui/icons-material';
 import type { Folder, Project } from '../contexts/AppContext';
 import { MENU_BORDER_RADIUS_PX, MENU_ICON_MIN_WIDTH, MENU_ICON_TO_TEXT_GAP_PX, MENU_ICON_FONT_SIZE_PX, MENU_MIN_WIDTH_PX, getProjectIconGlyphSx, getDropdownItemSx, getDropdownPanelSx } from '../constants/menuStyles';
+import { PROJECT_ICON_MAP } from '../constants/projectIcons';
 
 // Включить логи подменю в консоль: в DevTools выполнить window.__SUBMENU_DEBUG__ = true и обновить страницу
 const SUBMENU_DEBUG = typeof window !== 'undefined' && (window as any).__SUBMENU_DEBUG__;
@@ -384,7 +385,6 @@ export interface MoveToSubmenusProps {
   chats: Array<{ id: string; projectId?: string }>;
   isDarkMode: boolean;
   useFoldersMode: boolean;
-  projectIconMap: Record<string, React.ComponentType<any>>;
   setShowCreateFolderDialog: (v: boolean) => void;
   setPendingChatIdForProject: (v: string | null) => void;
   setShowNewProjectModal: (v: boolean) => void;
@@ -407,7 +407,6 @@ export function MoveToFolderAndProjectSubmenus(props: MoveToSubmenusProps) {
     chats,
     isDarkMode,
     useFoldersMode,
-    projectIconMap,
     setShowCreateFolderDialog,
     setPendingChatIdForProject,
     setShowNewProjectModal,
@@ -529,7 +528,7 @@ export function MoveToFolderAndProjectSubmenus(props: MoveToSubmenusProps) {
               );
             }
             if (project.iconType === 'icon' && project.icon) {
-              const IconComponent = projectIconMap[project.icon] || FolderIcon;
+              const IconComponent = PROJECT_ICON_MAP[project.icon] || FolderIcon;
               return (
                 <Box sx={iconWrapSx}>
                   <IconComponent sx={{ ...glyphSx, color: 'currentColor' }} />

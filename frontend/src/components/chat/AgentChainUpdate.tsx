@@ -1,8 +1,7 @@
 import React from 'react';
 import { Box, Typography } from '@mui/material';
-import SmartToyIcon from '@mui/icons-material/SmartToy';
+import AgentIcon from '../../icons/AgentIcon';
 import ThinkingShimmerText from './ThinkingShimmerText';
-
 /** Заголовок шага цепочки — как ChainAgentUpdate в GPB_ASTRA. */
 export default function AgentChainUpdate({
   name,
@@ -37,7 +36,7 @@ export default function AgentChainUpdate({
           flexShrink: 0,
         }}
       >
-        <SmartToyIcon sx={{ fontSize: 14, opacity: 0.75 }} />
+        <AgentIcon sx={{ fontSize: 14, opacity: 0.75 }} />
       </Box>
       <Typography variant="body2" sx={{ fontWeight: 600, fontSize: '0.88rem' }}>
         {title}

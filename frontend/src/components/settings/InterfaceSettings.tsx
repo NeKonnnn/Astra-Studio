@@ -76,7 +76,6 @@ const SIDEBAR_PALETTE = [
   { name: 'Коричневый', value: '#795548' },
   { name: 'Серый', value: '#607d8b' },
   { name: 'Тёмно-серый', value: '#455a64' },
-  { name: 'Тёмный графит', value: '#212128' },
   { name: 'Индиго', value: '#3f51b5' },
   { name: 'Пурпурный', value: '#9c27b0' },
   { name: 'Тёмно-пурпурный', value: '#673ab7' },
@@ -256,7 +255,7 @@ export default function InterfaceSettings({ isDarkMode: isDarkModeProp }: { isDa
     setInterfaceSettings(newSettings);
     localStorage.setItem(SIDEBAR_PANEL_COLOR_KEY, value);
     window.dispatchEvent(new CustomEvent('sidebarColorChanged', { detail: value }));
-    showNotification('success', value ? 'Цвет панелей изменён' : 'Цвет панелей сброшен');
+    showNotification('success', value ? 'Цвет панелей изменён' : 'Цвет панелей сброшен (следует за темой)');
   };
 
   const handlePaletteColorPick = (value: string) => {
@@ -1281,7 +1280,7 @@ export default function InterfaceSettings({ isDarkMode: isDarkModeProp }: { isDa
               <ListItemText
                 primary="Цвет боковых панелей"
                 primaryTypographyProps={{ variant: 'body1', fontWeight: 500 }}
-                secondary="Левой и правой панелей (сайдбар с чатами и панель действий)"
+                secondary="«По умолчанию» следует за темой (светлая/тёмная). Свой цвет при смене темы не меняется."
                 secondaryTypographyProps={{ variant: 'body2', sx: { mt: 0.5 } }}
               />
               <Box sx={{ minWidth: 200, flexShrink: 0 }}>

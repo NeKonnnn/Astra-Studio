@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Box, Typography, CircularProgress, Link } from '@mui/material';
 import {
-  HistoryEdu as SkillIcon,
   Search as SearchIcon,
   Check as CheckIcon,
   Block as NoSkillIcon,
 } from '@mui/icons-material';
+import SkillIcon from '../icons/SkillsIcon';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useAppContext } from '../contexts/AppContext';

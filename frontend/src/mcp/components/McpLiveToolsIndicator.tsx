@@ -1,6 +1,6 @@
 import React from 'react';
 import { Box, Chip, CircularProgress, Typography } from '@mui/material';
-import { HubOutlined as HubIcon } from '@mui/icons-material';
+import HubIcon from '../../icons/McpIcon';
 import type { McpToolCallRecord } from '../types';
 
 interface McpLiveToolsIndicatorProps {

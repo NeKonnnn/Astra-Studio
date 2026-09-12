@@ -14,9 +14,9 @@ import {
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
-import SmartToyIcon from '@mui/icons-material/SmartToy';
 import LinkIcon from '@mui/icons-material/Link';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import AgentIcon from '../../icons/AgentIcon';
 import type { SxProps, Theme } from '@mui/material/styles';
 import { DEFAULT_MAX_CHAIN_AGENTS } from '../../constants/agentChain';
 import {
@@ -168,7 +168,7 @@ export default function AgentChainEditor({
 
       <Box sx={{ mt: 1, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 0.5, py: 0.5 }}>
-          <SmartToyIcon sx={{ fontSize: 16, color: panelChrome.fgMuted }} />
+          <AgentIcon sx={{ fontSize: 16, color: panelChrome.fgMuted }} />
           <Typography variant="caption" sx={{ color: panelChrome.fgMuted, fontSize: '0.78rem', fontWeight: 600 }} noWrap>
             {currentAgentName.trim() || 'Этот агент'}
           </Typography>
@@ -192,7 +192,7 @@ export default function AgentChainEditor({
                   py: 0.25,
                 }}
               >
-                <SmartToyIcon sx={{ fontSize: 15, color: panelChrome.fgSubtle, flexShrink: 0 }} />
+                <AgentIcon sx={{ fontSize: 15, color: panelChrome.fgSubtle, flexShrink: 0 }} />
                 <Typography
                   component="button"
                   type="button"

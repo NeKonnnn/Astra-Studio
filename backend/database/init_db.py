@@ -2,6 +2,7 @@
 Модуль инициализации подключений к базам данных
 """
 
+import asyncio
 import os
 import traceback
 from typing import Optional
@@ -168,8 +169,17 @@ async def init_mongodb() -> bool:
         return False
 
 
-async def init_postgresql() -> bool:
-    """Инициализация подключения к PostgreSQL"""
+async def init_postgresql(
+    *,
+    max_attempts: int = 15,
+    base_delay_sec: float = 1.0,
+    max_delay_sec: float = 5.0,
+) -> bool:
+    """Инициализация подключения к PostgreSQL.
+
+    После рестарта Postgres часто ещё в recovery mode, хотя healthcheck
+    ``pg_isready`` уже green — поэтому здесь несколько попыток с backoff.
+    """
     global postgresql_connection, document_repo, vector_repo, prompt_repo, tag_repo, agent_repo, skill_repo, user_settings_repo, project_repo, entity_settings_repo
 
     if not postgresql_available:
@@ -180,20 +190,25 @@ async def init_postgresql() -> bool:
         logger.error("Модуль settings недоступен. PostgreSQL не может быть инициализирован.")
         return False
 
-    try:
-        # Получаем настройки из settings
-        settings = get_settings()
-        pg_config = settings.postgresql
-        postgresql_connection = PostgreSQLConnection(
-            host=pg_config.host,
-            port=pg_config.port,
-            database=pg_config.database,
-            user=pg_config.user,
-            password=pg_config.password
-        )
-        embedding_dim = pg_config.embedding_dim
+    settings = get_settings()
+    pg_config = settings.postgresql
+    embedding_dim = pg_config.embedding_dim
+    last_error: Optional[BaseException] = None
 
-        if await postgresql_connection.connect():
+    for attempt in range(1, max_attempts + 1):
+        try:
+            postgresql_connection = PostgreSQLConnection(
+                host=pg_config.host,
+                port=pg_config.port,
+                database=pg_config.database,
+                user=pg_config.user,
+                password=pg_config.password,
+            )
+
+            if not await postgresql_connection.connect():
+                last_error = RuntimeError("connect() вернул False")
+                raise last_error
+
             # Создаем репозитории
             document_repo = DocumentRepository(postgresql_connection)
             vector_repo = VectorRepository(postgresql_connection, embedding_dim)
@@ -217,15 +232,31 @@ async def init_postgresql() -> bool:
             await _migrate_entity_rag_settings(entity_settings_repo)
             await entity_settings_repo.cleanup_orphans()
 
-            logger.info("PostgreSQL успешно инициализирован")
+            if attempt > 1:
+                logger.info("PostgreSQL успешно инициализирован с попытки %s/%s", attempt, max_attempts)
+            else:
+                logger.info("PostgreSQL успешно инициализирован")
             return True
-        else:
-            logger.error("Не удалось подключиться к PostgreSQL")
-            return False
 
-    except Exception as e:
-        logger.error(f"Ошибка при инициализации PostgreSQL: {e}")
-        return False
+        except Exception as e:
+            last_error = e
+            postgresql_connection = None
+            document_repo = vector_repo = agent_repo = skill_repo = None
+            user_settings_repo = project_repo = entity_settings_repo = None
+            if attempt >= max_attempts:
+                break
+            delay = min(max_delay_sec, base_delay_sec * attempt)
+            logger.warning(
+                "PostgreSQL ещё не готов (попытка %s/%s): %s. Повтор через %.1fs",
+                attempt,
+                max_attempts,
+                e,
+                delay,
+            )
+            await asyncio.sleep(delay)
+
+    logger.error("Не удалось инициализировать PostgreSQL после %s попыток: %s", max_attempts, last_error)
+    return False
 
 
 async def _migrate_agent_model_settings(repo) -> None:

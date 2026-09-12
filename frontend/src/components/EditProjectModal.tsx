@@ -24,76 +24,19 @@ import {
   Close as CloseIcon,
   Add as AddIcon,
   HelpOutline as HelpOutlineIcon,
-  Folder as FolderIcon,
-  AttachMoney as MoneyIcon,
-  Assignment as AssignmentIcon,
-  Edit as EditIcon,
-  Favorite as FavoriteIcon,
-  Luggage as LuggageIcon,
   ExpandMore as ExpandMoreIcon,
   ExpandLess as ExpandLessIcon,
-  Lightbulb as LightbulbIcon,
-  Image as ImageIcon,
-  PlayArrow as PlayArrowIcon,
-  MusicNote as MusicNoteIcon,
-  AutoAwesome as SparkleIcon,
-  Work as BriefcaseIcon,
-  Language as GlobeIcon,
-  School as GraduationIcon,
-  AccountBalanceWallet as WalletIcon,
-  SportsBaseball as BaseballIcon,
-  Restaurant as CutleryIcon,
-  LocalCafe as CoffeeIcon,
-  Code as CodeIcon,
-  LocalFlorist as LeafIcon,
-  Pets as CatIcon,
-  DirectionsCar as CarIcon,
-  MenuBook as BookIcon,
-  Cloud as UmbrellaIcon,
-  CalendarToday as CalendarIcon,
-  Computer as DesktopIcon,
-  VolumeUp as SpeakerIcon,
-  Assessment as ChartIcon,
-  Email as MailIcon,
 } from '@mui/icons-material';
 import type { Project } from '../contexts/AppContext';
 import { getProjectIconGlyphSx } from '../constants/menuStyles';
+import {
+  PROJECT_DEFAULT_ICON as FolderIcon,
+  PROJECT_ICON_OPTIONS as iconOptions,
+} from '../constants/projectIcons';
 import ProjectRagLibraryInline from './ProjectRagLibraryInline';
 import RAGSettings from './settings/RAGSettings';
 import { saveEntityRagSettings, type EntityRagDraft } from '../utils/entityRagSettings';
 import { useRagReindexStatus } from '../contexts/RagReindexStatusContext';
-
-const iconOptions = [
-  { name: 'folder', icon: FolderIcon },
-  { name: 'money', icon: MoneyIcon },
-  { name: 'lightbulb', icon: LightbulbIcon },
-  { name: 'gallery', icon: ImageIcon },
-  { name: 'video', icon: PlayArrowIcon },
-  { name: 'music', icon: MusicNoteIcon },
-  { name: 'sparkle', icon: SparkleIcon },
-  { name: 'edit', icon: EditIcon },
-  { name: 'briefcase', icon: BriefcaseIcon },
-  { name: 'globe', icon: GlobeIcon },
-  { name: 'graduation', icon: GraduationIcon },
-  { name: 'wallet', icon: WalletIcon },
-  { name: 'heart', icon: FavoriteIcon },
-  { name: 'baseball', icon: BaseballIcon },
-  { name: 'cutlery', icon: CutleryIcon },
-  { name: 'coffee', icon: CoffeeIcon },
-  { name: 'code', icon: CodeIcon },
-  { name: 'leaf', icon: LeafIcon },
-  { name: 'cat', icon: CatIcon },
-  { name: 'car', icon: CarIcon },
-  { name: 'book', icon: BookIcon },
-  { name: 'umbrella', icon: UmbrellaIcon },
-  { name: 'calendar', icon: CalendarIcon },
-  { name: 'desktop', icon: DesktopIcon },
-  { name: 'speaker', icon: SpeakerIcon },
-  { name: 'chart', icon: ChartIcon },
-  { name: 'mail', icon: MailIcon },
-  { name: 'assignment', icon: AssignmentIcon },
-  { name: 'luggage', icon: LuggageIcon },
-];
 
 const colorOptions = [
   { name: 'white', value: '#ffffff' },
@@ -244,7 +187,7 @@ export default function EditProjectModal({ open, onClose, project, onSave }: Edi
     }
     return (
       <Box sx={iconWrapSx}>
-        <MoneyIcon sx={{ ...glyphSx, color: 'currentColor' }} />
+        <FolderIcon sx={{ ...glyphSx, color: 'currentColor' }} />
       </Box>
     );
   };
@@ -349,6 +292,8 @@ export default function EditProjectModal({ open, onClose, project, onSave }: Edi
                   >
                     {iconOptions.map((option) => {
                       const IconComponent = option.icon;
+                      const previewColor =
+                        selectedColor === '#ffffff' ? '#9ca3af' : selectedColor;
                       return (
                         <IconButton
                           key={option.name}
@@ -361,11 +306,14 @@ export default function EditProjectModal({ open, onClose, project, onSave }: Edi
                           sx={{
                             width: 48,
                             height: 48,
-                            border: selectedIcon === option.name ? '2px solid' : '1px solid',
-                            borderColor: selectedIcon === option.name ? 'primary.main' : 'divider',
+                            border: 'none',
+                            borderRadius: 1,
+                            color: previewColor,
+                            bgcolor: 'transparent',
+                            '&:hover': { bgcolor: 'action.hover' },
                           }}
                         >
-                          <IconComponent />
+                          <IconComponent sx={{ fontSize: 24, color: 'inherit' }} />
                         </IconButton>
                       );
                     })}
@@ -385,9 +333,11 @@ export default function EditProjectModal({ open, onClose, project, onSave }: Edi
                         sx={{
                           width: 48,
                           height: 48,
-                          border: selectedEmoji === emoji ? '2px solid' : '1px solid',
-                          borderColor: selectedEmoji === emoji ? 'primary.main' : 'divider',
+                          border: 'none',
+                          borderRadius: 1,
                           fontSize: 24,
+                          bgcolor: 'transparent',
+                          '&:hover': { bgcolor: 'action.hover' },
                         }}
                       >
                         {emoji}

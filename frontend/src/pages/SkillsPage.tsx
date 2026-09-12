@@ -17,7 +17,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import { HistoryEdu as SkillIcon } from '@mui/icons-material';
+import SkillIcon from '../icons/SkillsIcon';
 import { useNavigate, Navigate, useSearchParams } from 'react-router-dom';
 import { useTheme } from '@mui/material/styles';
 import { getApiUrl, API_ENDPOINTS } from '../config/api';

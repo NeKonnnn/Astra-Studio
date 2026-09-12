@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Box, CircularProgress, Paper, Typography } from '@mui/material';
-import { HistoryEdu as SkillIcon } from '@mui/icons-material';
+import SkillIcon from '../../icons/SkillsIcon';
 import { getApiUrl, API_ENDPOINTS } from '../../config/api';
 import { useAuth } from '../../contexts/AuthContext';
 

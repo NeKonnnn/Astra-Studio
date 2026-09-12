@@ -10,7 +10,7 @@ import {
   ChevronRight as ChevronRightIcon,
 } from '@mui/icons-material';
 import type { SxProps, Theme } from '@mui/material/styles';
-import SplitArrowIcon from './SplitArrowIcon';
+import SplitArrowIcon from '../icons/SplitArrowIcon';
 import {
   getDropdownPanelSx,
   getDropdownItemSx,

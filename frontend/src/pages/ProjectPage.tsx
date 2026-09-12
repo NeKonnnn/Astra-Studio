@@ -31,33 +31,6 @@ import {
   DeleteOutlined as DeleteIcon,
   MoreVert as MoreVertIcon,
   FolderOutlined as FolderIcon,
-  AttachMoney as MoneyIcon,
-  Lightbulb as LightbulbIcon,
-  Image as ImageIcon,
-  PlayArrow as PlayArrowIcon,
-  MusicNote as MusicNoteIcon,
-  AutoAwesome as SparkleIcon,
-  Work as BriefcaseIcon,
-  Language as GlobeIcon,
-  School as GraduationIcon,
-  AccountBalanceWallet as WalletIcon,
-  Favorite as FavoriteIcon,
-  SportsBaseball as BaseballIcon,
-  Restaurant as CutleryIcon,
-  LocalCafe as CoffeeIcon,
-  Code as CodeIcon,
-  LocalFlorist as LeafIcon,
-  Pets as CatIcon,
-  DirectionsCar as CarIcon,
-  MenuBook as BookIcon,
-  Cloud as UmbrellaIcon,
-  CalendarToday as CalendarIcon,
-  Computer as DesktopIcon,
-  VolumeUp as SpeakerIcon,
-  Assessment as ChartIcon,
-  Email as MailIcon,
-  Assignment as AssignmentIcon,
-  Luggage as LuggageIcon,
   ExpandMore as ExpandMoreIcon,
   Send as SendIcon,
   Mic as MicIcon,
@@ -71,15 +44,13 @@ import {
   AutoStories as KbIcon,
   ChevronRight as ChevronRightIcon,
   Check as CheckIcon,
-  HubOutlined as GearMenuMcpIcon,
   Code as GearMenuCodingIcon,
-  SmartToyOutlined as GearMenuAgentsIcon,
   WidgetsOutlined as GearMenuArtifactsIcon,
   Psychology as ThinkingModeIcon,
   Bolt as FastModeIcon,
   AutoAwesome as AutoModeIcon,
-  HistoryEdu as SkillsNavIcon,
 } from '@mui/icons-material';
+import { PROJECT_ICON_MAP as projectIconMap } from '../constants/projectIcons';
 import { useAppContext, useAppActions, chatIsListedInAllChatsSection } from '../contexts/AppContext';
 import { useSocket } from '../contexts/SocketContext';
 import VoiceChatDialog from '../components/VoiceChatDialog';
@@ -87,6 +58,9 @@ import ChatInputBar from '../components/ChatInputBar';
 import { ASTRA_INSERT_CHAT_TEXT, ASTRA_INSERT_CHAT_TEXT_KEY } from '../components/right_bar';
 import ChatInputStatusCluster from '../components/ChatInputStatusCluster';
 import ChatGearAgentsPanel from '../components/ChatGearAgentsPanel';
+import { default as GearMenuAgentsIcon } from '../icons/AgentIcon';
+import { default as GearMenuMcpIcon } from '../icons/McpIcon';
+import { default as SkillsNavIcon } from '../icons/SkillsIcon';
 import ChatGearArtifactsPanel from '../components/ChatGearArtifactsPanel';
 import ChatGearMcpPanel from '../components/ChatGearMcpPanel';
 import ChatGearCodingPanel from '../components/ChatGearCodingPanel';
@@ -151,38 +125,6 @@ import {
   MODEL_THINKING_MODE_STORAGE_KEY,
   ModelThinkingMode,
 } from '../utils/modelThinking';
-
-const projectIconMap: Record<string, React.ComponentType<any>> = {
-  folder: FolderIcon,
-  money: MoneyIcon,
-  lightbulb: LightbulbIcon,
-  gallery: ImageIcon,
-  video: PlayArrowIcon,
-  music: MusicNoteIcon,
-  sparkle: SparkleIcon,
-  edit: EditIcon,
-  briefcase: BriefcaseIcon,
-  globe: GlobeIcon,
-  graduation: GraduationIcon,
-  wallet: WalletIcon,
-  heart: FavoriteIcon,
-  baseball: BaseballIcon,
-  cutlery: CutleryIcon,
-  coffee: CoffeeIcon,
-  code: CodeIcon,
-  leaf: LeafIcon,
-  cat: CatIcon,
-  car: CarIcon,
-  book: BookIcon,
-  umbrella: UmbrellaIcon,
-  calendar: CalendarIcon,
-  desktop: DesktopIcon,
-  speaker: SpeakerIcon,
-  chart: ChartIcon,
-  mail: MailIcon,
-  assignment: AssignmentIcon,
-  luggage: LuggageIcon,
-};
 
 type ModelSelectorMode = 'settings' | 'workspace' | 'workspace_agent';
 

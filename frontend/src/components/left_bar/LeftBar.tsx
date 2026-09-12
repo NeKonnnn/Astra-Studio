@@ -39,38 +39,12 @@ import {
   ChevronRight as ChevronRightIcon,
   ArchiveOutlined as ArchiveIcon,
   PushPinOutlined as PushPinIcon,
-  AttachMoney as MoneyIcon,
-  Assignment as AssignmentIcon,
-  Favorite as FavoriteIcon,
-  Luggage as LuggageIcon,
-  Lightbulb as LightbulbIcon,
-  Image as ImageIcon,
-  PlayArrow as PlayArrowIcon,
-  MusicNote as MusicNoteIcon,
-  AutoAwesome as SparkleIcon,
   HistoryOutlined as UpdatesIcon,
-  Work as BriefcaseIcon,
-  Language as GlobeIcon,
-  School as GraduationIcon,
-  AccountBalanceWallet as WalletIcon,
-  SportsBaseball as BaseballIcon,
-  Restaurant as CutleryIcon,
-  LocalCafe as CoffeeIcon,
-  Code as CodeIcon,
-  LocalFlorist as LeafIcon,
-  Pets as CatIcon,
-  DirectionsCar as CarIcon,
-  MenuBook as BookIcon,
-  Cloud as UmbrellaIcon,
-  CalendarToday as CalendarIcon,
-  Computer as DesktopIcon,
-  VolumeUp as SpeakerIcon,
-  Assessment as ChartIcon,
-  Email as MailIcon,
   KeyboardOutlined as KeyboardIcon,
   HelpOutline as HelpOutlineIcon,
   Close as CloseIcon,
 } from '@mui/icons-material';
+import { PROJECT_ICON_MAP as projectIconMap } from '../../constants/projectIcons';
 import { useAppContext, useAppActions, chatIsListedInAllChatsSection } from '../../contexts/AppContext';
 import { groupChatsBySidebarTime } from '../../utils/chatListTimeGroups';
 import { useSocket } from '../../contexts/SocketContext';
@@ -78,7 +52,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import ArchiveModal from '../ArchiveModal';
 import NewProjectModal from '../NewProjectModal';
 import EditProjectModal from '../EditProjectModal';
-import SidebarRailMenuGlyph from '../SidebarRailMenuGlyph';
+import SidebarRailMenuGlyph from '../../icons/SidebarRailMenuGlyph';
 import {
   MENU_BORDER_RADIUS_PX,
   getMenuColors,
@@ -98,6 +72,7 @@ import {
   SIDEBAR_LIST_ICON_SX,
 } from '../../constants/menuStyles';
 import {
+  SIDEBAR_PANEL_COLOR_KEY,
   getSidebarPanelBackground,
   getSidebarChromeSx,
   getSidebarForcedContrastSx,
@@ -155,38 +130,7 @@ const SIDEBAR_SECTION_HEADER_TITLE_SX = {
   fontWeight: 500,
 } as const;
 
-// Маппинг иконок для проектов
-const projectIconMap: Record<string, React.ComponentType<any>> = {
-  folder: FolderIcon,
-  money: MoneyIcon,
-  lightbulb: LightbulbIcon,
-  gallery: ImageIcon,
-  video: PlayArrowIcon,
-  music: MusicNoteIcon,
-  sparkle: SparkleIcon,
-  edit: EditIcon,
-  briefcase: BriefcaseIcon,
-  globe: GlobeIcon,
-  graduation: GraduationIcon,
-  wallet: WalletIcon,
-  heart: FavoriteIcon,
-  baseball: BaseballIcon,
-  cutlery: CutleryIcon,
-  coffee: CoffeeIcon,
-  code: CodeIcon,
-  leaf: LeafIcon,
-  cat: CatIcon,
-  car: CarIcon,
-  book: BookIcon,
-  umbrella: UmbrellaIcon,
-  calendar: CalendarIcon,
-  desktop: DesktopIcon,
-  speaker: SpeakerIcon,
-  chart: ChartIcon,
-  mail: MailIcon,
-  assignment: AssignmentIcon,
-  luggage: LuggageIcon,
-};
+// Маппинг иконок для проектов — см. constants/projectIcons (outlined)
 
 export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onHide, searchFocusNonce = 0 }: SidebarProps) {
   const navigate = useNavigate();
@@ -297,7 +241,13 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
   const [renamingFolderName, setRenamingFolderName] = React.useState('');
   const [showDeleteFolderDialog, setShowDeleteFolderDialog] = React.useState(false);
   const [deleteWithContent, setDeleteWithContent] = React.useState(false);
-  const [sidebarPanelBg, setSidebarPanelBg] = React.useState(() => getSidebarPanelBackground());
+  const [sidebarColorTick, setSidebarColorTick] = React.useState(0);
+  const sidebarPanelBg = React.useMemo(
+    () => getSidebarPanelBackground(isDarkMode),
+    // tick — сброс/смена цвета в настройках; isDarkMode — смена темы
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [isDarkMode, sidebarColorTick],
+  );
   const searchInputRef = React.useRef<HTMLInputElement>(null);
   const menuOpen = Boolean(anchorEl);
 
@@ -324,7 +274,16 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
   }, []);
 
   React.useEffect(() => {
-    const onColorChanged = () => setSidebarPanelBg(getSidebarPanelBackground());
+    // Нормализуем залипшие дефолтные HEX (#F7F7F9 / #212128) → пустая строка.
+    const raw = (localStorage.getItem(SIDEBAR_PANEL_COLOR_KEY) || '').trim();
+    if (
+      raw &&
+      (raw.toLowerCase() === '#f7f7f9' || raw.toLowerCase() === '#212128')
+    ) {
+      localStorage.setItem(SIDEBAR_PANEL_COLOR_KEY, '');
+      setSidebarColorTick((n) => n + 1);
+    }
+    const onColorChanged = () => setSidebarColorTick((n) => n + 1);
     window.addEventListener('sidebarColorChanged', onColorChanged);
     return () => window.removeEventListener('sidebarColorChanged', onColorChanged);
   }, []);

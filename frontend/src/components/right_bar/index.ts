@@ -11,4 +11,4 @@ export {
   ASTRA_INSERT_CHAT_TEXT_KEY,
   dispatchInsertChatText,
 } from './TranscriptionSidebarSection';
-export { default as SidebarRailMenuGlyph } from '../SidebarRailMenuGlyph';
+export { default as SidebarRailMenuGlyph } from '../../icons/SidebarRailMenuGlyph';

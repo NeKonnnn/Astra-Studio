@@ -16,7 +16,6 @@ import {
 import {
   Add as AddIcon,
   Send as SendIcon,
-  Widgets as WidgetsIcon,
   Mic as MicIcon,
   GraphicEq as DictationIcon,
   Close as CloseIcon,
@@ -26,6 +25,7 @@ import {
   Description as DocumentIcon,
   PictureAsPdf as PdfIcon,
 } from '@mui/icons-material';
+import ToolsIcon from '../icons/ToolsIcon';
 import { formatFileSize } from '../utils/inlineImage';
 import { getApiUrl, API_ENDPOINTS, getAuthFetchHeaders } from '../config/api';
 import { prepareSegmentForStt } from '../utils/dictationAudio';
@@ -823,7 +823,7 @@ export default function ChatInputBar({
             ...iconButtonSx(isDarkMode, isClassic),
           }}
         >
-          <WidgetsIcon sx={{ fontSize: '1.25rem' }} />
+          <ToolsIcon sx={{ fontSize: '1.25rem' }} />
         </IconButton>
       </span>
     </Tooltip>

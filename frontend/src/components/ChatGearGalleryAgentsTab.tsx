@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Box, Typography, CircularProgress, IconButton, Tooltip } from '@mui/material';
 import {
-  SmartToy as AgentIcon,
   Check as CheckIcon,
   PersonOff as NoAgentIcon,
   DeleteOutline as RemoveIcon,
 } from '@mui/icons-material';
+import AgentIcon from '../icons/AgentIcon';
 import { useAuth } from '../contexts/AuthContext';
 import { useAppActions } from '../contexts/AppContext';
 import { getApiUrl } from '../config/api';

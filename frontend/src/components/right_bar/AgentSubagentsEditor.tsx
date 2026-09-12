@@ -16,8 +16,8 @@ import {
 import CloseIcon from '@mui/icons-material/Close';
 import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
 import HubIcon from '@mui/icons-material/Hub';
-import SmartToyIcon from '@mui/icons-material/SmartToy';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import AgentIcon from '../../icons/AgentIcon';
 import type { SxProps, Theme } from '@mui/material/styles';
 import {
   AGENT_CONSTRUCTOR_OUTLINED_INPUT_SX,
@@ -184,7 +184,7 @@ export default function AgentSubagentsEditor({
                   '&:hover': { bgcolor: panelChrome.hoverBg },
                 }}
               >
-                <SmartToyIcon sx={{ fontSize: 16, color: panelChrome.fgMuted }} />
+                <AgentIcon sx={{ fontSize: 16, color: panelChrome.fgMuted }} />
                 <Typography variant="caption" sx={{ flex: 1, color: panelChrome.fgMuted, fontSize: '0.78rem' }} noWrap>
                   {agent?.name || `Агент #${id}`}
                 </Typography>
@@ -243,7 +243,7 @@ export default function AgentSubagentsEditor({
                           ...getDropdownItemStateSx(darkFields, false),
                         }}
                       >
-                        <SmartToyIcon sx={{ fontSize: 14, opacity: 0.7 }} />
+                        <AgentIcon sx={{ fontSize: 14, opacity: 0.7 }} />
                         <span>{agent.name}</span>
                       </Box>
                     ))

@@ -233,7 +233,9 @@ function App() {
   useEffect(() => {
     localStorage.setItem('gazikii-dark-mode', JSON.stringify(isDarkMode));
     // Дефолтный цвет панелей зависит от темы — обновляем слушателей.
-    window.dispatchEvent(new CustomEvent('sidebarColorChanged'));
+    window.dispatchEvent(
+      new CustomEvent('sidebarColorChanged', { detail: { isDarkMode } }),
+    );
   }, [isDarkMode]);
 
   useEffect(() => {
@@ -276,7 +278,11 @@ function App() {
   const theme = createAppTheme(isDarkMode);
 
   const toggleTheme = () => {
-    setIsDarkMode(!isDarkMode);
+    const next = !isDarkMode;
+    // Пишем тему синхронно до рендера детей — иначе getSidebarPanelBackground()
+    // в эффектах панелей ещё видит старое значение.
+    localStorage.setItem('gazikii-dark-mode', JSON.stringify(next));
+    setIsDarkMode(next);
   };
 
   const toggleSidebar = () => {

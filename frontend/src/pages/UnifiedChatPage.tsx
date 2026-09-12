@@ -41,10 +41,8 @@ import {
   Mic as MicIcon,
   Close as CloseIcon,
   Upload as UploadIcon,
-  HubOutlined as GearMenuMcpIcon,
   Code as GearMenuCodingIcon,
   ImageOutlined as GearMenuImageGenIcon,
-  SmartToyOutlined as GearMenuAgentsIcon,
   WidgetsOutlined as GearMenuArtifactsIcon,
   ChevronLeft as ChevronLeftIcon,
   ChevronRight as ChevronRightIcon,
@@ -57,7 +55,6 @@ import {
   Psychology as ThinkingModeIcon,
   Bolt as FastModeIcon,
   AutoAwesome as AutoModeIcon,
-  HistoryEdu as SkillsNavIcon,
 } from '@mui/icons-material';
 import type { SxProps, Theme } from '@mui/material/styles';
 import { useTheme } from '@mui/material/styles';
@@ -88,6 +85,9 @@ import InlineAttachmentsList from '../components/InlineAttachmentsList';
 import InlineImageLightbox from '../components/InlineImageLightbox';
 import ImageGenerationPlaceholder from '../components/ImageGenerationPlaceholder';
 import ChatGearAgentsPanel from '../components/ChatGearAgentsPanel';
+import { default as GearMenuAgentsIcon } from '../icons/AgentIcon';
+import { default as GearMenuMcpIcon } from '../icons/McpIcon';
+import { default as SkillsNavIcon } from '../icons/SkillsIcon';
 import ChatGearArtifactsPanel from '../components/ChatGearArtifactsPanel';
 import ChatGearMcpPanel from '../components/ChatGearMcpPanel';
 import ChatGearCodingPanel from '../components/ChatGearCodingPanel';

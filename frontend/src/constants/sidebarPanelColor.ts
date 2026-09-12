@@ -127,10 +127,41 @@ export function isSidebarPanelLight(background?: string | null): boolean {
 /** Alias ASTRA API. */
 export const isLightSidebarPanelBackground = isSidebarPanelLight;
 
-export function getSidebarPanelBackground(): string {
-  if (typeof window === 'undefined') return getDefaultSidebarPanelBackground(false);
-  const saved = localStorage.getItem(SIDEBAR_PANEL_COLOR_KEY);
-  return saved || getDefaultSidebarPanelBackground();
+/**
+ * Пользовательский цвет из localStorage (пустая строка = следовать теме).
+ * Значения, совпадающие с дефолтами светлой/тёмной темы, тоже считаем
+ * «по умолчанию»: раньше они могли сохраниться как явный HEX и блокировали смену темы.
+ */
+export function getSavedSidebarPanelColor(): string {
+  if (typeof window === 'undefined') return '';
+  const saved = (localStorage.getItem(SIDEBAR_PANEL_COLOR_KEY) || '').trim();
+  if (!saved) return '';
+  const lower = saved.toLowerCase();
+  if (
+    lower === DEFAULT_SIDEBAR_LIGHT.toLowerCase() ||
+    lower === DEFAULT_SIDEBAR_DARK.toLowerCase()
+  ) {
+    return '';
+  }
+  return saved;
+}
+
+/**
+ * Фон боковых панелей.
+ * @param isDark — явная тема (из React-пропа). Нужна при смене темы: эффект
+ *   ребёнка может сработать раньше, чем App успеет записать gazikii-dark-mode.
+ * Пустой ``sidebar_panel_color`` (пресет «По умолчанию») следует за темой.
+ * Любой другой сохранённый цвет — пользовательский и при смене темы не меняется.
+ */
+export function getSidebarPanelBackground(isDark?: boolean): string {
+  if (typeof window === 'undefined') {
+    return getDefaultSidebarPanelBackground(isDark ?? false);
+  }
+  const saved = getSavedSidebarPanelColor();
+  if (!saved) {
+    return getDefaultSidebarPanelBackground(isDark);
+  }
+  return saved;
 }
 
 export function getSidebarPanelForeground(background?: string): string {
@@ -237,8 +268,12 @@ export function getSidebarSecondaryButtonSx(
 export function getSidebarChromeSx(background?: string): Record<string, unknown> {
   const bg = background ?? getSidebarPanelBackground();
   const chrome = getSidebarPanelChrome(bg);
+  const isGradient = /gradient\(/i.test(bg);
   return {
+    // И solid, и gradient: иначе MuiPaper при смене темы перебивает фон через backgroundColor.
     background: bg,
+    backgroundColor: isGradient ? 'transparent' : bg,
+    backgroundImage: isGradient ? bg : 'none',
     color: chrome.fg,
     borderColor: chrome.border.replace('1px solid ', ''),
     '--sidebar-fg': chrome.fg,
@@ -246,7 +281,7 @@ export function getSidebarChromeSx(background?: string): Record<string, unknown>
     '--sidebar-hover-bg': chrome.hoverBg,
     '--sidebar-border-color': chrome.border.replace('1px solid ', ''),
     '--sidebar-selected-bg': chrome.activeBg,
-    transition: 'background 0.3s ease, color 0.3s ease',
+    transition: 'background 0.3s ease, background-color 0.3s ease, color 0.3s ease',
     '& [data-memo-rail-menu-glyph]': {
       filter: chrome.invertMenuGlyph ? 'invert(1) brightness(0)' : 'none',
     },
