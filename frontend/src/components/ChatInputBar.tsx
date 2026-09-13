@@ -1,4 +1,4 @@
-import React, { RefObject, useState, useEffect, useRef } from 'react';
+import React, { RefObject, useState, useEffect, useLayoutEffect, useRef } from 'react';
 import {
   Box,
   TextField,
@@ -26,6 +26,8 @@ import {
   PictureAsPdf as PdfIcon,
 } from '@mui/icons-material';
 import ToolsIcon from '../icons/ToolsIcon';
+import ComposerExpandIcon from '../icons/ComposerExpandIcon';
+import ComposerCollapseIcon from '../icons/ComposerCollapseIcon';
 import { formatFileSize } from '../utils/inlineImage';
 import { getApiUrl, API_ENDPOINTS, getAuthFetchHeaders } from '../config/api';
 import { prepareSegmentForStt } from '../utils/dictationAudio';
@@ -716,12 +718,22 @@ export default function ChatInputBar({
   const CHARS_FIRST_LINE = 100;   // примерно столько символов влезает в одну строку (шрифт 0.875rem, кнопки по бокам)
   const CHARS_SINGLE_BACK = 100;  // обратно в одну строку только когда короче (гистерезис)
   const [compactMultiline, setCompactMultiline] = useState(false);
+  /** Как в ChatGPT: развернуть поле ввода, когда текст упёрся в maxRows */
+  const [composerExpanded, setComposerExpanded] = useState(false);
+  const [showExpandToggle, setShowExpandToggle] = useState(false);
   const [skillMention, setSkillMention] = useState<{ open: boolean; query: string; start: number }>({
     open: false,
     query: '',
     start: 0,
   });
   const skillAnchorRef = useRef<HTMLDivElement | null>(null);
+
+  const resolveComposerTextarea = (): HTMLTextAreaElement | null => {
+    const el = inputRef?.current;
+    if (!el) return null;
+    if (el instanceof HTMLTextAreaElement) return el;
+    return el.closest('.MuiInputBase-root')?.querySelector('textarea') ?? null;
+  };
 
   const updateSkillMentionFromInput = (nextValue: string, cursor: number | null) => {
     if (cursor == null) {
@@ -761,6 +773,106 @@ export default function ChatInputBar({
       return prev; // между 45 и 52 — не переключаем
     });
   }, [value, isClassic]);
+
+  // Пустое поле — сворачиваем «развёрнутый» режим
+  useEffect(() => {
+    if (!value.trim() && composerExpanded) {
+      setComposerExpanded(false);
+    }
+  }, [value, composerExpanded]);
+
+  // Кнопка видна, когда текст уже скроллится в лимите maxRows (или режим уже развёрнут)
+  useLayoutEffect(() => {
+    if (composerExpanded) {
+      setShowExpandToggle(true);
+      return;
+    }
+    const ta = resolveComposerTextarea();
+    if (!ta || !value.trim()) {
+      setShowExpandToggle(false);
+      return;
+    }
+    // После авто-ресайза MUI: overflow = пора предложить «Развернуть»
+    const id = window.requestAnimationFrame(() => {
+      setShowExpandToggle(ta.scrollHeight > ta.clientHeight + 2);
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [value, composerExpanded, compactMultiline, isClassic, inputRef]);
+
+  useEffect(() => {
+    if (!composerExpanded) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setComposerExpanded(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [composerExpanded]);
+
+  const expandToggleBtn =
+    showExpandToggle && !isDictating && !isDictationProcessing ? (
+      <Tooltip title={composerExpanded ? 'Свернуть' : 'Развернуть'} placement="left">
+        <IconButton
+          size="small"
+          onClick={() => setComposerExpanded((v) => !v)}
+          aria-label={composerExpanded ? 'Свернуть поле ввода' : 'Развернуть поле ввода'}
+          disableRipple
+          sx={{
+            position: 'absolute',
+            top: 8,
+            right: 8,
+            zIndex: 3,
+            width: 28,
+            height: 28,
+            p: 0,
+            color: isDarkMode ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.45)',
+            bgcolor: 'transparent',
+            '&:hover': {
+              color: isDarkMode ? 'rgba(255,255,255,0.92)' : 'rgba(0,0,0,0.78)',
+              bgcolor: isDarkMode ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+            },
+            '&:active': { transform: 'none' },
+          }}
+        >
+          {composerExpanded ? (
+            <ComposerCollapseIcon size={17} />
+          ) : (
+            <ComposerExpandIcon size={17} />
+          )}
+        </IconButton>
+      </Tooltip>
+    ) : null;
+
+  // ChatGPT: ~26 строк ≈ половина экрана (1.45em × 26 ≈ 50vh на типичном мониторе)
+  const COMPOSER_EXPANDED_LINES = 26;
+  const composerExpandedHeight = `min(50dvh, calc(1.45em * ${COMPOSER_EXPANDED_LINES}))`;
+
+  const hideScrollbarSx = {
+    scrollbarWidth: 'none' as const,
+    msOverflowStyle: 'none' as const,
+    '&::-webkit-scrollbar': {
+      display: 'none',
+      width: 0,
+      height: 0,
+    },
+  };
+
+  const composerTextareaSx = {
+    resize: 'none' as const,
+    whiteSpace: 'pre-wrap' as const,
+    wordBreak: 'break-word' as const,
+    overflowY: 'auto' as const,
+    ...hideScrollbarSx,
+    ...(showExpandToggle ? { pr: '36px' } : {}),
+    ...(composerExpanded
+      ? {
+          minHeight: composerExpandedHeight,
+          maxHeight: composerExpandedHeight,
+        }
+      : {}),
+  };
 
   // ─── Переиспользуемые кнопки ────────────────────────────────────────────────
 
@@ -1182,6 +1294,7 @@ export default function ChatInputBar({
           maxWidth,
           borderRadius: '28px',
           overflow: 'hidden',
+          position: 'relative',
           ...containerSx,
           bgcolor: resolvedShellBg,
           border: `1px solid ${shellBorder}`,
@@ -1189,6 +1302,7 @@ export default function ChatInputBar({
         }}
       >
         {fileInput}
+        {expandToggleBtn}
         <Box sx={{ px: 1.5, pt: 2.75, pb: 1 }}>
           {inlineFilesSection}
           {filesSection}
@@ -1201,7 +1315,7 @@ export default function ChatInputBar({
               inputRef={inputRef}
               multiline
               minRows={2}
-              maxRows={8}
+              maxRows={composerExpanded ? undefined : 8}
               value={value}
               onChange={handleValueChange}
               onSelect={(e) => {
@@ -1225,7 +1339,7 @@ export default function ChatInputBar({
                   '& fieldset': { border: 'none' },
                   '&:hover': { bgcolor: 'transparent' },
                   '&.Mui-focused': { bgcolor: 'transparent', '& fieldset': { border: 'none' } },
-                  '& textarea': { resize: 'none' },
+                  '& textarea': composerTextareaSx,
                 },
               }}
             />
@@ -1278,7 +1392,7 @@ export default function ChatInputBar({
       '& fieldset': { border: 'none' },
       '&:hover': { bgcolor: 'transparent' },
       '&.Mui-focused': { bgcolor: 'transparent', '& fieldset': { border: 'none' } },
-      '& textarea': { resize: 'none', whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
+      '& textarea': composerTextareaSx,
     },
   };
 
@@ -1292,6 +1406,7 @@ export default function ChatInputBar({
         p: 1.5,
         px: 2,
         borderRadius: '28px',
+        position: 'relative',
         ...containerSx,
         bgcolor: resolvedShellBg,
         border: `1px solid ${shellBorder}`,
@@ -1299,6 +1414,7 @@ export default function ChatInputBar({
       }}
     >
       {fileInput}
+      {expandToggleBtn}
       {inlineFilesSection}
       {filesSection}
       {uploadingSection}
@@ -1307,8 +1423,8 @@ export default function ChatInputBar({
       <Box
         sx={{
           display: 'flex',
-          flexDirection: compactMultiline ? 'column' : 'row',
-          alignItems: compactMultiline ? 'stretch' : 'center',
+          flexDirection: compactMultiline || composerExpanded ? 'column' : 'row',
+          alignItems: compactMultiline || composerExpanded ? 'stretch' : 'center',
           gap: 0.5,
           flexWrap: 'nowrap',
           minHeight: 40,
@@ -1322,7 +1438,7 @@ export default function ChatInputBar({
             inputRef={inputRef}
             multiline
             minRows={1}
-            maxRows={8}
+            maxRows={composerExpanded ? undefined : 8}
             value={value}
             onChange={handleValueChange}
             onSelect={(e) => {
@@ -1335,11 +1451,11 @@ export default function ChatInputBar({
             variant="outlined"
             size="small"
             disabled={inputDisabled}
-            fullWidth={compactMultiline}
+            fullWidth={compactMultiline || composerExpanded}
             sx={textFieldSx}
           />
         )}
-        {dictationActive ? null : compactMultiline ? (
+        {dictationActive ? null : compactMultiline || composerExpanded ? (
           <Box sx={{ order: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'nowrap' }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25 }}>
               {attachBtn}

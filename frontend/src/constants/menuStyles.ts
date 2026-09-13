@@ -162,6 +162,21 @@ export const SIDEBAR_CHAT_ROW_LIST_ITEM_BUTTON_SX = {
   px: SIDEBAR_CONTROL_PX,
 } as const;
 
+/** Строка чата с учётом selected (фон из CSS-переменных панели — работает и на светлой теме). */
+export function getSidebarChatRowListItemButtonSx(isSelected: boolean) {
+  return {
+    ...SIDEBAR_CHAT_ROW_LIST_ITEM_BUTTON_SX,
+    backgroundColor: isSelected
+      ? 'var(--sidebar-selected-bg, rgba(255,255,255,0.15))'
+      : 'transparent',
+    '&:hover': {
+      backgroundColor: isSelected
+        ? 'var(--sidebar-selected-hover-bg, rgba(255,255,255,0.2))'
+        : 'var(--sidebar-hover-bg, rgba(255,255,255,0.08))',
+    },
+  };
+}
+
 /** Иконки в строках rail: контраст от `--sidebar-fg` (светлая/тёмная панель). */
 export const SIDEBAR_LIST_ICON_SX = {
   fontSize: '1.375rem',

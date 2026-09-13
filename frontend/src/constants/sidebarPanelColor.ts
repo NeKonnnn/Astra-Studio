@@ -173,7 +173,7 @@ export function getSidebarPanelMutedForeground(background?: string): string {
 }
 
 export function getSidebarPanelHoverBackground(background?: string): string {
-  return isSidebarPanelLight(background) ? 'rgba(0, 0, 0, 0.06)' : 'rgba(255, 255, 255, 0.08)';
+  return isSidebarPanelLight(background) ? 'rgba(0, 0, 0, 0.1)' : 'rgba(255, 255, 255, 0.1)';
 }
 
 export function getSidebarPanelBorderColor(background?: string): string {
@@ -204,6 +204,8 @@ export type SidebarPanelChrome = {
   hoverBg: string;
   /** Активный/выделенный фон. */
   activeBg: string;
+  /** Hover по уже выделенной строке. */
+  activeHoverBg: string;
   /** Инвертировать PNG-глиф меню rail (глиф светлый — на светлой панели нужен тёмный). */
   invertMenuGlyph: boolean;
 };
@@ -219,8 +221,9 @@ export function getSidebarPanelChrome(background?: string | null): SidebarPanelC
       border: '1px solid rgba(0,0,0,0.12)',
       buttonBorder: '1px solid rgba(0,0,0,0.28)',
       buttonBorderHover: 'rgba(0,0,0,0.45)',
-      hoverBg: 'rgba(0,0,0,0.08)',
-      activeBg: 'rgba(0,0,0,0.12)',
+      hoverBg: 'rgba(0,0,0,0.1)',
+      activeBg: 'rgba(0,0,0,0.14)',
+      activeHoverBg: 'rgba(0,0,0,0.18)',
       invertMenuGlyph: true,
     };
   }
@@ -234,6 +237,7 @@ export function getSidebarPanelChrome(background?: string | null): SidebarPanelC
     buttonBorderHover: 'rgba(255,255,255,0.4)',
     hoverBg: 'rgba(255,255,255,0.1)',
     activeBg: 'rgba(255,255,255,0.15)',
+    activeHoverBg: 'rgba(255,255,255,0.2)',
     invertMenuGlyph: false,
   };
 }
@@ -281,6 +285,7 @@ export function getSidebarChromeSx(background?: string): Record<string, unknown>
     '--sidebar-hover-bg': chrome.hoverBg,
     '--sidebar-border-color': chrome.border.replace('1px solid ', ''),
     '--sidebar-selected-bg': chrome.activeBg,
+    '--sidebar-selected-hover-bg': chrome.activeHoverBg,
     transition: 'background 0.3s ease, background-color 0.3s ease, color 0.3s ease',
     '& [data-memo-rail-menu-glyph]': {
       filter: chrome.invertMenuGlyph ? 'invert(1) brightness(0)' : 'none',
@@ -303,6 +308,10 @@ export function getSidebarForcedContrastSx(background?: string): Record<string, 
   const hover = chrome.hoverBg;
   return {
     '& .MuiSvgIcon-root': { color: `${fg} !important` },
+    // Цветные иконки проектов: SVG наследует color с обёртки (iconColor), а не чёрный fg.
+    '& [data-sidebar-preserve-color] .MuiSvgIcon-root': {
+      color: 'inherit !important',
+    },
     // Danger-кнопки (удаление и т.п.) сохраняют свой красный цвет.
     '& [data-sidebar-danger]': { color: '#d32f2f !important' },
     '& [data-sidebar-danger] .MuiSvgIcon-root': { color: '#d32f2f !important' },

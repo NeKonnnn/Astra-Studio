@@ -295,7 +295,7 @@
   flex: 1;
   /* Только внутренний scroller Virtuoso; overflow:auto здесь сдвигал «Думает» при скролле. */
   overflow: hidden;
-  padding: 16px;
+  padding: 16px 16px 0;
   /* Только свёрнутый rail (main margin-right:-64px); при развёрнутой панели flex уже сужает main. */
   padding-right: calc(16px + var(--right-sidebar-rail-overlap, 0px));
   background: transparent;
@@ -333,7 +333,7 @@
 
 .chat-input-area {
   background: transparent;
-  padding: 20px;
+  padding: 0 20px 16px;
   padding-right: calc(20px + var(--right-sidebar-rail-overlap, 0px));
   min-width: 0;
   max-width: 100%;

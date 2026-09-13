@@ -45,7 +45,6 @@ import {
   ChevronRight as ChevronRightIcon,
   Check as CheckIcon,
   Code as GearMenuCodingIcon,
-  WidgetsOutlined as GearMenuArtifactsIcon,
   Psychology as ThinkingModeIcon,
   Bolt as FastModeIcon,
   AutoAwesome as AutoModeIcon,
@@ -61,6 +60,7 @@ import ChatGearAgentsPanel from '../components/ChatGearAgentsPanel';
 import { default as GearMenuAgentsIcon } from '../icons/AgentIcon';
 import { default as GearMenuMcpIcon } from '../icons/McpIcon';
 import { default as SkillsNavIcon } from '../icons/SkillsIcon';
+import { default as GearMenuArtifactsIcon } from '../icons/ArtifactsIcon';
 import ChatGearArtifactsPanel from '../components/ChatGearArtifactsPanel';
 import ChatGearMcpPanel from '../components/ChatGearMcpPanel';
 import ChatGearCodingPanel from '../components/ChatGearCodingPanel';

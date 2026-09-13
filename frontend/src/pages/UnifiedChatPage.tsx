@@ -43,7 +43,6 @@ import {
   Upload as UploadIcon,
   Code as GearMenuCodingIcon,
   ImageOutlined as GearMenuImageGenIcon,
-  WidgetsOutlined as GearMenuArtifactsIcon,
   ChevronLeft as ChevronLeftIcon,
   ChevronRight as ChevronRightIcon,
   Add as AddIcon,
@@ -88,6 +87,7 @@ import ChatGearAgentsPanel from '../components/ChatGearAgentsPanel';
 import { default as GearMenuAgentsIcon } from '../icons/AgentIcon';
 import { default as GearMenuMcpIcon } from '../icons/McpIcon';
 import { default as SkillsNavIcon } from '../icons/SkillsIcon';
+import { default as GearMenuArtifactsIcon } from '../icons/ArtifactsIcon';
 import ChatGearArtifactsPanel from '../components/ChatGearArtifactsPanel';
 import ChatGearMcpPanel from '../components/ChatGearMcpPanel';
 import ChatGearCodingPanel from '../components/ChatGearCodingPanel';
@@ -2027,6 +2027,8 @@ export default function UnifiedChatPage({
       window.setTimeout(() => scrollVisibleIndexToTop(lastUserVisibleIndex), 180);
     } else if (!streamingActive && was) {
       grokTurnActiveRef.current = false;
+      // Не оставляем высокий «воздух» под ответом — иначе между текстом и пилюлей пустая пропасть.
+      setGrokBottomSpacerPx(0);
     }
   }, [streamingActive, lastUserVisibleIndex, scrollVisibleIndexToTop]);
 
@@ -4709,7 +4711,10 @@ export default function UnifiedChatPage({
                  overflowX: 'hidden',
                  overscrollBehavior: 'none',
                  justifyContent: 'flex-start',
-                 py: 0,
+                 pt: 2,
+                 pl: 2,
+                 pr: 'calc(16px + var(--right-sidebar-rail-overlap, 0px))',
+                 pb: 0,
                }),
            display: 'flex',
            flexDirection: 'column',
@@ -4765,7 +4770,7 @@ export default function UnifiedChatPage({
               {/* Virtuoso на всю ширину рабочей зоны — wheel работает везде, не только над баблами.
                   Контент сообщений центрируется внутри item (maxWidth 1000px). */}
               {showVirtuosoList ? (
-                <Box sx={{ flex: 1, minHeight: 0, minWidth: 0, maxWidth: '100%', width: '100%', display: 'flex', flexDirection: 'column', py: 4, overflow: 'hidden' }}>
+                <Box sx={{ flex: 1, minHeight: 0, minWidth: 0, maxWidth: '100%', width: '100%', display: 'flex', flexDirection: 'column', pt: 4, pb: 0, overflow: 'hidden' }}>
                   <Virtuoso
                     key={currentChat?.id || 'chat'}
                     ref={virtuosoRef}
@@ -4849,6 +4854,13 @@ export default function UnifiedChatPage({
               zIndex: workZoneAnimated ? 2 : undefined,
               borderColor: isDragging ? 'primary.main' : 'divider',
               bgcolor: isDragging ? 'action.hover' : 'transparent',
+              ...(!showNewChatWelcome && {
+                pt: 0,
+                pb: 2,
+                // Те же боковые отступы, что у chat-messages-area — иначе пилюля и карточки разъезжаются по ширине
+                pl: 2,
+                pr: 'calc(16px + var(--right-sidebar-rail-overlap, 0px))',
+              }),
               ...(showNewChatWelcome && {
                 flex: 1,
                 minHeight: 0,
@@ -4951,7 +4963,18 @@ export default function UnifiedChatPage({
            {!showNewChatWelcome && (messages.length > 0 || showChatHistoryLoadingDelayed) ? (
            <>
              {renderMultiLlmModelToolbar()}
-             <Box sx={{ position: 'relative', width: '100%', mt: 0 }}>
+             {/* Та же колонка, что у карточек сообщений: maxWidth 1000 + px — пилюля не шире ленты */}
+             <Box
+               sx={{
+                 position: 'relative',
+                 width: '100%',
+                 maxWidth: interfaceSettings.widescreenMode ? '100%' : '1000px',
+                 mx: 'auto',
+                 px: interfaceSettings.widescreenMode ? 4 : 2,
+                 mt: 0,
+                 boxSizing: 'border-box',
+               }}
+             >
                {showScrollToBottomButton ? (
                  <Box
                    sx={{
@@ -5029,10 +5052,10 @@ export default function UnifiedChatPage({
                               solidWorkZoneBackground={workZoneAnimated}
                styleVariant={interfaceSettings.chatInputStyle}
                containerSx={{
-                 mt: 2,
+                 mt: 0,
                  p: interfaceSettings.chatInputStyle === 'classic' ? 0 : 1.5,
-                 borderRadius: interfaceSettings.chatInputStyle === 'classic' ? '28px' : '28px',
-                 maxWidth: interfaceSettings.widescreenMode ? '100%' : '1000px',
+                 borderRadius: '28px',
+                 maxWidth: '100%',
                  width: '100%',
                  mx: 'auto',
                  px: interfaceSettings.chatInputStyle === 'classic' ? 0 : (interfaceSettings.widescreenMode ? 4 : 2),

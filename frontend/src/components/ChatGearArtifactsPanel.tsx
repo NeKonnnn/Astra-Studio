@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Box, FormControlLabel, Switch, Tooltip, Typography } from '@mui/material';
-import { HelpOutline as HelpIcon, ViewQuiltOutlined as ArtifactsIcon } from '@mui/icons-material';
+import { HelpOutline as HelpIcon } from '@mui/icons-material';
+import ArtifactsIcon from '../icons/ArtifactsIcon';
 import {
   MENU_ACTION_TEXT_SIZE,
   CHAT_GEAR_SCROLL_AREA_NO_VISIBLE_SCROLLBAR_SX,

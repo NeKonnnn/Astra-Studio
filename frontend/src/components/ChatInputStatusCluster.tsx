@@ -5,11 +5,11 @@ import {
   MenuBook as MenuBookIcon,
   ImageOutlined as ImageGenIcon,
   VideocamOutlined as VideoGenIcon,
-  ViewQuiltOutlined as ArtifactsStatusIcon,
 } from '@mui/icons-material';
 import AgentStatusIcon from '../icons/AgentIcon';
 import HubIcon from '../icons/McpIcon';
 import SkillStatusIcon from '../icons/SkillsIcon';
+import ArtifactsStatusIcon from '../icons/ArtifactsIcon';
 import type { ActiveMcpServerIndicator } from '../mcp/hooks/useChatInputMcpIndicators';
 import type { ActiveSkillRef } from '../utils/skillSelectionStorage';
 

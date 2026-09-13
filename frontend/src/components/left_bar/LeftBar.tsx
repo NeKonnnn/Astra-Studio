@@ -70,6 +70,7 @@ import {
   SIDEBAR_HIDE_SCROLLBAR_SX,
   SIDEBAR_CHAT_ROW_LIST_ITEM_BUTTON_SX,
   SIDEBAR_LIST_ICON_SX,
+  getSidebarChatRowListItemButtonSx,
 } from '../../constants/menuStyles';
 import {
   SIDEBAR_PANEL_COLOR_KEY,
@@ -118,7 +119,7 @@ const SIDEBAR_SECTION_HEADER_ROW_SX = {
   minHeight: SIDEBAR_CONTROL_HEIGHT_PX,
   borderRadius: SIDEBAR_CONTROL_RADIUS,
   '&:hover': {
-    backgroundColor: 'var(--sidebar-hover-bg, rgba(255,255,255,0.05))',
+    backgroundColor: 'var(--sidebar-hover-bg, rgba(255,255,255,0.08))',
   },
   transition: 'background-color 0.2s ease',
 } as const;
@@ -1009,18 +1010,10 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
               <ListItemButton
                 onClick={() => navigate('/creations')}
                 sx={{
-                  ...SIDEBAR_CHAT_ROW_LIST_ITEM_BUTTON_SX,
+                  ...getSidebarChatRowListItemButtonSx(location.pathname === '/creations'),
                   pl: SIDEBAR_ICON_LEADING_PL,
                   pr: SIDEBAR_CONTROL_PX,
                   alignItems: 'center',
-                  backgroundColor:
-                    location.pathname === '/creations' ? 'rgba(255,255,255,0.15)' : 'transparent',
-                  '&:hover': {
-                    backgroundColor:
-                      location.pathname === '/creations'
-                        ? 'rgba(255,255,255,0.2)'
-                        : 'rgba(255,255,255,0.08)',
-                  },
                 }}
               >
                 <ListItemIcon sx={SIDEBAR_LIST_LEADING_ICON_SX}>
@@ -1230,7 +1223,7 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
                       borderRadius: 2,
                       cursor: 'pointer',
                       '&:hover': {
-                        backgroundColor: 'rgba(255,255,255,0.05)',
+                        backgroundColor: 'var(--sidebar-hover-bg, rgba(255,255,255,0.08))',
                       },
                       transition: 'background-color 0.2s ease',
                     }}
@@ -1293,6 +1286,7 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
                   if (project.iconType === 'emoji' && project.icon) {
                     return (
                       <Box
+                        data-sidebar-preserve-color
                         sx={{
                           ...iconWrapSx,
                           fontSize: `${glyphPx}px`,
@@ -1307,14 +1301,14 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
                   if (project.iconType === 'icon' && project.icon) {
                     const IconComponent = projectIconMap[project.icon] || FolderIcon;
                     return (
-                      <Box sx={iconWrapSx}>
-                        <IconComponent sx={{ ...glyphSx, fontSize: `${glyphPx}px`, color: 'currentColor' }} />
+                      <Box data-sidebar-preserve-color sx={iconWrapSx}>
+                        <IconComponent sx={{ ...glyphSx, fontSize: `${glyphPx}px`, color: 'inherit' }} />
                       </Box>
                     );
                   }
                   return (
-                    <Box sx={iconWrapSx}>
-                      <FolderIcon sx={{ ...glyphSx, fontSize: `${glyphPx}px`, color: 'currentColor' }} />
+                    <Box data-sidebar-preserve-color sx={iconWrapSx}>
+                      <FolderIcon sx={{ ...glyphSx, fontSize: `${glyphPx}px`, color: 'inherit' }} />
                     </Box>
                   );
                 };
@@ -1337,7 +1331,7 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
                           minHeight: SIDEBAR_CONTROL_HEIGHT_PX,
                           borderRadius: 2,
                           '&:hover': {
-                            backgroundColor: 'rgba(255,255,255,0.05)',
+                            backgroundColor: 'var(--sidebar-hover-bg, rgba(255,255,255,0.08))',
                           },
                           transition: 'background-color 0.2s ease',
                         }}
@@ -1417,15 +1411,7 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
                                   handleSelectChat(chat.id);
                                 }}
                                 sx={{
-                                  borderRadius: 2,
-                                  backgroundColor: state.currentChatId === chat.id ? 'rgba(255,255,255,0.15)' : 'transparent',
-                                  '&:hover': {
-                                    backgroundColor: state.currentChatId === chat.id ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.08)',
-                                  },
-                                  transition: 'all 0.2s ease',
-                                  py: 0,
-                                  minHeight: SIDEBAR_CONTROL_HEIGHT_PX,
-                                  px: SIDEBAR_CONTROL_PX,
+                                  ...getSidebarChatRowListItemButtonSx(state.currentChatId === chat.id),
                                 }}
                               >
                               <ListItemText
@@ -1585,9 +1571,9 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
                             }}
                             sx={{
                               borderRadius: 2,
-                              backgroundColor: state.currentChatId === chatId ? 'rgba(255,255,255,0.15)' : 'transparent',
+                              backgroundColor: state.currentChatId === chatId ? 'var(--sidebar-selected-bg, rgba(255,255,255,0.15))' : 'transparent',
                               '&:hover': {
-                                backgroundColor: state.currentChatId === chatId ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.08)',
+                                backgroundColor: state.currentChatId === chatId ? 'var(--sidebar-selected-hover-bg, rgba(255,255,255,0.2))' : 'var(--sidebar-hover-bg, rgba(255,255,255,0.08))',
                               },
                               transition: 'all 0.2s ease',
                               py: 0,
@@ -1722,10 +1708,10 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
                             }}
                             sx={{
                               borderRadius: 2,
-                              backgroundColor: state.currentChatId === chat.id ? 'rgba(255,255,255,0.15)' : 'transparent',
-                              '&:hover': {
-                                backgroundColor: state.currentChatId === chat.id ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.08)',
-                              },
+backgroundColor: state.currentChatId === chat.id ? 'var(--sidebar-selected-bg, rgba(255,255,255,0.15))' : 'transparent',
+                                '&:hover': {
+                                  backgroundColor: state.currentChatId === chat.id ? 'var(--sidebar-selected-hover-bg, rgba(255,255,255,0.2))' : 'var(--sidebar-hover-bg, rgba(255,255,255,0.08))',
+                                },
                               transition: 'all 0.2s ease',
                               py: 0,
                               minHeight: SIDEBAR_CONTROL_HEIGHT_PX,
@@ -1869,15 +1855,7 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
                             handleSelectChat(chatId);
                           }}
                           sx={{
-                            borderRadius: 2,
-                            backgroundColor: state.currentChatId === chatId ? 'rgba(255,255,255,0.15)' : 'transparent',
-                            '&:hover': {
-                              backgroundColor: state.currentChatId === chatId ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.08)',
-                            },
-                            transition: 'all 0.2s ease',
-                            py: 0,
-                            minHeight: SIDEBAR_CONTROL_HEIGHT_PX,
-                            px: SIDEBAR_CONTROL_PX,
+                            ...getSidebarChatRowListItemButtonSx(state.currentChatId === chatId),
                           }}
                         >
                           <ListItemText
@@ -1963,9 +1941,9 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
                 onClick={() => handleNavigation(item.path)}
                 sx={{
                   borderRadius: 2,
-                  backgroundColor: isActive ? 'rgba(255,255,255,0.15)' : 'transparent',
+                  backgroundColor: isActive ? 'var(--sidebar-selected-bg, rgba(255,255,255,0.15))' : 'transparent',
                   '&:hover': {
-                    backgroundColor: isActive ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.08)',
+                    backgroundColor: isActive ? 'var(--sidebar-selected-hover-bg, rgba(255,255,255,0.2))' : 'var(--sidebar-hover-bg, rgba(255,255,255,0.08))',
                   },
                   transition: 'all 0.2s ease',
                   py: 1,
