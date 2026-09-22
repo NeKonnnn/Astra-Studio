@@ -45,7 +45,6 @@ import {
   ChevronRight as ChevronRightIcon,
   Check as CheckIcon,
   Code as GearMenuCodingIcon,
-  Psychology as ThinkingModeIcon,
   Bolt as FastModeIcon,
   AutoAwesome as AutoModeIcon,
 } from '@mui/icons-material';
@@ -61,6 +60,8 @@ import { default as GearMenuAgentsIcon } from '../icons/AgentIcon';
 import { default as GearMenuMcpIcon } from '../icons/McpIcon';
 import { default as SkillsNavIcon } from '../icons/SkillsIcon';
 import { default as GearMenuArtifactsIcon } from '../icons/ArtifactsIcon';
+import { default as ThinkingModeIcon } from '../icons/ThinkingModeIcon';
+import { default as ThinkingBulbIcon } from '../icons/ThinkingBulbIcon';
 import ChatGearArtifactsPanel from '../components/ChatGearArtifactsPanel';
 import ChatGearMcpPanel from '../components/ChatGearMcpPanel';
 import ChatGearCodingPanel from '../components/ChatGearCodingPanel';
@@ -1409,9 +1410,9 @@ export default function ProjectPage({ sidebarOpen = true, sidebarHidden = false 
                 ) : (
                   <Box sx={{ p: 1, display: 'flex', flexDirection: 'column', gap: 0.5, overflowY: 'auto' }}>
                     {([
-                      { id: 'auto', label: 'Автоматический', icon: <AutoModeIcon sx={{ fontSize: 16 }} /> },
-                      { id: 'thinking', label: 'Мышление', icon: <ThinkingModeIcon sx={{ fontSize: 16 }} /> },
-                      { id: 'fast', label: 'Быстрый', icon: <FastModeIcon sx={{ fontSize: 16 }} /> },
+                      { id: 'auto', label: 'Автоматический', icon: <AutoModeIcon sx={{ fontSize: 18 }} /> },
+                      { id: 'thinking', label: 'Мышление', icon: <ThinkingBulbIcon sx={{ fontSize: 20 }} /> },
+                      { id: 'fast', label: 'Быстрый', icon: <FastModeIcon sx={{ fontSize: 18 }} /> },
                     ] as const).map((mode) => (
                       <Box
                         key={mode.id}

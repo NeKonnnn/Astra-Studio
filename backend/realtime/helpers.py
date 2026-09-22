@@ -138,7 +138,9 @@ async def kb_search_agent_documents(
     return list(hits)[:k]
 
 
-async def _resolve_agent_chat_params(agent_id_raw, user_id=None) -> dict:
+async def _resolve_agent_chat_params(
+    agent_id_raw, user_id=None, user: Optional[dict] = None
+) -> dict:
     """Модель и параметры из карточки агента (конструктор)."""
     empty = {
         "name": None,
@@ -160,6 +162,9 @@ async def _resolve_agent_chat_params(agent_id_raw, user_id=None) -> dict:
         "agent_id": None,
         "agent_ids": [],
         "hide_sequential_outputs": False,
+        "shared_chain_rag": False,
+        "max_chain_agents": None,
+        "max_subagents": None,
         "recursion_limit": None,
         "subagents": None,
     }
@@ -246,11 +251,28 @@ async def _resolve_agent_chat_params(agent_id_raw, user_id=None) -> dict:
         out["artifacts_enabled"] = bool(cfg.get("artifacts_enabled", False))
         out["shadcn_enabled"] = bool(cfg.get("shadcn_enabled", False))
         out["user_prompt_mode"] = bool(cfg.get("user_prompt_mode", False))
-        from backend.agents.chain import parse_agent_ids, parse_recursion_limit
+        from backend.agents.chain import parse_agent_ids
 
-        out["agent_ids"] = parse_agent_ids(cfg.get("agent_ids"), exclude_id=aid)
+        for limit_key in ("max_chain_agents", "max_subagents"):
+            raw_limit = cfg.get(limit_key)
+            if isinstance(raw_limit, int) and raw_limit > 0:
+                out[limit_key] = raw_limit
+            elif isinstance(raw_limit, str) and raw_limit.strip().isdigit():
+                parsed_limit = int(raw_limit.strip())
+                if parsed_limit > 0:
+                    out[limit_key] = parsed_limit
+        out["agent_ids"] = parse_agent_ids(
+            cfg.get("agent_ids"), exclude_id=aid, agent_profile=out
+        )
         out["hide_sequential_outputs"] = bool(cfg.get("hide_sequential_outputs", False))
-        out["recursion_limit"] = parse_recursion_limit(cfg.get("recursion_limit"))
+        out["shared_chain_rag"] = bool(cfg.get("shared_chain_rag", False))
+        raw_recursion = cfg.get("recursion_limit")
+        if isinstance(raw_recursion, int) and raw_recursion > 0:
+            out["recursion_limit"] = raw_recursion
+        elif isinstance(raw_recursion, str) and raw_recursion.strip().isdigit():
+            parsed = int(raw_recursion.strip())
+            if parsed > 0:
+                out["recursion_limit"] = parsed
         if isinstance(cfg.get("subagents"), dict):
             out["subagents"] = dict(cfg["subagents"])
         logger.info(
@@ -264,7 +286,8 @@ async def _resolve_agent_chat_params(agent_id_raw, user_id=None) -> dict:
             f"shadcn_enabled={out['shadcn_enabled']}, "
             f"user_prompt_mode={out['user_prompt_mode']}, "
             f"agent_ids={out['agent_ids']}, hide_sequential={out['hide_sequential_outputs']}, "
-            f"recursion_limit={out['recursion_limit']}, "
+            f"shared_chain_rag={out['shared_chain_rag']}, "
+            f"recursion_limit={out.get('recursion_limit')}, "
             f"subagents_enabled={bool((out.get('subagents') or {}).get('enabled'))}"
         )
         return out

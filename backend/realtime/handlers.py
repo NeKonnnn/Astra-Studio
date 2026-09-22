@@ -80,6 +80,13 @@ from backend.settings import get_settings
 from backend.settings.logging import get_logger
 from backend.settings.logging.errors import logged_suppress
 from backend.mcp.resolvers import resolve_chat_tool_ids
+from backend.agents.config import resolve_recursion_limit
+from backend.agents.step_debug import (
+    describe_limit_source,
+    log_chain_hop,
+    log_plain_llm,
+    log_pre_loop,
+)
 
 logger = get_logger(__name__)
 
@@ -465,6 +472,120 @@ def _build_user_inline_attachments_metadata(raw: Any, inline_context: str = "") 
     if ctx:
         meta["inline_context"] = ctx
     return meta or None
+
+
+def _subagent_artifact_blocks(result) -> list:
+    """Все :::artifact-блоки из ответа субагента, включая незакрытые.
+
+    Модель ставит закрывающий code-fence и забывает про :::. Рендер в её
+    собственном чате это прощает, строгая регулярка - нет: блок терялся, и
+    родитель пересказывал слайды текстом. Незакрытый блок берём до следующего
+    заголовка или до конца ответа и закрываем сами (и fence, если открыт).
+    Голый html-документ в fence без заголовка заворачиваем в text/html.
+    """
+    import hashlib
+    import re
+
+    fence = chr(96) * 3
+    text = str(result or "")
+    if not text.strip():
+        return []
+    header_re = re.compile(r":::artifact\{[^}\n]*\}")
+    close_re = re.compile(r"\n:::[ \t]*(?:\n|$)")
+    ident_re = re.compile(r"identifier=[\"']([^\"']+)[\"']")
+    heads = list(header_re.finditer(text))
+    blocks: list = []
+    for i, h in enumerate(heads):
+        stop = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+        m = close_re.search(text, h.end(), stop)
+        if m:
+            blocks.append(text[h.start() : m.end()].strip())
+            continue
+        body = text[h.start() : stop].rstrip()
+        fences = sum(1 for ln in body.splitlines() if ln.strip().startswith(fence))
+        if fences % 2:
+            body += "\n" + fence
+        im = ident_re.search(h.group(0))
+        logger.info(
+            "[subagent] артефакт %s без закрывающего :::, закрыт принудительно",
+            im.group(1) if im else "?",
+        )
+        blocks.append(body + "\n:::")
+    if blocks:
+        return blocks
+    fence_re = re.compile(fence + r"html[ \t]*\n([\s\S]*?)\n" + fence, re.IGNORECASE)
+    for fm in fence_re.finditer(text):
+        html = fm.group(1)
+        low = html.lstrip().lower()
+        if not (low.startswith("<!doctype html") or low.startswith("<html")):
+            continue
+        tm = re.search(r"<title>([^<]{1,120})</title>", html, re.IGNORECASE)
+        title = ((tm.group(1).strip() if tm else "") or "HTML-документ субагента").replace('"', "'")
+        ident = "subagent-html-" + hashlib.md5(html.encode("utf-8", "ignore")).hexdigest()[:8]
+        logger.info("[subagent] html-документ от субагента без :::artifact обёрнут в %s", ident)
+        blocks.append(
+            ':::artifact{identifier="' + ident + '" type="text/html" title="' + title + '"}\n'
+            + fence + "html\n" + html + "\n" + fence + "\n:::"
+        )
+    return blocks
+
+
+def _carry_subagent_artifacts(response, mcp_tool_events) -> str:
+    """Артефакты и файлы из ответов субагентов - в итоговый ответ родителя.
+
+    Ребёнок отдаёт :::artifact-блок (схема, презентация, график) и ссылки на
+    файлы текстом tool-результата; родитель их пересказывает, и до рендера
+    они не доходят. Блоки, чьего identifier в ответе нет, дописываем в конец
+    как есть; ссылки, которых в ответе нет, - блоком «Файлы:». Воспроизвёл
+    родитель сам - второго не будет.
+    """
+    text = str(response or "")
+    try:
+        import re
+
+        if not mcp_tool_events:
+            return text
+        ident_re = re.compile(r"identifier=[\"']([^\"']+)[\"']")
+        have = set(ident_re.findall(text))
+        extra: list = []
+        links: list = []
+        seen_urls: set = set()
+        for ev in mcp_tool_events:
+            if not isinstance(ev, dict) or ev.get("type") != "mcp_tool_end":
+                continue
+            if ev.get("tool") == "subagent":
+                for block in _subagent_artifact_blocks(ev.get("result")):
+                    m = ident_re.search(block)
+                    ident = m.group(1) if m else block
+                    if ident in have:
+                        continue
+                    have.add(ident)
+                    extra.append(block.strip())
+            for link in ev.get("download_urls") or []:
+                if not isinstance(link, dict):
+                    continue
+                url = str(link.get("url") or "")
+                if url and url not in text and url not in seen_urls:
+                    seen_urls.add(url)
+                    links.append(dict(link))
+        if not extra and not links:
+            return text
+        out = text
+        if extra:
+            out = (out.rstrip() + "\n\n" + "\n\n".join(extra)).strip()
+        if links:
+            from backend.mcp.result_parser import append_download_links_to_content
+
+            out = append_download_links_to_content(out, links)
+        logger.info(
+            "[subagent] в ответ родителя добавлено: артефактов=%s файлов=%s",
+            len(extra),
+            len(links),
+        )
+        return out
+    except Exception:
+        logger.debug("[subagent] не удалось перенести артефакты", exc_info=True)
+        return text
 
 
 async def _handle_chat_image_generation_request(
@@ -1358,6 +1479,12 @@ async def _handle_multi_llm(
             current_user=current_user,
         )
         final_user_message = strip_skill_mentions(final_user_message)
+        try:
+            from backend.services.tag_mentions import strip_tag_mentions
+
+            final_user_message = strip_tag_mentions(final_user_message)
+        except Exception:
+            pass
         if lazy_skill_ids or allowed_tools_extra:
             from backend.tools.tool_context import get_tool_context, set_tool_context
 
@@ -1370,6 +1497,22 @@ async def _handle_multi_llm(
             existing = list(data.get("tool_ids") or data.get("mcp_tool_ids") or [])
             merged = list(dict.fromkeys([*existing, *allowed_tools_extra]))
             data["tool_ids"] = merged
+        log_pre_loop(
+            phase="skills",
+            chat_id=conversation_id,
+            agent_id=(
+                (agent_profile or {}).get("agent_id")
+                if isinstance(agent_profile, dict)
+                else None
+            ),
+            detail=(
+                f"отложенные={list(lazy_skill_ids or [])} "
+                f"ручные={list((_primed or {}).get('manual') or [])} "
+                f"всегда={list((_primed or {}).get('always_apply') or [])} "
+                f"доп. инструменты={list(allowed_tools_extra or [])} "
+                f"символов в промпте={len(skill_append or '')}"
+            ),
+        )
     except Exception:
         logger.exception("[multi-llm] skills injection failed")
 
@@ -1489,8 +1632,8 @@ async def _handle_multi_llm(
         return
     n_models = len(multi_llm_models)
     tool_ids = resolve_chat_tool_ids(data.get("tool_ids") or data.get("mcp_tool_ids"))
-    mcp_enabled = bool((tool_ids or (_ap.get("subagents") or {}).get("enabled")) and current_user and (not inline_imgs))
     _ap = agent_profile if isinstance(agent_profile, dict) else {}
+    mcp_enabled = bool((tool_ids or (_ap.get("subagents") or {}).get("enabled")) and current_user and (not inline_imgs))
     mcp_temperature = float(
         data.get("temperature") if data.get("temperature") is not None else (_ap.get("temperature") or 0.7)
     )
@@ -1537,9 +1680,12 @@ async def _handle_multi_llm(
                 try:
                     from backend.mcp.chat_integration import run_mcp_for_chat
 
+                    _model_events: list = []
+
                     async def _mcp_event_cb(payload):
                         event = dict(payload)
                         event["model"] = model_name
+                        _model_events.append(event)
                         await sio.emit("chat_mcp_event", _stream_ids_payload(event), room=sid)
 
                     mcp_result = await run_mcp_for_chat(
@@ -1555,10 +1701,13 @@ async def _handle_multi_llm(
                         max_tokens=mcp_max_tokens,
                         enable_thinking=enable_thinking,
                         emit_event=_mcp_event_cb,
-                        max_iterations=(agent_profile or {}).get("recursion_limit") if isinstance(agent_profile, dict) else None,
+                        agent_profile=_ap if _ap else None,
+                        inline_attachments=(
+                            data.get("inline_attachments") if isinstance(data, dict) else None
+                        ),
                     )
                     if mcp_result is not None:
-                        resp = mcp_result.content or ""
+                        resp = _carry_subagent_artifacts(mcp_result.content or "", _model_events)
                         if streaming and resp:
                             await sio.emit(
                                 "multi_llm_chunk",
@@ -1738,7 +1887,12 @@ async def _run_direct_or_chain(
     )
 
     user_id = (current_user or {}).get("user_id") if isinstance(current_user, dict) else None
-    chain = await resolve_agent_chain(data.get("agent_id") if isinstance(data, dict) else None, agent_profile, user_id)
+    chain = await resolve_agent_chain(
+        data.get("agent_id") if isinstance(data, dict) else None,
+        agent_profile,
+        user_id,
+        user=current_user if isinstance(current_user, dict) else None,
+    )
     if len(chain) <= 1:
         await _handle_direct(
             sio,
@@ -1767,9 +1921,48 @@ async def _run_direct_or_chain(
         return
 
     hide_seq = bool((chain[0] or {}).get("hide_sequential_outputs"))
+    # Общий RAG для цепочки: головной агент (chain[0]) делится своей базой знаний
+    # со всеми последующими агентами. Индивидуальный per-agent RAG при этом не трогаем —
+    # он продолжает работать для одиночных агентов и когда флаг выключен.
+    head_profile = chain[0] or {}
+    shared_chain_rag = bool(head_profile.get("shared_chain_rag"))
+    shared_kb_ids = head_profile.get("kb_document_ids") or []
+    shared_kb_enabled = (
+        shared_chain_rag
+        and bool(head_profile.get("file_search_enabled"))
+        and isinstance(shared_kb_ids, list)
+        and len(shared_kb_ids) > 0
+    )
     steps: list = []
-    original_message = user_message
+    # #теги: фиксируем id в payload первого шага и убираем mentions из текста,
+    # чтобы следующие hop и история не тащили сырой <#id|…>.
+    if isinstance(data, dict):
+        try:
+            from backend.services.tag_mentions import (
+                collect_mention_tag_ids,
+                strip_tag_mentions,
+            )
+
+            mention_tags = collect_mention_tag_ids(
+                user_message=user_message, data=data
+            )
+            if mention_tags:
+                data = dict(data)
+                data["tag_ids"] = mention_tags
+            original_message = strip_tag_mentions(user_message)
+        except Exception:
+            original_message = user_message
+    else:
+        original_message = user_message
     logger.info(
+        "[шаги агента] Старт цепочки: %s агентов подряд | скрывать промежуточные=%s | "
+        "id=%s | чат=%s (это смена агентов, не лимит шагов LLM↔инструменты)",
+        len(chain),
+        hide_seq,
+        [p.get("agent_id") for p in chain],
+        conversation_id,
+    )
+    logger.debug(
         "[agent-chain] start n=%s hide_sequential=%s ids=%s",
         len(chain),
         hide_seq,
@@ -1783,6 +1976,29 @@ async def _run_direct_or_chain(
         is_first = i == 0
         is_last = i == len(chain) - 1
         step_name = (profile.get("name") or "Агент").strip() or "Агент"
+        step_kb_ids_peek = profile.get("kb_document_ids") or []
+        step_use_kb_peek = (
+            bool(profile.get("file_search_enabled"))
+            and isinstance(step_kb_ids_peek, list)
+            and len(step_kb_ids_peek) > 0
+        )
+        log_chain_hop(
+            index=i + 1,
+            total=len(chain),
+            agent_id=profile.get("agent_id"),
+            agent_name=step_name,
+            chat_id=conversation_id,
+            has_rag=bool(
+                (use_kb_rag if is_first else False)
+                or use_memory_library_rag
+                or step_use_kb_peek
+                or shared_kb_enabled
+                or project_id
+            ),
+            recursion_limit=resolve_recursion_limit(
+                profile if isinstance(profile, dict) else None
+            ),
+        )
         await sio.emit(
             "chat_agent_update",
             _stream_ids_payload(
@@ -1815,8 +2031,23 @@ async def _run_direct_or_chain(
         if isinstance(_eff_ms, dict) and _eff_ms:
             bind_user_model_runtime(_eff_ms)
 
-        step_kb_ids = step_profile.get("kb_document_ids") or []
-        step_use_kb = bool(step_profile.get("file_search_enabled")) and isinstance(step_kb_ids, list) and len(step_kb_ids) > 0
+        if shared_kb_enabled:
+            # Общая база знаний головного агента для каждого шага цепочки
+            # и субагентов этих шагов (_shared_chain_rag_ids / shared_chain_rag).
+            step_profile = dict(step_profile) if isinstance(step_profile, dict) else {}
+            step_profile["shared_chain_rag"] = True
+            step_profile["_shared_chain_rag_ids"] = list(shared_kb_ids)
+            if not step_profile.get("file_search_enabled"):
+                step_profile["file_search_enabled"] = True
+            step_kb_ids = list(shared_kb_ids)
+            step_use_kb = True
+        else:
+            step_kb_ids = step_profile.get("kb_document_ids") or []
+            step_use_kb = (
+                bool(step_profile.get("file_search_enabled"))
+                and isinstance(step_kb_ids, list)
+                and len(step_kb_ids) > 0
+            )
         step_data = prepare_step_socket_data(data, step_profile, is_first=is_first)
         step_message = original_message if is_first else build_chain_user_message(original_message, steps)
         stream_prefix, _header = iter_chain_stream_prefixes(steps, step_name, hide_sequential_outputs=hide_seq)
@@ -2169,6 +2400,21 @@ async def _handle_direct(
             if hit_scope:
                 rag_scopes.add(hit_scope)
     chat_timer.mark("rag_retrieve", time.perf_counter() - _t_rag0)
+    log_pre_loop(
+        phase="rag_retrieve_done",
+        chat_id=conversation_id,
+        agent_id=(
+            (agent_profile or {}).get("agent_id")
+            if isinstance(agent_profile, dict)
+            else None
+        ),
+        detail=(
+            f"контекст добавлен={'да' if context_added else 'нет'} "
+            f"источники={sorted(rag_scopes) if rag_scopes else []} "
+            f"заняло={int((time.perf_counter() - _t_rag0) * 1000)} мс "
+            f"(поиск до навыков/LLM; не считается шагом лимита)"
+        ),
+    )
     # Инструментов в прямом режиме нет, поэтому плагин вызывает сам backend.
     # Решаем это до сборки промпта: файл, который уйдёт в сервис, дампом ячеек
     # в промпт не вставляем — вместо него будет вердикт плагина.
@@ -2289,6 +2535,12 @@ async def _handle_direct(
             history=history,
         )
         final_message = strip_skill_mentions(final_message)
+        try:
+            from backend.services.tag_mentions import strip_tag_mentions
+
+            final_message = strip_tag_mentions(final_message)
+        except Exception:
+            pass
         if lazy_skill_ids or allowed_tools_extra:
             from backend.tools.tool_context import get_tool_context, set_tool_context
 
@@ -2300,6 +2552,22 @@ async def _handle_direct(
         if allowed_tools_extra:
             existing = list(data.get("tool_ids") or data.get("mcp_tool_ids") or [])
             data["tool_ids"] = list(dict.fromkeys([*existing, *allowed_tools_extra]))
+        log_pre_loop(
+            phase="skills",
+            chat_id=conversation_id,
+            agent_id=(
+                (agent_profile or {}).get("agent_id")
+                if isinstance(agent_profile, dict)
+                else None
+            ),
+            detail=(
+                f"отложенные={list(lazy_skill_ids or [])} "
+                f"ручные={list((_primed or {}).get('manual') or [])} "
+                f"всегда={list((_primed or {}).get('always_apply') or [])} "
+                f"доп. инструменты={list(allowed_tools_extra or [])} "
+                f"(инструменты из навыков попадут в цикл; сам навык ≠ шаг)"
+            ),
+        )
     except Exception:
         logger.exception("[direct] skills injection failed")
     try:
@@ -2311,6 +2579,20 @@ async def _handle_direct(
         )
         if artifacts_block:
             eff_system_prompt = append_to_system_prompt(eff_system_prompt, artifacts_block)
+        log_pre_loop(
+            phase="artifacts",
+            chat_id=conversation_id,
+            agent_id=(
+                (agent_profile or {}).get("agent_id")
+                if isinstance(agent_profile, dict)
+                else None
+            ),
+            detail=(
+                f"включены={'да' if artifacts_block else 'нет'} "
+                f"символов в промпте={len(artifacts_block or '')} "
+                f"(только system prompt, не шаг лимита)"
+            ),
+        )
     except Exception:
         logger.exception("[direct] artifacts prompt injection failed")
     try:
@@ -2330,6 +2612,20 @@ async def _handle_direct(
             set_tool_context(ctx)
         if plugins_append:
             eff_system_prompt = _append_plugins(eff_system_prompt, plugins_append)
+        log_pre_loop(
+            phase="plugins_prompt",
+            chat_id=conversation_id,
+            agent_id=(
+                (agent_profile or {}).get("agent_id")
+                if isinstance(agent_profile, dict)
+                else None
+            ),
+            detail=(
+                f"плагины={list(plugin_ids or [])} "
+                f"символов в промпте={len(plugins_append or '')} "
+                f"(промпт/инструменты; прямой вызов — отдельно)"
+            ),
+        )
     except Exception:
         logger.exception("[direct] plugins injection failed")
     plugin_direct_artifact = ""
@@ -2377,6 +2673,22 @@ async def _handle_direct(
                 outcome = await run_plugin_direct(direct_plugin_run, chat_mode="direct")
                 chat_timer.mark("plugin_direct", time.perf_counter() - _t_plugin0)
                 plugin_direct_ran = True
+                log_pre_loop(
+                    phase="plugin_direct",
+                    chat_id=conversation_id,
+                    agent_id=(
+                        (agent_profile or {}).get("agent_id")
+                        if isinstance(agent_profile, dict)
+                        else None
+                    ),
+                    detail=(
+                        f"плагин={direct_plugin_run.plugin_id} "
+                        f"файл=«{direct_plugin_run.file_name}» "
+                        f"успех={'да' if outcome.ok else 'нет'} "
+                        f"заняло={int((time.perf_counter() - _t_plugin0) * 1000)} мс "
+                        f"(вне цикла агента, не шаг лимита)"
+                    ),
+                )
                 logger.info(
                     "[plugin-dispatch] mode=direct DONE ok=%s bytes=%s url=%s status=%s error=%r",
                     outcome.ok,
@@ -2416,6 +2728,29 @@ async def _handle_direct(
         # Есть переписка - пусть отвечает модель: ответ мог прозвучать выше
         has_history=bool(history),
     )
+    _agent_steps_limit = resolve_recursion_limit(
+        agent_profile if isinstance(agent_profile, dict) else None
+    )
+    _agent_steps_src = describe_limit_source(
+        agent_profile if isinstance(agent_profile, dict) else None
+    )
+    log_pre_loop(
+        phase="rag_before_agent_loop",
+        chat_id=conversation_id,
+        agent_id=(
+            (agent_profile or {}).get("agent_id")
+            if isinstance(agent_profile, dict)
+            else None
+        ),
+        recursion_limit=_agent_steps_limit,
+        limit_source=_agent_steps_src,
+        detail=(
+            f"контекст добавлен={'да' if context_added else 'нет'} "
+            f"заглушка без LLM={'да' if canned else 'нет'} "
+            f"источники RAG={sorted(rag_scopes) if rag_scopes else []} "
+            f"(RAG не входит в лимит шагов)"
+        ),
+    )
     _terminal_chat_inference_banner(
         sid=sid,
         conversation_id=conversation_id,
@@ -2427,9 +2762,81 @@ async def _handle_direct(
         + (" [RAG: ответ без LLM — нет релевантных фрагментов]" if canned else ""),
         enable_thinking=enable_thinking,
     )
+    mcp_tool_events: list = []
+    if not canned and current_user:
+        # Обязательные субагенты по тегам карточки - кодом, до ответа родителя.
+        # Возвращает сообщение с их ответами и профиль для цикла инструментов
+        # (при required_only - без tool subagent). Без тегов - ничего не делает.
+        try:
+            from backend.agents.required_subagents import run_required_subagents
+            from backend.services.tag_mentions import collect_mention_tag_ids
+
+            async def _required_event_cb(payload):
+                mcp_tool_events.append(dict(payload))
+                if not suppress_ui_stream:
+                    await sio.emit(
+                        "chat_mcp_event", _stream_ids_payload(payload), room=sid
+                    )
+
+            mention_tags = collect_mention_tag_ids(
+                user_message=str(
+                    (data or {}).get("message") if isinstance(data, dict) else ""
+                )
+                or final_message,
+                data=data if isinstance(data, dict) else None,
+            )
+            logger.info(
+                "[chat-#tag] handlers: mention_tags=%s payload_tag_ids=%s "
+                "raw_message_has_mention=%s parent_agent_id=%s",
+                mention_tags,
+                (data or {}).get("tag_ids") if isinstance(data, dict) else None,
+                "<#"
+                in str((data or {}).get("message") if isinstance(data, dict) else ""),
+                (agent_profile or {}).get("agent_id")
+                if isinstance(agent_profile, dict)
+                else None,
+            )
+            (
+                final_message,
+                agent_profile,
+                _required_called,
+                mention_direct_answer,
+            ) = await run_required_subagents(
+                agent_profile=agent_profile,
+                user_message=final_message,
+                history=history,
+                user=current_user,
+                user_id=(current_user or {}).get("user_id"),
+                enable_thinking=enable_thinking,
+                emit_event=_required_event_cb,
+                stopped=lambda: _generation_stopped(sid),
+                inline_attachments=(
+                    data.get("inline_attachments") if isinstance(data, dict) else None
+                ),
+                mention_tag_ids=mention_tags,
+            )
+            if mention_direct_answer:
+                # #тег без выбранного агента → ответ вызванных агентов сразу в UI.
+                canned = mention_direct_answer
+                logger.info(
+                    "[chat-#tag] handlers: используем прямой ответ агентов "
+                    "(без родительского LLM), called=%s len=%s",
+                    _required_called,
+                    len(mention_direct_answer),
+                )
+            elif _required_called:
+                logger.info(
+                    "[chat-#tag] handlers: ответы агентов вложены в промпт родителя, "
+                    "called=%s",
+                    _required_called,
+                )
+        except Exception:
+            logger.exception("[chat-#tag] предвызов не удался, отвечаю без него")
     tool_ids = resolve_chat_tool_ids(data.get("tool_ids") or data.get("mcp_tool_ids"))
     mcp_result = None
-    mcp_tool_events: list = []
+    _subagents_on = bool(
+        agent_profile and (agent_profile.get("subagents") or {}).get("enabled")
+    )
     coding_mode = bool(data.get("coding_mode"))
     plan_mode = bool(data.get("plan_mode"))
     workspace_path = str(data.get("workspace_path") or "").strip()
@@ -2510,7 +2917,7 @@ async def _handle_direct(
             )
         except Exception:
             logger.exception("Coding agent loop error")
-    elif not canned and (tool_ids or (agent_profile and (agent_profile.get("subagents") or {}).get("enabled"))) and current_user:
+    elif not canned and (tool_ids or _subagents_on) and current_user:
         try:
             from backend.mcp.chat_integration import run_mcp_for_chat
 
@@ -2532,10 +2939,45 @@ async def _handle_direct(
                 max_tokens=max(agent_profile.get("max_tokens") or 1024, 4096),
                 enable_thinking=enable_thinking,
                 emit_event=_mcp_event_cb,
-                max_iterations=agent_profile.get("recursion_limit"),
+                agent_profile=agent_profile,
+                inline_attachments=(
+                    data.get("inline_attachments") if isinstance(data, dict) else None
+                ),
             )
+            if mcp_result is None:
+                log_pre_loop(
+                    phase="mcp_skipped_no_tools",
+                    chat_id=conversation_id,
+                    agent_id=(
+                        (agent_profile or {}).get("agent_id")
+                        if isinstance(agent_profile, dict)
+                        else None
+                    ),
+                    recursion_limit=_agent_steps_limit,
+                    limit_source=_agent_steps_src,
+                    detail=(
+                        f"tool_ids={tool_ids} субагенты={'да' if _subagents_on else 'нет'} "
+                        f"→ дальше обычное обращение к LLM"
+                    ),
+                )
         except Exception:
             logger.exception("MCP agent loop error")
+    elif not canned:
+        log_pre_loop(
+            phase="skip_agent_loop",
+            chat_id=conversation_id,
+            agent_id=(
+                (agent_profile or {}).get("agent_id")
+                if isinstance(agent_profile, dict)
+                else None
+            ),
+            recursion_limit=_agent_steps_limit,
+            limit_source=_agent_steps_src,
+            detail=(
+                f"нет MCP-инструментов и субагентов "
+                f"(tool_ids={tool_ids}, субагенты={'да' if _subagents_on else 'нет'}) → один вызов LLM"
+            ),
+        )
     reasoning_trace_accumulated = ""
 
     def _direct_stream_cb(chunk, acc, stream_role="content"):
@@ -2570,6 +3012,18 @@ async def _handle_direct(
 
     _t_llm0 = time.perf_counter()
     if canned:
+        log_pre_loop(
+            phase="canned_skip_llm",
+            chat_id=conversation_id,
+            agent_id=(
+                (agent_profile or {}).get("agent_id")
+                if isinstance(agent_profile, dict)
+                else None
+            ),
+            recursion_limit=_agent_steps_limit,
+            limit_source=_agent_steps_src,
+            detail="ответ без LLM: нет релевантных фрагментов RAG",
+        )
         response = canned
         if streaming and not suppress_ui_stream:
             vis = f"{stream_prefix}{canned}" if stream_prefix else canned
@@ -2592,26 +3046,88 @@ async def _handle_direct(
             vis = f"{stream_prefix}{response}" if stream_prefix else response
             await sio.emit("chat_chunk", _stream_ids_payload({"chunk": response, "accumulated": vis}), room=sid)
         logger.info(
+            "[шаги агента] Итог цикла | режим=%s | ИТОГО шагов: %s из %s (осталось %s) | "
+            "вызовов инструментов=%s | чат=%s",
+            mcp_result.mode,
+            mcp_result.iterations,
+            _agent_steps_limit,
+            max(0, int(_agent_steps_limit) - int(mcp_result.iterations or 0)),
+            mcp_result.tool_calls_executed,
+            conversation_id,
+        )
+        logger.debug(
             "MCP agent loop: mode=%s tools=%s iterations=%s",
             mcp_result.mode,
             mcp_result.tool_calls_executed,
             mcp_result.iterations,
         )
     elif streaming:
+        log_plain_llm(
+            phase="start",
+            chat_id=conversation_id,
+            agent_id=(
+                (agent_profile or {}).get("agent_id")
+                if isinstance(agent_profile, dict)
+                else None
+            ),
+            model=str(eff_model_path or ""),
+            recursion_limit=_agent_steps_limit,
+            detail="стриминг включён",
+        )
         with concurrent.futures.ThreadPoolExecutor() as ex:
             response = await asyncio.get_event_loop().run_in_executor(
                 ex, _make_ctx_runner(lambda: _run_ask(True, _direct_stream_cb))
             )
+        log_plain_llm(
+            phase="done",
+            chat_id=conversation_id,
+            agent_id=(
+                (agent_profile or {}).get("agent_id")
+                if isinstance(agent_profile, dict)
+                else None
+            ),
+            model=str(eff_model_path or ""),
+            recursion_limit=_agent_steps_limit,
+            duration_ms=int((time.perf_counter() - _t_llm0) * 1000),
+            content_preview=response if isinstance(response, str) else "",
+            detail="стриминг включён",
+        )
         if response is None or _generation_stopped(sid):
             await sio.emit("generation_stopped", _stream_ids_payload({"message": "Генерация остановлена"}), room=sid)
             chat_timer.mark("llm", time.perf_counter() - _t_llm0)
             chat_timer.log(logger)
             return
     else:
+        log_plain_llm(
+            phase="start",
+            chat_id=conversation_id,
+            agent_id=(
+                (agent_profile or {}).get("agent_id")
+                if isinstance(agent_profile, dict)
+                else None
+            ),
+            model=str(eff_model_path or ""),
+            recursion_limit=_agent_steps_limit,
+            detail="стриминг выключен",
+        )
         with concurrent.futures.ThreadPoolExecutor() as ex:
             response = await asyncio.get_event_loop().run_in_executor(
                 ex, _make_ctx_runner(lambda: _run_ask(False, None))
             )
+        log_plain_llm(
+            phase="done",
+            chat_id=conversation_id,
+            agent_id=(
+                (agent_profile or {}).get("agent_id")
+                if isinstance(agent_profile, dict)
+                else None
+            ),
+            model=str(eff_model_path or ""),
+            recursion_limit=_agent_steps_limit,
+            duration_ms=int((time.perf_counter() - _t_llm0) * 1000),
+            content_preview=response if isinstance(response, str) else "",
+            detail="стриминг выключен",
+        )
     chat_timer.mark("llm", time.perf_counter() - _t_llm0)
     if context_added and (not canned) and response:
         response = await maybe_replace_ungrounded(final_message[:20000], response, RAG_STRICT_NOT_FOUND_MESSAGE)
@@ -2619,6 +3135,10 @@ async def _handle_direct(
         from backend.plugins.artifact_format import append_artifacts_to_answer
 
         response = append_artifacts_to_answer(response, plugin_direct_artifact)
+    # После всех веток (цикл, стрим, обычный вызов): артефакты и файлы детей,
+    # которые родитель пересказал вместо того, чтобы воспроизвести.
+    if mcp_tool_events and isinstance(response, str):
+        response = _carry_subagent_artifacts(response, mcp_tool_events)
     if _generation_stopped(sid):
         await sio.emit("generation_stopped", _stream_ids_payload({"message": "Генерация остановлена"}), room=sid)
         return None

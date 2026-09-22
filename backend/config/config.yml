@@ -3,6 +3,21 @@
 #
 # Сетевые URL задаются только в секции urls: ниже. Поля microservices.*.url не используются
 # (удалены); таймауты и прочие параметры — в microservices.
+#
+# ========================================================
+# Цепочка агентов (Mixture-of-Agents) и субагенты — только ENV / ConfigMap.
+# В YAML этих ключей нет, они перечислены здесь как документация.
+#
+#   AGENT_CHAIN_MAX_AGENTS          — 10   платформенный максимум следующих в цепочке
+#   AGENT_SUBAGENTS_MAX             — 10   платформенный максимум субагентов в списке
+#   AGENT_GRAPH_STEPS               — 50   шаги графа (LLM ↔ инструменты)
+#   SUBAGENT_REQUIRED_CONCURRENCY   — 3    параллелизм обязательных субагентов по тегам
+#   SUBAGENT_MAX_TOKENS_FLOOR       — 4096 нижний пол max_tokens у дочернего субагента
+#
+# Per-agent (конструктор, config JSON): max_chain_agents, max_subagents,
+# shared_chain_rag, subagents.required_tag_ids / required_only — не выше
+# платформенных лимитов выше.
+# ========================================================
 
 # Основные настройки приложения
 app:

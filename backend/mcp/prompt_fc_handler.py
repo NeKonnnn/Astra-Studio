@@ -19,6 +19,13 @@ from backend.mcp.result_parser import (
     parse_mcp_result_to_struct,
     preview_parsed_for_ui,
 )
+from backend.agents.step_debug import (
+    log_llm_call,
+    log_llm_result,
+    log_run_end,
+    log_tool_call,
+    log_tool_result,
+)
 from backend.agents.subagents import NATIVE_SERVER_ID, execute_native_tool
 from backend.mcp.types import AgentLoopResult, McpCallContext, McpToolInfo
 from backend.settings.config import get_settings
@@ -90,7 +97,10 @@ async def run_prompt_json_fc(
     attachments: List[Dict[str, str]] = []
     working_messages = list(messages)
     req_extra = dict(request_extra or {})
-    for iteration in range(max(1, max_iterations)):
+    limit = max(1, max_iterations)
+    model_label = f"{getattr(provider, 'id', '')}/{model_id}".strip("/")
+    for iteration in range(limit):
+        step = iteration + 1
         prompt = _render_tools_prompt(tools)
         fc_messages = [
             {"role": "system", "content": prompt},
@@ -99,20 +109,52 @@ async def run_prompt_json_fc(
                 "content": f"History:\n{json.dumps(working_messages[-4:], ensure_ascii=False)}\nQuery: {user_query}",
             },
         ]
+        log_llm_call(
+            step=step,
+            limit=limit,
+            kind="prompt_json_fc",
+            model=model_label,
+            messages_count=len(fc_messages),
+            has_tools_schema=True,
+        )
+        t_llm = time.perf_counter()
         result = await provider.chat_completion(
             fc_messages, model_id, temperature=temperature, max_tokens=max_tokens, request_extra=req_extra
         )
+        llm_ms = int((time.perf_counter() - t_llm) * 1000)
         payload = _extract_json_object(result.content)
         if not payload:
+            log_llm_result(
+                step=step,
+                limit=limit,
+                has_tool_calls=False,
+                content_preview=result.content or "",
+                duration_ms=llm_ms,
+            )
+            log_run_end(
+                mode="prompt_json_fc",
+                steps_used=step,
+                limit=limit,
+                tool_calls_executed=tool_calls_executed,
+                reason="unparsed_fc_json",
+                content_preview=result.content or "",
+            )
             return AgentLoopResult(
                 content=result.content or "Не удалось распознать вызов инструмента.",
                 tool_calls_executed=tool_calls_executed,
                 mode="prompt_json_fc",
-                iterations=iteration + 1,
+                iterations=step,
             )
         calls = payload.get("tool_calls") or []
         if not calls:
-            if tool_calls_executed > 0 and iteration + 1 < max_iterations:
+            log_llm_result(
+                step=step,
+                limit=limit,
+                has_tool_calls=False,
+                content_preview=result.content or "",
+                duration_ms=llm_ms,
+            )
+            if tool_calls_executed > 0 and step < limit:
                 working_messages.append(
                     {
                         "role": "user",
@@ -120,17 +162,49 @@ async def run_prompt_json_fc(
                     }
                 )
                 continue
+            log_llm_call(
+                step=step,
+                limit=limit,
+                kind="chat_final",
+                model=model_label,
+                messages_count=len(working_messages),
+            )
+            t_final = time.perf_counter()
             final = await provider.chat(
                 working_messages, model_id, temperature=temperature, max_tokens=max_tokens, request_extra=req_extra
             )
             content = append_download_links_to_content(final, attachments)
+            log_llm_result(
+                step=step,
+                limit=limit,
+                has_tool_calls=False,
+                content_preview=content or "",
+                duration_ms=int((time.perf_counter() - t_final) * 1000),
+            )
+            log_run_end(
+                mode="prompt_json_fc",
+                steps_used=step,
+                limit=limit,
+                tool_calls_executed=tool_calls_executed,
+                reason="final_answer",
+                content_preview=content or "",
+            )
             return AgentLoopResult(
                 content=content,
                 tool_calls_executed=tool_calls_executed,
                 mode="prompt_json_fc",
-                iterations=iteration + 1,
+                iterations=step,
                 attachments=attachments,
             )
+        call_names = [str(c.get("name") or "") for c in calls if isinstance(c, dict)]
+        log_llm_result(
+            step=step,
+            limit=limit,
+            has_tool_calls=True,
+            tool_names=call_names,
+            content_preview=result.content or "",
+            duration_ms=llm_ms,
+        )
         tool_results: List[str] = []
         for call in calls:
             if not isinstance(call, dict):
@@ -139,13 +213,28 @@ async def run_prompt_json_fc(
             params = call.get("parameters") or call.get("arguments") or {}
             tool_info = _find_tool(name, tools)
             if not tool_info:
+                log_tool_result(
+                    step=step,
+                    limit=limit,
+                    tool=name,
+                    success=False,
+                    error="Tool not found",
+                )
                 tool_results.append(f"Tool {name} not found")
                 continue
             if tool_info.server_id == NATIVE_SERVER_ID:
+                started = time.perf_counter()
+                call_id = uuid.uuid4().hex
+                tool_args = params if isinstance(params, dict) else {}
                 try:
-                    started = time.perf_counter()
-                    call_id = uuid.uuid4().hex
-                    tool_args = params if isinstance(params, dict) else {}
+                    log_tool_call(
+                        step=step,
+                        limit=limit,
+                        tool=tool_info.qualified_name or tool_info.name,
+                        server_id=tool_info.server_id,
+                        kind="native",
+                        arguments=tool_args,
+                    )
                     await emit_mcp_tool_start(
                         event_callback,
                         server_id=tool_info.server_id,
@@ -163,6 +252,14 @@ async def run_prompt_json_fc(
                     tool_results.append(content)
                     tool_calls_executed += 1
                     duration_ms = int((time.perf_counter() - started) * 1000)
+                    log_tool_result(
+                        step=step,
+                        limit=limit,
+                        tool=tool_info.qualified_name or tool_info.name,
+                        success=True,
+                        duration_ms=duration_ms,
+                        result_preview=content or "",
+                    )
                     await emit_mcp_tool_end(
                         event_callback,
                         server_id=tool_info.server_id,
@@ -176,16 +273,49 @@ async def run_prompt_json_fc(
                     )
                 except Exception as exc:
                     log.exception("Native tool error in prompt_json_fc")
+                    log_tool_result(
+                        step=step,
+                        limit=limit,
+                        tool=name,
+                        success=False,
+                        error=str(exc),
+                    )
                     tool_results.append(f"Native tool error: {exc}")
+                    await emit_mcp_tool_end(
+                        event_callback,
+                        server_id=tool_info.server_id,
+                        tool=tool_info.name,
+                        qualified_name=tool_info.qualified_name,
+                        success=False,
+                        duration_ms=int((time.perf_counter() - started) * 1000),
+                        error=str(exc),
+                        call_id=call_id,
+                        arguments=tool_args,
+                    )
                 continue
             session = sessions.get(tool_info.server_id)
             if not session:
+                log_tool_result(
+                    step=step,
+                    limit=limit,
+                    tool=tool_info.qualified_name or tool_info.name,
+                    success=False,
+                    error=f"MCP session for {tool_info.server_id} unavailable",
+                )
                 tool_results.append(f"MCP session for {tool_info.server_id} unavailable")
                 continue
             try:
                 started = time.perf_counter()
                 call_id = uuid.uuid4().hex
                 tool_args = params if isinstance(params, dict) else {}
+                log_tool_call(
+                    step=step,
+                    limit=limit,
+                    tool=tool_info.qualified_name or tool_info.name,
+                    server_id=tool_info.server_id,
+                    kind="mcp",
+                    arguments=tool_args,
+                )
                 await emit_mcp_tool_start(
                     event_callback,
                     server_id=tool_info.server_id,
@@ -204,6 +334,14 @@ async def run_prompt_json_fc(
                     if link["url"] not in {x["url"] for x in attachments}:
                         attachments.append(link)
                 duration_ms = int((time.perf_counter() - started) * 1000)
+                log_tool_result(
+                    step=step,
+                    limit=limit,
+                    tool=tool_info.qualified_name or tool_info.name,
+                    success=True,
+                    duration_ms=duration_ms,
+                    result_preview=preview_parsed_for_ui(parsed) or "",
+                )
                 await emit_mcp_tool_end(
                     event_callback,
                     server_id=tool_info.server_id,
@@ -223,6 +361,14 @@ async def run_prompt_json_fc(
             except Exception as exc:
                 log.exception("Error calling")
                 duration_ms = int((time.perf_counter() - started) * 1000) if "started" in locals() else 0
+                log_tool_result(
+                    step=step,
+                    limit=limit,
+                    tool=name,
+                    success=False,
+                    duration_ms=duration_ms,
+                    error=str(exc),
+                )
                 await emit_mcp_tool_end(
                     event_callback,
                     server_id=tool_info.server_id,
@@ -238,10 +384,33 @@ async def run_prompt_json_fc(
                 tool_results.append(f"Error calling {name}: {exc}")
         working_messages.append({"role": "assistant", "content": json.dumps({"tool_calls": calls}, ensure_ascii=False)})
         working_messages.append({"role": "user", "content": "Tool results:\n" + "\n".join(tool_results)})
+    log_llm_call(
+        step=limit,
+        limit=limit,
+        kind="chat_final",
+        model=model_label,
+        messages_count=len(working_messages),
+    )
+    t_final = time.perf_counter()
     final = await provider.chat(
         working_messages, model_id, temperature=temperature, max_tokens=max_tokens, request_extra=req_extra
     )
     content = append_download_links_to_content(final, attachments)
+    log_llm_result(
+        step=limit,
+        limit=limit,
+        has_tool_calls=False,
+        content_preview=content or "",
+        duration_ms=int((time.perf_counter() - t_final) * 1000),
+    )
+    log_run_end(
+        mode="prompt_json_fc",
+        steps_used=limit,
+        limit=limit,
+        tool_calls_executed=tool_calls_executed,
+        reason="max_iterations",
+        content_preview=content or "",
+    )
     return AgentLoopResult(
         content=content,
         tool_calls_executed=tool_calls_executed,

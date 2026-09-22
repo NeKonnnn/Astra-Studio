@@ -18,6 +18,7 @@ import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
 import HubIcon from '@mui/icons-material/Hub';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import AgentIcon from '../../icons/AgentIcon';
+import AgentTagsField, { normalizeAgentTags, useAgentTags } from './AgentTagsField';
 import type { SxProps, Theme } from '@mui/material/styles';
 import {
   AGENT_CONSTRUCTOR_OUTLINED_INPUT_SX,
@@ -32,11 +33,17 @@ export interface SubagentConfig {
   enabled: boolean;
   allow_self: boolean;
   agent_ids: number[];
+  /** Агенты с любым из этих тегов вызываются кодом до ответа - всегда. */
+  required_tag_ids: number[];
+  /** true - только обязательные, tool subagent агенту не даётся. */
+  required_only: boolean;
 }
 
 export interface SubagentAgentOption {
   id: number;
   name: string;
+  /** Теги карточки (объекты {id, name} из API) - показываем рядом с именем. */
+  tags?: unknown;
 }
 
 interface AgentSubagentsEditorProps {
@@ -56,6 +63,8 @@ interface AgentSubagentsEditorProps {
 }
 
 const DEFAULT_MAX_SUBAGENTS = 10;
+/** Сколько чипов тегов показывать у агента в списке; остальные - в "+N". */
+const TAG_CHIPS_LIMIT = 3;
 
 export default function AgentSubagentsEditor({
   currentAgentId,
@@ -79,6 +88,19 @@ export default function AgentSubagentsEditor({
 
   const byId = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
 
+  // В конфиге хранятся id тегов, полю нужны имена - берём из справочника.
+  // Тег, которого в справочнике уже нет (удалили), показываем как #id.
+  const tagCatalog = useAgentTags();
+  const requiredTagIds = config.required_tag_ids || [];
+  const requiredTagValues = useMemo(
+    () =>
+      requiredTagIds.map((id) => {
+        const found = tagCatalog.find((t) => t.id === id);
+        return { id, name: found ? found.name : '#' + String(id) };
+      }),
+    [requiredTagIds, tagCatalog],
+  );
+
   const setEnabled = (enabled: boolean) => {
     onChange({ ...config, enabled });
   };
@@ -98,7 +120,38 @@ export default function AgentSubagentsEditor({
   };
 
   const nothingToSpawn =
-    config.enabled && !config.allow_self && config.agent_ids.length === 0;
+    config.enabled &&
+    !config.allow_self &&
+    config.agent_ids.length === 0 &&
+    requiredTagIds.length === 0;
+
+  // Теги агента рядом с именем: по ним видно, кого подхватят обязательные.
+  const renderTagChips = (raw: unknown) => {
+    const tags = normalizeAgentTags(raw);
+    if (!tags.length) return null;
+    const shown = tags.slice(0, TAG_CHIPS_LIMIT);
+    const hidden = tags.slice(TAG_CHIPS_LIMIT);
+    const chipSx = {
+      height: 16,
+      maxWidth: 110,
+      fontSize: '0.6rem',
+      color: panelChrome.fgMuted,
+      bgcolor: 'rgba(255,255,255,0.06)',
+      '& .MuiChip-label': { px: 0.6 },
+    };
+    return (
+      <Box component="span" sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', minWidth: 0 }}>
+        {shown.map((t) => (
+          <Chip key={t.name} size="small" label={t.name} title={t.name} sx={chipSx} />
+        ))}
+        {hidden.length > 0 && (
+          <Tooltip title={hidden.map((t) => t.name).join(', ')} arrow placement="top">
+            <Chip size="small" label={'+' + String(hidden.length)} sx={chipSx} />
+          </Tooltip>
+        )}
+      </Box>
+    );
+  };
 
   return (
     <Box sx={{ minWidth: 0, mt: 2 }}>
@@ -169,6 +222,47 @@ export default function AgentSubagentsEditor({
             sx={{ ml: 0, mr: 0 }}
           />
 
+          <AgentTagsField
+            label="Обязательные теги"
+            placeholder="Агенты с этими тегами вызываются всегда"
+            allowCreate={false}
+            readOnly={readOnly}
+            darkFields={darkFields}
+            value={requiredTagValues}
+            onChange={(next) =>
+              onChange({
+                ...config,
+                enabled: true,
+                required_tag_ids: next
+                  .map((t) => t.id)
+                  .filter((id): id is number => typeof id === 'number'),
+              })
+            }
+            help="Все доступные вам агенты с любым из этих тегов вызываются на каждое сообщение — до ответа этого агента, параллельно."
+            sx={categoryFieldSx}
+          />
+          <FormControlLabel
+            control={
+              <Switch
+                size="small"
+                checked={Boolean(config.required_only)}
+                disabled={readOnly || requiredTagIds.length === 0}
+                onChange={(e) => onChange({ ...config, required_only: e.target.checked })}
+              />
+            }
+            label={
+              <Typography variant="caption" sx={{ color: panelChrome.fgMuted, fontSize: '0.75rem' }}>
+                Только обязательные - без выбора этим агентом
+              </Typography>
+            }
+            sx={{ ml: 0, mr: 0 }}
+          />
+          {config.required_only && requiredTagIds.length > 0 && (
+            <Typography variant="caption" sx={{ color: panelChrome.fgSubtle, fontSize: '0.68rem' }}>
+              Список субагентов ниже при этом не используется: агент отвечает только по результатам обязательных.
+            </Typography>
+          )}
+
           {config.agent_ids.map((id) => {
             const agent = byId.get(id);
             return (
@@ -185,9 +279,12 @@ export default function AgentSubagentsEditor({
                 }}
               >
                 <AgentIcon sx={{ fontSize: 16, color: panelChrome.fgMuted }} />
-                <Typography variant="caption" sx={{ flex: 1, color: panelChrome.fgMuted, fontSize: '0.78rem' }} noWrap>
+                <Box sx={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 0.25 }}>
+                  <Typography variant="caption" sx={{ color: panelChrome.fgMuted, fontSize: '0.78rem' }} noWrap>
                   {agent?.name || `Агент #${id}`}
-                </Typography>
+                  </Typography>
+                  {renderTagChips(agent?.tags)}
+                </Box>
                 {!readOnly && (
                   <IconButton
                     size="small"
@@ -244,7 +341,10 @@ export default function AgentSubagentsEditor({
                         }}
                       >
                         <AgentIcon sx={{ fontSize: 14, opacity: 0.7 }} />
-                        <span>{agent.name}</span>
+                        <Box sx={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 0.25 }}>
+                          <span>{agent.name}</span>
+                          {renderTagChips(agent.tags)}
+                        </Box>
                       </Box>
                     ))
                   )}
@@ -268,6 +368,8 @@ export const EMPTY_SUBAGENT_CONFIG: SubagentConfig = {
   enabled: false,
   allow_self: true,
   agent_ids: [],
+  required_tag_ids: [],
+  required_only: false,
 };
 
 export const MAX_SUBAGENTS_UI = DEFAULT_MAX_SUBAGENTS;

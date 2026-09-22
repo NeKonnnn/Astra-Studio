@@ -3,6 +3,8 @@ export { default as McpIcon } from './McpIcon';
 export { default as ToolsIcon } from './ToolsIcon';
 export { default as SkillsIcon } from './SkillsIcon';
 export { default as ArtifactsIcon } from './ArtifactsIcon';
+export { default as ThinkingModeIcon } from './ThinkingModeIcon';
+export { default as ThinkingBulbIcon } from './ThinkingBulbIcon';
 export { default as SplitArrowIcon } from './SplitArrowIcon';
 export { default as ComposerExpandIcon } from './ComposerExpandIcon';
 export { default as ComposerCollapseIcon } from './ComposerCollapseIcon';

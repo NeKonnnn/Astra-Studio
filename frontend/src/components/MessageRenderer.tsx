@@ -572,10 +572,17 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
         .replace(/[`*]/g, '');
       return `\`$${label}\``;
     });
+    // Tag mentions <#id|Name> → `#Name`
+    const withTags = withSkills.replace(/<#([^|>]+)\|?([^>]*)>/g, (_m, id: string, name: string) => {
+      const label = String(name || id || '')
+        .trim()
+        .replace(/[`*]/g, '');
+      return `\`#${label}\``;
+    });
     // Не трогаем fence-блоки и GPB HTML: normalizeChatInlineHtml иначе разносит теги,
     // и презентация утекает в ChatInlineHtml (иконки/разметка в тексте вместо viewer).
     const fences: string[] = [];
-    const withoutFences = withSkills.replace(/```[\s\S]*?(?:```|$)/g, (block) => {
+    const withoutFences = withTags.replace(/```[\s\S]*?(?:```|$)/g, (block) => {
       const token = `\n__ASTRA_FENCE_${fences.length}__\n`;
       fences.push(block);
       return token;

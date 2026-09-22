@@ -7,16 +7,13 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 import os
 
 MAX_CHAIN_AGENTS = 10
 DEFAULT_GRAPH_STEPS = 50
 MAX_CHAIN_AGENTS_CAP = 50
 GRAPH_STEPS_CAP = 500
-DEFAULT_AGENT_STEPS = 25
-MIN_AGENT_STEPS = 1
-MAX_AGENT_STEPS = 100
 
 
 def _env_int(name: str, default: int, *, lo: int, hi: int) -> int:
@@ -31,12 +28,35 @@ def _env_int(name: str, default: int, *, lo: int, hi: int) -> int:
 
 def get_max_chain_agents() -> int:
     """Максимум следующих агентов в цепочке: AGENT_CHAIN_MAX_AGENTS (ConfigMap)."""
-    return _env_int("AGENT_CHAIN_MAX_AGENTS", MAX_CHAIN_AGENTS, lo=1, hi=MAX_CHAIN_AGENTS_CAP)
+    return _env_int(
+        "AGENT_CHAIN_MAX_AGENTS", MAX_CHAIN_AGENTS, lo=1, hi=MAX_CHAIN_AGENTS_CAP
+    )
 
 
 def get_agent_graph_steps() -> int:
     """Лимит шагов графа (LLM + инструменты): AGENT_GRAPH_STEPS (ConfigMap)."""
     return _env_int("AGENT_GRAPH_STEPS", DEFAULT_GRAPH_STEPS, lo=1, hi=GRAPH_STEPS_CAP)
+
+
+def _parse_positive_int(raw: Any) -> Optional[int]:
+    if isinstance(raw, int) and raw > 0:
+        return raw
+    if isinstance(raw, str) and raw.strip().isdigit():
+        parsed = int(raw.strip())
+        if parsed > 0:
+            return parsed
+    return None
+
+
+def resolve_max_chain_agents(agent_profile: Optional[Mapping[str, Any]] = None) -> int:
+    """Эффективный лимит цепочки: per-agent → платформенный (AGENT_CHAIN_MAX_AGENTS)."""
+    platform = get_max_chain_agents()
+    if not isinstance(agent_profile, Mapping):
+        return platform
+    parsed = _parse_positive_int(agent_profile.get("max_chain_agents"))
+    if parsed is None:
+        return platform
+    return max(1, min(parsed, platform))
 
 
 DEFAULT_CHAIN_PROMPT_TEMPLATE = (
@@ -46,10 +66,22 @@ DEFAULT_CHAIN_PROMPT_TEMPLATE = (
 )
 
 
-def parse_agent_ids(raw: Any, *, exclude_id: Optional[int] = None) -> List[int]:
-    """Нормализовать `config.agent_ids`: уникальные int, без текущего, лимит из ConfigMap."""
+def parse_agent_ids(
+    raw: Any,
+    *,
+    exclude_id: Optional[int] = None,
+    max_agents: Optional[int] = None,
+    agent_profile: Optional[Mapping[str, Any]] = None,
+) -> List[int]:
+    """Нормализовать `config.agent_ids`: уникальные int, без текущего, с per-agent лимитом."""
     if not isinstance(raw, list):
         return []
+    if max_agents is not None:
+        limit = max(1, int(max_agents))
+    elif agent_profile is not None:
+        limit = resolve_max_chain_agents(agent_profile)
+    else:
+        limit = get_max_chain_agents()
     out: List[int] = []
     seen = set()
     if exclude_id is not None:
@@ -66,31 +98,9 @@ def parse_agent_ids(raw: Any, *, exclude_id: Optional[int] = None) -> List[int]:
             continue
         seen.add(aid)
         out.append(aid)
-        if len(out) >= get_max_chain_agents():
+        if len(out) >= limit:
             break
     return out
-
-
-def parse_recursion_limit(raw: Any) -> Optional[int]:
-    """Per-agent Max Agent Steps (LibreChat recursion_limit). None = системный дефолт."""
-    if raw is None or raw == "":
-        return None
-    try:
-        n = int(raw)
-    except (TypeError, ValueError):
-        return None
-    if n <= 0:
-        return None
-    return max(MIN_AGENT_STEPS, min(MAX_AGENT_STEPS, n))
-
-
-def resolve_agent_steps(profile: Optional[Dict[str, Any]], default: int = DEFAULT_AGENT_STEPS) -> int:
-    if not isinstance(profile, dict):
-        return max(MIN_AGENT_STEPS, default)
-    parsed = parse_recursion_limit(profile.get("recursion_limit"))
-    if parsed is None:
-        return max(MIN_AGENT_STEPS, default)
-    return parsed
 
 
 def format_run_buffer(
@@ -113,7 +123,9 @@ def build_chain_user_message(
 ) -> str:
     """Промпт следующего агента: Mixure-of-Agents с `{convo}`."""
     convo = format_run_buffer(user_message, steps)
-    template = (prompt_template or DEFAULT_CHAIN_PROMPT_TEMPLATE).strip() or DEFAULT_CHAIN_PROMPT_TEMPLATE
+    template = (
+        prompt_template or DEFAULT_CHAIN_PROMPT_TEMPLATE
+    ).strip() or DEFAULT_CHAIN_PROMPT_TEMPLATE
     if "{convo}" not in template:
         return f"{template}\n\n{convo}"
     return template.replace("{convo}", convo)
@@ -146,6 +158,7 @@ async def resolve_agent_chain(
     primary_id: Any,
     primary_profile: Dict[str, Any],
     user_id: Optional[str],
+    user: Optional[dict] = None,
 ) -> List[Dict[str, Any]]:
     """Загрузить профили цепочки: [primary, ...agent_ids]. Без транзитивного обхода чужих цепочек."""
     from backend.realtime.helpers import _resolve_agent_chat_params
@@ -162,12 +175,14 @@ async def resolve_agent_chain(
     if not pid:
         return chain
 
-    next_ids = parse_agent_ids(primary.get("agent_ids"), exclude_id=pid)
+    next_ids = parse_agent_ids(
+        primary.get("agent_ids"), exclude_id=pid, agent_profile=primary
+    )
     if not next_ids:
         return chain
 
     for aid in next_ids:
-        profile = await _resolve_agent_chat_params(aid, user_id)
+        profile = await _resolve_agent_chat_params(aid, user_id, user=user)
         if not isinstance(profile, dict):
             continue
         if not (profile.get("name") or profile.get("system_prompt")):
@@ -194,6 +209,16 @@ def prepare_step_socket_data(
         step_data.pop("coding_mode", None)
         step_data.pop("plan_mode", None)
         step_data.pop("approved_plan", None)
+        # #теги из чата отрабатывают только на первом шаге цепочки —
+        # иначе одни и те же агенты вызвались бы на каждом hop.
+        step_data.pop("tag_ids", None)
+        if isinstance(step_data.get("message"), str):
+            try:
+                from backend.services.tag_mentions import strip_tag_mentions
+
+                step_data["message"] = strip_tag_mentions(step_data["message"])
+            except Exception:
+                pass
         step_data["tool_ids"] = agent_mcp_tool_ids(profile)
         plugins = agent_plugin_ids(profile)
         if plugins:
@@ -224,6 +249,8 @@ def iter_chain_stream_prefixes(
     header = chain_step_header(next_name)
     if not steps_so_far:
         return header, header
-    visible = format_visible_chain_content(list(steps_so_far), hide_sequential_outputs=False)
+    visible = format_visible_chain_content(
+        list(steps_so_far), hide_sequential_outputs=False
+    )
     prefix = f"{visible}\n\n{header}" if visible else header
     return prefix, header

@@ -66,7 +66,9 @@ class TestAgentConfig(unittest.TestCase):
         cls.config = _load_module("agent_config_ut", "backend/agents/config.py")
         sys.modules["backend.agents.config"] = cls.config
         _ensure_subagent_import_stubs()
-        cls.subagents = _load_module("agent_subagents_ut", "backend/agents/subagents.py")
+        cls.subagents = _load_module(
+            "agent_subagents_ut", "backend/agents/subagents.py"
+        )
 
     def test_resolve_recursion_limit_per_agent(self):
         got = self.config.resolve_recursion_limit({"recursion_limit": 30})
@@ -95,9 +97,23 @@ class TestAgentConfig(unittest.TestCase):
         self.assertFalse(cfg.allow_self)
         self.assertEqual(cfg.agent_ids, [2, 3])
 
+    def test_resolve_max_subagents_per_agent(self):
+        self.assertEqual(
+            self.subagents.resolve_max_subagents({"max_subagents": 4}),
+            4,
+        )
+        got = self.subagents.parse_subagents_config(
+            {"enabled": True, "allow_self": False, "agent_ids": [2, 3, 4, 5, 6]},
+            exclude_id=1,
+            agent_profile={"max_subagents": 2},
+        )
+        self.assertEqual(got.agent_ids, [2, 3])
+
     def test_build_subagent_tools_includes_self_and_agents(self):
         tools = self.subagents.build_subagent_tools(
-            self.subagents.AgentSubagentsConfig(enabled=True, allow_self=True, agent_ids=[5]),
+            self.subagents.AgentSubagentsConfig(
+                enabled=True, allow_self=True, agent_ids=[5]
+            ),
             parent_agent_id=1,
             agent_names={1: "Parent", 5: "Helper"},
         )
@@ -108,17 +124,25 @@ class TestAgentConfig(unittest.TestCase):
         self.assertIn("agent_5", enum_values)
 
     def test_resolve_subagent_target(self):
-        cfg = self.subagents.AgentSubagentsConfig(enabled=True, allow_self=True, agent_ids=[7])
+        cfg = self.subagents.AgentSubagentsConfig(
+            enabled=True, allow_self=True, agent_ids=[7]
+        )
         self.assertEqual(
-            self.subagents.resolve_subagent_target("self", parent_agent_id=3, config=cfg),
+            self.subagents.resolve_subagent_target(
+                "self", parent_agent_id=3, config=cfg
+            ),
             3,
         )
         self.assertEqual(
-            self.subagents.resolve_subagent_target("agent_7", parent_agent_id=3, config=cfg),
+            self.subagents.resolve_subagent_target(
+                "agent_7", parent_agent_id=3, config=cfg
+            ),
             7,
         )
         self.assertIsNone(
-            self.subagents.resolve_subagent_target("agent_99", parent_agent_id=3, config=cfg),
+            self.subagents.resolve_subagent_target(
+                "agent_99", parent_agent_id=3, config=cfg
+            ),
         )
 
 

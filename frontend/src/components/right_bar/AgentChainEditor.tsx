@@ -40,6 +40,8 @@ interface AgentChainEditorProps {
   onChange: (ids: number[]) => void;
   hideSequential: boolean;
   onHideSequentialChange: (value: boolean) => void;
+  sharedRag: boolean;
+  onSharedRagChange: (value: boolean) => void;
   agents: ChainAgentOption[];
   readOnly?: boolean;
   maxAgents?: number;
@@ -59,6 +61,8 @@ export default function AgentChainEditor({
   onChange,
   hideSequential,
   onHideSequentialChange,
+  sharedRag,
+  onSharedRagChange,
   agents,
   readOnly = false,
   maxAgents = DEFAULT_MAX_CHAIN_AGENTS,
@@ -292,6 +296,54 @@ export default function AgentChainEditor({
           }}
         />
       </Box>
+
+      <Box sx={{ mt: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, minWidth: 0, pr: 1 }}>
+          <Typography variant="caption" sx={{ color: panelChrome.fgMuted, fontSize: '0.78rem' }}>
+            Общий RAG для цепочки и субагентов
+          </Typography>
+          <Tooltip
+            title="Включайте на ГОЛОВНОМ агенте цепочки (выполняется первым). Документы (RAG) головного агента станут общими для всех агентов в цепочке и для субагентов. Каждый шаг будет искать по единой базе знаний головного агента. Индивидуальные документы других агентов при этом не используются в цепочке."
+            arrow
+          >
+            <HelpOutlineIcon sx={{ fontSize: 12, color: panelChrome.fgSubtle, cursor: 'help' }} />
+          </Tooltip>
+        </Box>
+        <Switch
+          checked={sharedRag}
+          disabled={readOnly}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => onSharedRagChange(e.target.checked)}
+          size="small"
+          sx={{
+            '& .MuiSwitch-switchBase.Mui-checked': { color: '#2196f3' },
+            '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': { bgcolor: 'rgba(33,150,243,0.5)' },
+            '& .MuiSwitch-track': { bgcolor: 'rgba(255,255,255,0.2)' },
+          }}
+        />
+      </Box>
+
+      {sharedRag && (
+        <Box
+          sx={{
+            mt: 0.75,
+            px: 1,
+            py: 0.75,
+            borderRadius: 1,
+            border: '1px solid rgba(33,150,243,0.35)',
+            bgcolor: 'rgba(33,150,243,0.08)',
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 0.75,
+          }}
+        >
+          <HelpOutlineIcon sx={{ fontSize: 14, color: '#2196f3', mt: '1px', flexShrink: 0 }} />
+          <Typography variant="caption" sx={{ color: panelChrome.fgMuted, fontSize: '0.68rem', lineHeight: 1.4 }}>
+            Включайте эту кнопку <b>на головном агенте</b> цепочки (он выполняется первым). Общей
+            становится именно база знаний головного агента — её и будут использовать все остальные
+            агенты цепочки и субагенты.
+          </Typography>
+        </Box>
+      )}
 
       <Popover
         open={Boolean(addAnchor)}

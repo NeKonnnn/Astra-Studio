@@ -101,7 +101,10 @@ import RagFilesSearchField from '../RagFilesSearchField';
 import { filterByRagFilenameQuery } from '../../utils/ragFilesSearch';
 import AgentChainEditor from './AgentChainEditor';
 import AgentSubagentsEditor, { EMPTY_SUBAGENT_CONFIG, type SubagentConfig } from './AgentSubagentsEditor';
+import AgentTagsField, { normalizeAgentTags, type AgentTagValue } from './AgentTagsField';
+import { invalidateAgentTagsCache, fetchAgentTags, parseTagIds } from '../../constants/AgentTags';
 import MaxAgentStepsField from './MaxAgentStepsField';
+import AgentLimitField from './AgentLimitField';
 import { fetchAgentChainConfig, parseAgentIds } from '../../constants/agentChain';
 import {
   createRagPendingUploads,
@@ -367,6 +370,25 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
     [darkFields],
   );
 
+  /** Карточки прикреплённых файлов KB — рамка/фон/текст под тему панели. */
+  const kbFileCardSx = useMemo(
+    () => ({
+      position: 'relative' as const,
+      borderRadius: 1,
+      bgcolor: darkFields ? '#2a2d3a' : 'rgba(0,0,0,0.04)',
+      border: darkFields ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(0,0,0,0.12)',
+      p: 0.5,
+      minWidth: 0,
+      display: 'flex',
+      flexDirection: 'column' as const,
+      justifyContent: 'center',
+    }),
+    [darkFields],
+  );
+  const kbFileNameColor = darkFields ? '#fff' : 'rgba(0,0,0,0.87)';
+  const kbFileTypeColor = darkFields ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.55)';
+  const kbFileMutedColor = darkFields ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.45)';
+
   const categoryOutlinedRef = useRef<HTMLDivElement>(null);
 
   // Agent list & selection
@@ -377,6 +399,7 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
   // Form fields
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [agentTags, setAgentTags] = useState<AgentTagValue[]>([]);
   const [category, setCategory] = useState('Общий');
   const [instructions, setInstructions] = useState('');
   const instructionsTooShort =
@@ -436,11 +459,18 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
   // Sequential agent chain (config.agent_ids — LibreChat Mixture-of-Agents)
   const [chainAgentIds, setChainAgentIds] = useState<number[]>([]);
   const [hideSequentialOutputs, setHideSequentialOutputs] = useState(false);
+  const [sharedChainRag, setSharedChainRag] = useState(false);
   const [chainMaxAgents, setChainMaxAgents] = useState(10);
+  const [defaultMaxSubagents, setDefaultMaxSubagents] = useState(10);
+  const [maxChainAgentsLimit, setMaxChainAgentsLimit] = useState<number | ''>('');
+  const [maxSubagentsLimit, setMaxSubagentsLimit] = useState<number | ''>('');
   const [defaultGraphSteps, setDefaultGraphSteps] = useState(50);
   const [maxRecursionLimit, setMaxRecursionLimit] = useState(500);
   const [recursionLimit, setRecursionLimit] = useState<number | ''>('');
   const [subagentsConfig, setSubagentsConfig] = useState<SubagentConfig>(EMPTY_SUBAGENT_CONFIG);
+
+  const effectiveChainMax = maxChainAgentsLimit !== '' ? maxChainAgentsLimit : chainMaxAgents;
+  const effectiveSubagentsMax = maxSubagentsLimit !== '' ? maxSubagentsLimit : defaultMaxSubagents;
 
   // Support contacts
   const [supportName, setSupportName] = useState('');
@@ -657,6 +687,7 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
     void loadKbDocuments();
     void fetchAgentChainConfig().then((cfg) => {
       setChainMaxAgents(cfg.maxAgents);
+      setDefaultMaxSubagents(cfg.maxSubagents);
       setDefaultGraphSteps(cfg.defaultRecursionLimit);
       setMaxRecursionLimit(cfg.maxRecursionLimit);
     });
@@ -747,6 +778,7 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
     if (!agent) return;
     setName(agent.name);
     setDescription(agent.description || '');
+    setAgentTags(normalizeAgentTags(agent.tags));
     setInstructions(agent.system_prompt || '');
     const cfg = agent.config || {};
     setCategory(cfg.category || 'Общий');
@@ -800,14 +832,31 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
     );
     setSupportName(cfg.support_name || '');
     setSupportEmail(cfg.support_email || '');
+    const rawMaxChain = cfg.max_chain_agents;
+    if (typeof rawMaxChain === 'number' && rawMaxChain > 0) {
+      setMaxChainAgentsLimit(rawMaxChain);
+    } else {
+      setMaxChainAgentsLimit('');
+    }
+    const rawMaxSub = cfg.max_subagents;
+    if (typeof rawMaxSub === 'number' && rawMaxSub > 0) {
+      setMaxSubagentsLimit(rawMaxSub);
+    } else {
+      setMaxSubagentsLimit('');
+    }
+    const chainLimit =
+      typeof rawMaxChain === 'number' && rawMaxChain > 0 ? rawMaxChain : chainMaxAgents;
+    const subLimit =
+      typeof rawMaxSub === 'number' && rawMaxSub > 0 ? rawMaxSub : defaultMaxSubagents;
     setChainAgentIds(
       parseAgentIds(
         cfg.agent_ids,
         typeof selectedAgentId === 'number' ? selectedAgentId : null,
-        chainMaxAgents,
+        chainLimit,
       ),
     );
     setHideSequentialOutputs(!!cfg.hide_sequential_outputs);
+    setSharedChainRag(!!cfg.shared_chain_rag);
     const rawRecursion = cfg.recursion_limit;
     if (typeof rawRecursion === 'number' && rawRecursion > 0) {
       setRecursionLimit(rawRecursion);
@@ -822,8 +871,10 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
         agent_ids: parseAgentIds(
           rawSub.agent_ids,
           typeof selectedAgentId === 'number' ? selectedAgentId : null,
-          10,
+          subLimit,
         ),
+        required_tag_ids: parseTagIds(rawSub.required_tag_ids),
+        required_only: rawSub.required_only === true,
       });
     } else {
       setSubagentsConfig(EMPTY_SUBAGENT_CONFIG);
@@ -834,6 +885,7 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
   function resetForm() {
     setName('');
     setDescription('');
+    setAgentTags([]);
     setCategory('Общий');
     setInstructions('');
     setModel(availableModels[0] || '');
@@ -856,6 +908,9 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
     setPluginIds([]);
     setChainAgentIds([]);
     setHideSequentialOutputs(false);
+    setSharedChainRag(false);
+    setMaxChainAgentsLimit('');
+    setMaxSubagentsLimit('');
     setRecursionLimit('');
     setSubagentsConfig(EMPTY_SUBAGENT_CONFIG);
     setSupportName('');
@@ -1151,10 +1206,13 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
         agent_ids: parseAgentIds(
           chainAgentIds,
           typeof selectedAgentId === 'number' ? selectedAgentId : null,
-          chainMaxAgents,
+          effectiveChainMax,
         ),
         hide_sequential_outputs: hideSequentialOutputs,
+        shared_chain_rag: sharedChainRag,
         ...(recursionLimit !== '' ? { recursion_limit: recursionLimit } : {}),
+        ...(maxChainAgentsLimit !== '' ? { max_chain_agents: maxChainAgentsLimit } : {}),
+        ...(maxSubagentsLimit !== '' ? { max_subagents: maxSubagentsLimit } : {}),
         subagents: subagentsConfig.enabled
           ? {
               enabled: true,
@@ -1162,13 +1220,25 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
               agent_ids: parseAgentIds(
                 subagentsConfig.agent_ids,
                 typeof selectedAgentId === 'number' ? selectedAgentId : null,
-                10,
+                effectiveSubagentsMax,
               ),
+              required_tag_ids: parseTagIds(subagentsConfig.required_tag_ids),
+              required_only: subagentsConfig.required_only === true,
             }
-          : { enabled: false, allow_self: subagentsConfig.allow_self, agent_ids: [] },
+          : {
+              enabled: false,
+              allow_self: subagentsConfig.allow_self,
+              agent_ids: [],
+              required_tag_ids: [],
+              required_only: false,
+            },
       },
-      tag_ids: [],
-      new_tags: [],
+      // Существующие - по id, набранные впервые - именем: бэк создаст тег
+      // или привяжет уже существующий с таким именем.
+      tag_ids: agentTags
+        .map((t) => t.id)
+        .filter((id): id is number => typeof id === 'number'),
+      new_tags: agentTags.filter((t) => typeof t.id !== 'number').map((t) => t.name),
     };
 
     try {
@@ -1197,6 +1267,8 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
         throw new Error(detail || fallback);
       }
       const result = await resp.json();
+      // Карточка могла создать новый тег - справочник для полей тегов устарел.
+      invalidateAgentTagsCache();
       if (!isEdit && result.agent_id) {
         setSelectedAgentId(result.agent_id);
       }
@@ -1237,6 +1309,21 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
       }
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
+      // Новые теги уже в БД — сбрасываем кэш, чтобы «Обязательные теги» их увидели.
+      invalidateAgentTagsCache();
+      try {
+        const freshTags = await fetchAgentTags(true);
+        setAgentTags((prev) =>
+          prev.map((t) => {
+            const hit = freshTags.find(
+              (f) => f.name.toLowerCase() === t.name.trim().toLowerCase(),
+            );
+            return hit ? { id: hit.id, name: hit.name } : t;
+          }),
+        );
+      } catch {
+        /* справочник подтянется при следующем открытии поля */
+      }
       await loadAgents();
 
       if (token && model.trim()) {
@@ -1666,6 +1753,20 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
             fullWidth
             disabled={readOnly}
             sx={formFieldInputSx}
+          />
+        </Box>
+
+        <Box>
+          <AgentTagsField
+            label="Теги"
+            placeholder="Например: финансы, отчётность"
+            value={agentTags}
+            onChange={setAgentTags}
+            readOnly={readOnly}
+            required
+            darkFields={darkFields}
+            help="По тегам другие агенты находят этого как обязательного субагента. Новое слово создаёт тег."
+            sx={nameFieldSx}
           />
         </Box>
 
@@ -2274,17 +2375,51 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
           categoryFieldSx={categoryFieldSx}
         />
 
+        <AgentLimitField
+          label="Максимум субагентов"
+          tooltip={`Сколько субагентов можно добавить в список. Пусто — платформенный лимит (${defaultMaxSubagents}). Максимум ${defaultMaxSubagents}.`}
+          value={maxSubagentsLimit}
+          onChange={(next) => {
+            setMaxSubagentsLimit(next);
+            const limit = next !== '' ? next : defaultMaxSubagents;
+            setSubagentsConfig((prev) => ({
+              ...prev,
+              agent_ids: prev.agent_ids.slice(0, limit),
+            }));
+          }}
+          defaultLimit={defaultMaxSubagents}
+          maxLimit={defaultMaxSubagents}
+          readOnly={readOnly}
+          panelChrome={panelChrome}
+          categoryFieldSx={categoryFieldSx}
+        />
         <AgentSubagentsEditor
           currentAgentId={selectedAgentId}
           config={subagentsConfig}
           onChange={setSubagentsConfig}
           agents={agents}
+          maxSubagents={effectiveSubagentsMax}
           readOnly={readOnly}
           panelChrome={panelChrome}
           categoryFieldSx={categoryFieldSx}
         />
 
         {/* ── Agent chain (LibreChat Mixture-of-Agents) ─────────────────────── */}
+        <AgentLimitField
+          label="Максимум агентов в цепочке"
+          tooltip={`Сколько агентов можно добавить в цепочку. Пусто — платформенный лимит (${chainMaxAgents}). Максимум ${chainMaxAgents}.`}
+          value={maxChainAgentsLimit}
+          onChange={(next) => {
+            setMaxChainAgentsLimit(next);
+            const limit = next !== '' ? next : chainMaxAgents;
+            setChainAgentIds((prev) => prev.slice(0, limit));
+          }}
+          defaultLimit={chainMaxAgents}
+          maxLimit={chainMaxAgents}
+          readOnly={readOnly}
+          panelChrome={panelChrome}
+          categoryFieldSx={categoryFieldSx}
+        />
         <AgentChainEditor
           currentAgentId={selectedAgentId}
           currentAgentName={name}
@@ -2292,9 +2427,11 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
           onChange={setChainAgentIds}
           hideSequential={hideSequentialOutputs}
           onHideSequentialChange={setHideSequentialOutputs}
+          sharedRag={sharedChainRag}
+          onSharedRagChange={setSharedChainRag}
           agents={agents}
           readOnly={readOnly}
-          maxAgents={chainMaxAgents}
+          maxAgents={effectiveChainMax}
           panelChrome={panelChrome}
           categoryFieldSx={categoryFieldSx}
         />
@@ -2355,7 +2492,7 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
                 {hasActiveKbFileSearch && (
                   <Typography
                     variant="caption"
-                    sx={{ color: 'rgba(255,255,255,0.45)', fontSize: '0.65rem', display: 'block', mb: 0.5 }}
+                    sx={{ color: kbFileMutedColor, fontSize: '0.65rem', display: 'block', mb: 0.5 }}
                   >
                     {kbFilteredTotal} из {kbTotalFiles}
                   </Typography>
@@ -2363,7 +2500,7 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
                 {kbFilteredTotal === 0 ? (
                   <Typography
                     variant="caption"
-                    sx={{ color: 'rgba(255,255,255,0.45)', fontSize: '0.72rem', display: 'block', py: 0.5 }}
+                    sx={{ color: kbFileMutedColor, fontSize: '0.72rem', display: 'block', py: 0.5 }}
                   >
                     Ничего не найдено
                   </Typography>
@@ -2378,20 +2515,7 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
                     }}
                   >
                     {filteredPendingKbUploads.map((pending) => (
-                      <Box
-                        key={pending.clientId}
-                        sx={{
-                          position: 'relative',
-                          borderRadius: 1,
-                          bgcolor: '#2a2d3a',
-                          border: '1px solid rgba(255,255,255,0.08)',
-                          p: 0.5,
-                          minWidth: 0,
-                          display: 'flex',
-                          flexDirection: 'column',
-                          justifyContent: 'center',
-                        }}
-                      >
+                      <Box key={pending.clientId} sx={kbFileCardSx}>
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 0, pr: 2 }}>
                           <RagUploadingFileThumb filename={pending.filename} size={32} />
                           <Box sx={{ minWidth: 0, flex: 1 }}>
@@ -2399,12 +2523,12 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
                               variant="caption"
                               noWrap
                               component="span"
-                              sx={{ color: 'white', fontSize: '0.68rem', display: 'block', fontWeight: 500, lineHeight: 1.3 }}
+                              sx={{ color: kbFileNameColor, fontSize: '0.68rem', display: 'block', fontWeight: 500, lineHeight: 1.3 }}
                               title={pending.filename}
                             >
                               {shortFileName(pending.filename, 16)}
                             </Typography>
-                            <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.45)', fontSize: '0.62rem', lineHeight: 1.2 }}>
+                            <Typography variant="caption" sx={{ color: kbFileTypeColor, fontSize: '0.62rem', lineHeight: 1.2 }}>
                               {getFileTypeLabel(pending.filename)}
                             </Typography>
                           </Box>
@@ -2412,20 +2536,7 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
                       </Box>
                     ))}
                     {filteredSelectedKbDocuments.map(doc => (
-                      <Box
-                        key={doc.id}
-                        sx={{
-                          position: 'relative',
-                          borderRadius: 1,
-                          bgcolor: '#2a2d3a',
-                          border: '1px solid rgba(255,255,255,0.08)',
-                          p: 0.5,
-                          minWidth: 0,
-                          display: 'flex',
-                          flexDirection: 'column',
-                          justifyContent: 'center',
-                        }}
-                      >
+                      <Box key={doc.id} sx={kbFileCardSx}>
                         {/* Крестик удаления */}
                         {!readOnly && (
                         <IconButton
@@ -2436,7 +2547,7 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
                             top: 3,
                             right: 3,
                             p: 0.2,
-                            color: 'rgba(255,255,255,0.45)',
+                            color: kbFileMutedColor,
                             '&:hover': { color: '#ef5350', bgcolor: 'rgba(239,83,80,0.12)' },
                           }}
                         >
@@ -2470,15 +2581,19 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
                               slotProps={{
                                 tooltip: {
                                   sx: {
-                                    bgcolor: 'rgba(42, 45, 58, 0.98)',
-                                    color: '#fff',
+                                    bgcolor: darkFields ? 'rgba(42, 45, 58, 0.98)' : 'rgba(255,255,255,0.98)',
+                                    color: darkFields ? '#fff' : 'rgba(0,0,0,0.87)',
                                     borderRadius: 3,
-                                    border: '1px solid rgba(255,255,255,0.12)',
+                                    border: darkFields
+                                      ? '1px solid rgba(255,255,255,0.12)'
+                                      : '1px solid rgba(0,0,0,0.12)',
                                     fontSize: '0.75rem',
                                     fontWeight: 500,
                                     py: 0.75,
                                     px: 1.25,
-                                    boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+                                    boxShadow: darkFields
+                                      ? '0 4px 12px rgba(0,0,0,0.3)'
+                                      : '0 4px 12px rgba(0,0,0,0.12)',
                                   },
                                 },
                               }}
@@ -2487,12 +2602,12 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
                                 variant="caption"
                                 noWrap
                                 component="span"
-                                sx={{ color: 'white', fontSize: '0.68rem', display: 'block', fontWeight: 500, lineHeight: 1.3 }}
+                                sx={{ color: kbFileNameColor, fontSize: '0.68rem', display: 'block', fontWeight: 500, lineHeight: 1.3 }}
                               >
                                 {shortFileName(doc.filename, 16)}
                               </Typography>
                             </Tooltip>
-                            <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.45)', fontSize: '0.62rem', lineHeight: 1.2 }}>
+                            <Typography variant="caption" sx={{ color: kbFileTypeColor, fontSize: '0.62rem', lineHeight: 1.2 }}>
                               {getFileTypeLabel(doc.filename)}
                             </Typography>
                           </Box>

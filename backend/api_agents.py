@@ -35,15 +35,35 @@ _full_name_cache: Dict[str, Optional[str]] = {}
 @router.get("/chain-config")
 async def get_agent_chain_config():
     """Лимиты цепочки и шагов графа из ConfigMap (AGENT_CHAIN_MAX_AGENTS, AGENT_GRAPH_STEPS)."""
-    from backend.agents.chain import get_agent_graph_steps, get_max_chain_agents
+    from backend.agents.chain import (
+        MAX_CHAIN_AGENTS_CAP,
+        get_agent_graph_steps,
+        get_max_chain_agents,
+    )
     from backend.agents.config import DEFAULT_RECURSION_LIMIT, MAX_RECURSION_LIMIT_CAP
+    from backend.agents.subagents import MAX_SUBAGENTS_CAP, get_max_subagents
 
     return {
         "max_agents": get_max_chain_agents(),
+        "max_agents_cap": MAX_CHAIN_AGENTS_CAP,
+        "max_subagents": get_max_subagents(),
+        "max_subagents_cap": MAX_SUBAGENTS_CAP,
         "graph_steps": get_agent_graph_steps(),
         "default_recursion_limit": get_agent_graph_steps() or DEFAULT_RECURSION_LIMIT,
         "max_recursion_limit": MAX_RECURSION_LIMIT_CAP,
     }
+
+
+@router.get("/tags")
+async def list_agent_tags(current_user: Annotated[dict, Depends(get_current_user)]):
+    """Справочник тегов: поле «Теги» в карточке и «Обязательные теги» у субагентов.
+
+    Стоит до маршрута /{agent_id}, иначе слово tags ушло бы туда как id.
+    """
+    agent_repo = get_agent_repository()
+    if agent_repo is None:
+        return {"tags": []}
+    return {"tags": await agent_repo.list_tags()}
 
 
 async def _resolve_full_names(user_ids: List[str]) -> Dict[str, Optional[str]]:

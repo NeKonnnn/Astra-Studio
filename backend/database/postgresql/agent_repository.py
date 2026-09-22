@@ -753,6 +753,40 @@ WHERE id = ${param_num}
         except Exception:
             logger.exception("Не удалось вычистить agent_ids после удаления %s", deleted_id)
 
+    async def list_tags(self) -> List[dict]:
+        """Справочник тегов для карточки агента: id, name, color."""
+        try:
+            async with await self.db_connection.acquire() as conn:
+                rows = await conn.fetch("SELECT id, name, color FROM tags ORDER BY name")
+                return [
+                    {"id": int(r["id"]), "name": r["name"], "color": r["color"]}
+                    for r in rows
+                ]
+        except Exception:
+            logger.exception("Ошибка чтения справочника тегов")
+            return []
+
+    async def list_agent_ids_by_tags(self, tag_ids: List[int]) -> List[int]:
+        """id агентов, у которых есть хотя бы один из тегов. Доступ не проверяется."""
+        ids: List[int] = []
+        for raw in tag_ids or []:
+            try:
+                ids.append(int(raw))
+            except (TypeError, ValueError):
+                continue
+        if not ids:
+            return []
+        try:
+            async with await self.db_connection.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT DISTINCT agent_id FROM agent_tags WHERE tag_id = ANY($1::int[]) ORDER BY agent_id",
+                    ids,
+                )
+                return [int(r["agent_id"]) for r in rows]
+        except Exception:
+            logger.exception("Ошибка выборки агентов по тегам %s", ids)
+            return []
+
     async def remove_agent_from_subagents(self, deleted_id: int) -> None:
         """Убрать удалённого агента из config.subagents.agent_ids чужих карточек."""
         try:

@@ -1,9 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Box, CircularProgress, Paper, Typography } from '@mui/material';
 import SearchIcon from '@mui/icons-material/Search';
-import SkillIcon from '../../icons/SkillsIcon';
-import { getApiUrl, API_ENDPOINTS } from '../../config/api';
-import { useAuth } from '../../contexts/AuthContext';
+import LocalOfferOutlinedIcon from '@mui/icons-material/LocalOfferOutlined';
+import { fetchAgentTags, type AgentTag } from '../../constants/AgentTags';
 import {
   DROPDOWN_PAPER_MARGIN_TOP,
   SIDEBAR_HIDE_SCROLLBAR_SX,
@@ -12,30 +11,27 @@ import {
   getDropdownPanelSx,
 } from '../../constants/menuStyles';
 
-export interface SkillSuggestion {
+export interface TagSuggestion {
   id: number;
-  slug: string;
   name: string;
-  description?: string | null;
 }
 
-interface SkillMentionAutocompleteProps {
+interface TagMentionAutocompleteProps {
   query: string;
   open: boolean;
   anchorEl: HTMLElement | null;
-  onSelect: (skill: SkillSuggestion) => void;
+  onSelect: (tag: TagSuggestion) => void;
   isDarkMode?: boolean;
 }
 
-export default function SkillMentionAutocomplete({
+export default function TagMentionAutocomplete({
   query,
   open,
   anchorEl,
   onSelect,
   isDarkMode = true,
-}: SkillMentionAutocompleteProps) {
-  const { token } = useAuth();
-  const [items, setItems] = useState<SkillSuggestion[]>([]);
+}: TagMentionAutocompleteProps) {
+  const [catalog, setCatalog] = useState<AgentTag[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [searchQuery, setSearchQuery] = useState(query);
@@ -53,48 +49,32 @@ export default function SkillMentionAutocomplete({
   }, [open, query]);
 
   useEffect(() => {
-    if (!open || !token) {
-      setItems([]);
-      return;
-    }
+    if (!open) return;
     let cancelled = false;
-    const t = setTimeout(async () => {
-      setLoading(true);
-      try {
-        const params = new URLSearchParams({ page: '1', limit: '20' });
-        if (searchQuery.trim()) params.set('query', searchQuery.trim());
-        const resp = await fetch(`${getApiUrl(API_ENDPOINTS.SKILLS)}/list?${params}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!resp.ok) throw new Error('fail');
-        const data = await resp.json();
-        if (!cancelled) {
-          setItems(
-            (data.items || [])
-              .filter(
-                (s: SkillSuggestion & { is_active?: boolean; user_invocable?: boolean }) =>
-                  s.is_active !== false && s.user_invocable !== false,
-              )
-              .map((s: SkillSuggestion) => ({
-                id: s.id,
-                slug: s.slug,
-                name: s.name,
-                description: s.description,
-              })),
-          );
-          setSelectedIdx(0);
-        }
-      } catch {
-        if (!cancelled) setItems([]);
-      } finally {
+    setLoading(true);
+    void fetchAgentTags()
+      .then((list) => {
+        if (!cancelled) setCatalog(list);
+      })
+      .finally(() => {
         if (!cancelled) setLoading(false);
-      }
-    }, 180);
+      });
     return () => {
       cancelled = true;
-      clearTimeout(t);
     };
-  }, [open, searchQuery, token]);
+  }, [open]);
+
+  const items = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    const filtered = q
+      ? catalog.filter((t) => t.name.toLowerCase().includes(q))
+      : catalog;
+    return filtered.slice(0, 20).map((t) => ({ id: t.id, name: t.name }));
+  }, [catalog, searchQuery]);
+
+  useEffect(() => {
+    setSelectedIdx(0);
+  }, [items]);
 
   useEffect(() => {
     if (!open) return;
@@ -147,7 +127,7 @@ export default function SkillMentionAutocomplete({
         <SearchIcon sx={{ color: searchIconColor, fontSize: 16, flexShrink: 0 }} />
         <Box
           component="input"
-          placeholder="Поиск skills по имени"
+          placeholder="Поиск тегов по имени"
           value={searchQuery}
           onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearchQuery(e.target.value)}
           onMouseDown={(e: React.MouseEvent) => e.stopPropagation()}
@@ -178,18 +158,18 @@ export default function SkillMentionAutocomplete({
             textAlign: 'center',
           }}
         >
-          Ничего не найдено
+          {catalog.length === 0 ? 'Нет тегов' : 'Ничего не найдено'}
         </Typography>
       ) : (
         <Box sx={{ maxHeight: 260, overflowY: 'auto', py: 0.5, ...SIDEBAR_HIDE_SCROLLBAR_SX }}>
-          {items.map((skill, idx) => {
+          {items.map((tag, idx) => {
             const selected = idx === selectedIdx;
             return (
               <Box
-                key={skill.id}
+                key={tag.id}
                 onMouseDown={(e) => {
                   e.preventDefault();
-                  onSelect(skill);
+                  onSelect(tag);
                 }}
                 onMouseEnter={() => setSelectedIdx(idx)}
                 sx={{
@@ -201,7 +181,7 @@ export default function SkillMentionAutocomplete({
                   minWidth: 0,
                 }}
               >
-                <SkillIcon sx={{ fontSize: 16, opacity: 0.7, flexShrink: 0 }} />
+                <LocalOfferOutlinedIcon sx={{ fontSize: 16, opacity: 0.7, flexShrink: 0 }} />
                 <Box sx={{ minWidth: 0, flex: 1 }}>
                   <Typography
                     variant="body2"
@@ -212,11 +192,10 @@ export default function SkillMentionAutocomplete({
                       fontWeight: selected ? 600 : 400,
                     }}
                   >
-                    {skill.name}
+                    {tag.name}
                   </Typography>
                   <Typography variant="caption" sx={{ color: muted, fontSize: '0.68rem' }} noWrap>
-                    ${skill.slug}
-                    {skill.description ? ` — ${skill.description}` : ''}
+                    #{tag.name}
                   </Typography>
                 </Box>
               </Box>

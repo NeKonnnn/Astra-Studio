@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from backend.agents.config import resolve_recursion_limit
+from backend.agents.step_debug import describe_limit_source, log_pre_loop
 from backend.agents.subagents import (
     SubagentRunContext,
     build_subagent_tools,
@@ -112,13 +113,19 @@ async def maybe_run_mcp_agent(
     mcp_tools: List[McpToolInfo] = []
     enabled_ids: List[str] = []
 
-    if platform.enabled and platform.initialized and is_mcp_provider_allowed(model_path):
+    if (
+        platform.enabled
+        and platform.initialized
+        and is_mcp_provider_allowed(model_path)
+    ):
         server_ids = parse_mcp_server_ids(tool_ids)
         if server_ids:
             enabled_ids = platform.list_enabled_server_ids(server_ids)
             for sid in enabled_ids:
                 try:
-                    mcp_tools.extend(await platform.list_tools_for_server(sid, mcp_context))
+                    mcp_tools.extend(
+                        await platform.list_tools_for_server(sid, mcp_context)
+                    )
                 except Exception:
                     log.exception("MCP list_tools failed server=")
             mcp_tools = platform.filter_tools_by_context(
@@ -126,23 +133,51 @@ async def maybe_run_mcp_agent(
             )
 
     if not has_native and not mcp_tools:
+        log_pre_loop(
+            phase="skip_no_tools",
+            chat_id=mcp_context.chat_id,
+            agent_id=(agent_profile or {}).get("agent_id") if agent_profile else None,
+            detail="нет MCP и встроенных инструментов — цикл агента не запускается",
+        )
         return None
 
     if not has_native and not platform.enabled:
+        log_pre_loop(
+            phase="skip_mcp_disabled",
+            chat_id=mcp_context.chat_id,
+            agent_id=(agent_profile or {}).get("agent_id") if agent_profile else None,
+            detail="платформа MCP выключена",
+        )
         return None
 
     step_limit = max_iterations
+    limit_source = "задан явно (max_iterations)"
     if step_limit is None:
         step_limit = resolve_recursion_limit(agent_profile)
+        limit_source = describe_limit_source(agent_profile)
 
     log.debug(
-        "MCP chat tool_ids=%s servers=%s native_tools=%s max_iterations=%s",
+        "MCP chat tool_ids=%s servers=%s native_tools=%s max_iterations=%s source=%s",
         tool_ids,
         enabled_ids,
         len(native_tools),
         step_limit,
+        limit_source,
     )
-    messages = build_chat_messages(user_message=user_message, history=history, system_prompt=system_prompt)
+    log_pre_loop(
+        phase="agent_loop_enter",
+        chat_id=mcp_context.chat_id,
+        agent_id=(agent_profile or {}).get("agent_id") if agent_profile else None,
+        recursion_limit=step_limit,
+        limit_source=limit_source,
+        detail=(
+            f"MCP-инструментов={len(mcp_tools)} встроенных={len(native_tools)} "
+            f"серверы={enabled_ids} модель={model_path}"
+        ),
+    )
+    messages = build_chat_messages(
+        user_message=user_message, history=history, system_prompt=system_prompt
+    )
     request_extra = thinking_request_extra(bool(enable_thinking))
     request_extra = merge_sampling_request_extra(request_extra)
     loop = get_mcp_agent_loop()
@@ -179,6 +214,7 @@ async def run_mcp_for_chat(
     emit_event: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     agent_profile: Optional[dict] = None,
     subagent_executor=None,
+    inline_attachments: Optional[List[Any]] = None,
 ) -> Optional[AgentLoopResult]:
     """
     Единая точка входа MCP для socket и REST chat (B-40).
@@ -207,6 +243,7 @@ async def run_mcp_for_chat(
                 remaining_steps=kwargs.get("remaining_steps", step_limit - 1),
                 enable_thinking=enable_thinking,
                 emit_event=emit_event,
+                inline_attachments=kwargs.get("inline_attachments"),
             )
 
         sub_ctx = SubagentRunContext(
@@ -217,6 +254,7 @@ async def run_mcp_for_chat(
             depth=0,
             remaining_steps=step_limit - 1,
             executor=subagent_executor or _executor,
+            inline_attachments=list(inline_attachments or []) or None,
         )
 
     return await maybe_run_mcp_agent(

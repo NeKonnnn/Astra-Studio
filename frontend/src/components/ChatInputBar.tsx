@@ -38,10 +38,15 @@ import InlineDocAttachmentChip, {
 } from './InlineDocAttachmentChip';
 import { INLINE_ATTACH_ACCEPT } from '../utils/inlineAttachmentRules';
 import SkillMentionAutocomplete, { SkillSuggestion } from './chat/SkillMentionAutocomplete';
+import TagMentionAutocomplete, { TagSuggestion } from './chat/TagMentionAutocomplete';
 import {
   getSkillDollarQuery,
   serializeSkillMention,
 } from '../utils/skillMentions';
+import {
+  getTagHashQuery,
+  serializeTagMention,
+} from '../utils/tagMentions';
 
 export interface UploadedFile {
   name: string;
@@ -726,6 +731,11 @@ export default function ChatInputBar({
     query: '',
     start: 0,
   });
+  const [tagMention, setTagMention] = useState<{ open: boolean; query: string; start: number }>({
+    open: false,
+    query: '',
+    start: 0,
+  });
   const skillAnchorRef = useRef<HTMLDivElement | null>(null);
 
   const resolveComposerTextarea = (): HTMLTextAreaElement | null => {
@@ -735,23 +745,41 @@ export default function ChatInputBar({
     return el.closest('.MuiInputBase-root')?.querySelector('textarea') ?? null;
   };
 
-  const updateSkillMentionFromInput = (nextValue: string, cursor: number | null) => {
+  const updateMentionsFromInput = (nextValue: string, cursor: number | null) => {
     if (cursor == null) {
       setSkillMention((s) => ({ ...s, open: false }));
+      setTagMention((s) => ({ ...s, open: false }));
       return;
     }
-    const hit = getSkillDollarQuery(nextValue, cursor);
-    if (hit) {
-      setSkillMention({ open: true, query: hit.query, start: hit.start });
+    const skillHit = getSkillDollarQuery(nextValue, cursor);
+    const tagHit = getTagHashQuery(nextValue, cursor);
+    // Если оба матчатся (не должно), берём то, что ближе к курсору / новее.
+    if (skillHit && tagHit) {
+      if (skillHit.start >= tagHit.start) {
+        setSkillMention({ open: true, query: skillHit.query, start: skillHit.start });
+        setTagMention((s) => ({ ...s, open: false }));
+      } else {
+        setTagMention({ open: true, query: tagHit.query, start: tagHit.start });
+        setSkillMention((s) => ({ ...s, open: false }));
+      }
+      return;
+    }
+    if (skillHit) {
+      setSkillMention({ open: true, query: skillHit.query, start: skillHit.start });
+      setTagMention((s) => ({ ...s, open: false }));
+    } else if (tagHit) {
+      setTagMention({ open: true, query: tagHit.query, start: tagHit.start });
+      setSkillMention((s) => ({ ...s, open: false }));
     } else {
       setSkillMention((s) => ({ ...s, open: false }));
+      setTagMention((s) => ({ ...s, open: false }));
     }
   };
 
   const handleValueChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const next = e.target.value;
     onChange(next);
-    updateSkillMentionFromInput(next, e.target.selectionStart);
+    updateMentionsFromInput(next, e.target.selectionStart);
   };
 
   const handleSelectSkill = (skill: SkillSuggestion) => {
@@ -761,6 +789,15 @@ export default function ChatInputBar({
     const next = `${value.slice(0, start)}${mention} ${value.slice(cursorEnd)}`;
     onChange(next);
     setSkillMention({ open: false, query: '', start: 0 });
+  };
+
+  const handleSelectTag = (tag: TagSuggestion) => {
+    const mention = serializeTagMention(tag.id, tag.name);
+    const start = tagMention.start;
+    const cursorEnd = start + 1 + tagMention.query.length;
+    const next = `${value.slice(0, start)}${mention} ${value.slice(cursorEnd)}`;
+    onChange(next);
+    setTagMention({ open: false, query: '', start: 0 });
   };
 
   useEffect(() => {
@@ -1275,13 +1312,22 @@ export default function ChatInputBar({
   };
 
   const skillAutocomplete = (
-    <SkillMentionAutocomplete
-      open={skillMention.open}
-      query={skillMention.query}
-      anchorEl={skillAnchorRef.current}
-      onSelect={handleSelectSkill}
-      isDarkMode={isDarkMode}
-    />
+    <>
+      <SkillMentionAutocomplete
+        open={skillMention.open}
+        query={skillMention.query}
+        anchorEl={skillAnchorRef.current}
+        onSelect={handleSelectSkill}
+        isDarkMode={isDarkMode}
+      />
+      <TagMentionAutocomplete
+        open={tagMention.open}
+        query={tagMention.query}
+        anchorEl={skillAnchorRef.current}
+        onSelect={handleSelectTag}
+        isDarkMode={isDarkMode}
+      />
+    </>
   );
 
   if (isClassic) {
@@ -1320,7 +1366,7 @@ export default function ChatInputBar({
               onChange={handleValueChange}
               onSelect={(e) => {
                 const t = e.target as HTMLTextAreaElement;
-                updateSkillMentionFromInput(t.value, t.selectionStart);
+                updateMentionsFromInput(t.value, t.selectionStart);
               }}
               onKeyPress={onKeyPress}
               onPaste={onPaste}
@@ -1443,7 +1489,7 @@ export default function ChatInputBar({
             onChange={handleValueChange}
             onSelect={(e) => {
               const t = e.target as HTMLTextAreaElement;
-              updateSkillMentionFromInput(t.value, t.selectionStart);
+              updateMentionsFromInput(t.value, t.selectionStart);
             }}
             onKeyPress={onKeyPress}
             onPaste={onPaste}

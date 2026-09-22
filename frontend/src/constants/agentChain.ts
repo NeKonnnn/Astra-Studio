@@ -3,6 +3,7 @@ import type { Message } from '../contexts/AppContext';
 
 /** Дефолт, если ConfigMap ещё не подтянулся. */
 export const DEFAULT_MAX_CHAIN_AGENTS = 10;
+export const DEFAULT_MAX_SUBAGENTS = 10;
 export const DEFAULT_GRAPH_STEPS = 50;
 
 export interface AgentChainStep {
@@ -24,6 +25,9 @@ export interface AgentChainCurrent {
 
 export interface AgentChainConfig {
   maxAgents: number;
+  maxAgentsCap: number;
+  maxSubagents: number;
+  maxSubagentsCap: number;
   graphSteps: number;
   defaultRecursionLimit: number;
   maxRecursionLimit: number;
@@ -42,6 +46,9 @@ export function getCachedChainConfig(): AgentChainConfig {
   return (
     cachedConfig || {
       maxAgents: DEFAULT_MAX_CHAIN_AGENTS,
+      maxAgentsCap: 50,
+      maxSubagents: DEFAULT_MAX_SUBAGENTS,
+      maxSubagentsCap: 50,
       graphSteps: DEFAULT_GRAPH_STEPS,
       defaultRecursionLimit: DEFAULT_GRAPH_STEPS,
       maxRecursionLimit: 500,
@@ -60,6 +67,14 @@ export async function fetchAgentChainConfig(): Promise<AgentChainConfig> {
         const data = resp.ok ? await resp.json() : {};
         cachedConfig = {
           maxAgents: clampLimit(data.max_agents ?? data.maxAgents, DEFAULT_MAX_CHAIN_AGENTS, 1, 50),
+          maxAgentsCap: clampLimit(data.max_agents_cap ?? data.maxAgentsCap, 50, 1, 50),
+          maxSubagents: clampLimit(
+            data.max_subagents ?? data.maxSubagents,
+            DEFAULT_MAX_SUBAGENTS,
+            1,
+            50,
+          ),
+          maxSubagentsCap: clampLimit(data.max_subagents_cap ?? data.maxSubagentsCap, 50, 1, 50),
           graphSteps: clampLimit(data.graph_steps ?? data.graphSteps, DEFAULT_GRAPH_STEPS, 1, 500),
           defaultRecursionLimit: clampLimit(
             data.default_recursion_limit ?? data.graph_steps ?? data.graphSteps,
@@ -78,6 +93,9 @@ export async function fetchAgentChainConfig(): Promise<AgentChainConfig> {
       } catch {
         cachedConfig = {
           maxAgents: DEFAULT_MAX_CHAIN_AGENTS,
+          maxAgentsCap: 50,
+          maxSubagents: DEFAULT_MAX_SUBAGENTS,
+          maxSubagentsCap: 50,
           graphSteps: DEFAULT_GRAPH_STEPS,
           defaultRecursionLimit: DEFAULT_GRAPH_STEPS,
           maxRecursionLimit: 500,

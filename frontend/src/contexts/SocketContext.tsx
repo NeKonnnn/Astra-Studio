@@ -28,6 +28,7 @@ import { isCodingModeEnabled, isCodingPlanModeEnabled } from '../coding/selectio
 import { resolveWorkspaceForChat } from '../coding/workspaceStorage';
 import { getApprovedPlan, setApprovedPlan, setDraftPlan } from '../coding/planStorage';
 import { extractSkillIds } from '../utils/skillMentions';
+import { extractTagIds } from '../utils/tagMentions';
 import { getActiveSkillIds } from '../utils/skillSelectionStorage';
 import { skillImpliesPresentation } from '../utils/messageArtifactsViewerStorage';
 import { readAgentPresentationSkills } from '../utils/agentArtifactsEnabled';
@@ -397,6 +398,9 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     }
     return out;
   };
+
+  /** Mentions `#тег` → id тегов для вызова агентов на бэкенде. */
+  const resolveTagIds = (message: string): number[] => extractTagIds(message);
 
   const normalizeRagStrategy = (raw: string | null): string => {
     const s = (raw || 'auto').trim().toLowerCase();
@@ -1799,6 +1803,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
 
     // Отправляем сообщение через Socket.IO
     const skillIds = resolveSkillIds(chatId, message);
+    const tagIds = resolveTagIds(message);
     const messageData = {
       message,
       streaming: useStreaming,
@@ -1819,6 +1824,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       model_path: resolveChatModelPath(),
       enable_thinking: resolveEnableThinking(),
       skill_ids: skillIds.length ? skillIds : undefined,
+      tag_ids: tagIds.length ? tagIds : undefined,
       // Inline-вложения (без RAG/эмбединга)
       inline_context: inlineData?.inline_context || undefined,
       inline_images: inlineData?.inline_images?.length ? inlineData.inline_images : undefined,
@@ -1965,6 +1971,10 @@ export function SocketProvider({ children }: { children: ReactNode }) {
         const ids = resolveSkillIds(chatId, userMessage);
         return ids.length ? ids : undefined;
       })(),
+      tag_ids: (() => {
+        const ids = resolveTagIds(userMessage);
+        return ids.length ? ids : undefined;
+      })(),
       request_id: requestId,
       tool_ids: isCodingModeEnabled(chatId) ? [] : resolveMcpToolIds(chatId),
       artifacts_settings: resolveArtifactsSettings(chatId),
@@ -2067,6 +2077,10 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       enable_thinking: resolveEnableThinking(),
       skill_ids: (() => {
         const ids = resolveSkillIds(chatId, userMessage);
+        return ids.length ? ids : undefined;
+      })(),
+      tag_ids: (() => {
+        const ids = resolveTagIds(userMessage);
         return ids.length ? ids : undefined;
       })(),
       request_id: requestId,
