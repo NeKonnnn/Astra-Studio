@@ -240,3 +240,79 @@ describe('inline-формулы, оканчивающиеся цифрой', () 
     expect(preprocessArtifactLatex('$$x^2$$')).toBe('$$x^2$$');
   });
 });
+
+// Регрессия: `$2x + y$` принималась за валюту `$2` (префиксная запись). Правило TeX/pandoc:
+// если следующий `$` на строке стоит после непробельного символа и не перед цифрой — он
+// закрывающий и `$N…` открывает формулу; если после пробела — это новая сумма (валюта).
+describe('inline-формулы, начинающиеся с цифры', () => {
+  it.each(['$2x + y$', '$2 + 3$', '$3x^2$', '$10^n$', '$2\\pi r$', '$1,5 \\cdot x$', '$5K + x$'])(
+    'extractChatMath распознаёт %s',
+    (src) => {
+      const { blocks, text } = extractChatMath(src);
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0].displayMode).toBe(false);
+      expect(text).toBe(mathPlaceholder(0));
+    },
+  );
+
+  it.each(['$2x + y$', '$2 + 3$', '$3x^2$', '$10^n$'])('preprocessArtifactLatex не портит %s', (src) => {
+    expect(preprocessArtifactLatex(src)).toBe(src);
+  });
+
+  it('формула с цифрой в начале посреди текста', () => {
+    const { blocks, text } = extractChatMath('Пусть $2x + y$ положительно, тогда $3z$ тоже.');
+    expect(blocks.map((b) => b.latex)).toEqual(['2x + y', '3z']);
+    expect(text).toBe(`Пусть ${mathPlaceholder(0)} положительно, тогда ${mathPlaceholder(1)} тоже.`);
+  });
+
+  it.each([
+    'Цена $100 и $200',
+    'Стоит $100, а $200 и $300.',
+    'Бюджет $1,000.50 на год',
+    'Итого $5K и $2M',
+    'Скидка $5 (и $10)',
+  ])('валюта в префиксной записи по-прежнему валюта: %s', (src) => {
+    expect(extractChatMath(src)).toEqual({ text: src, blocks: [] });
+  });
+
+  it('валюта не мешает следующей формуле', () => {
+    const { blocks, text } = extractChatMath('Стоит $100, а $x^n$ — формула');
+    expect(blocks.map((b) => b.latex)).toEqual(['x^n']);
+    expect(text).toBe(`Стоит $100, а ${mathPlaceholder(0)} — формула`);
+  });
+
+  it('формула с цифрой в начале и валюта на разных строках', () => {
+    const { blocks, text } = extractChatMath('Формула $2x$\nЦена $5');
+    expect(blocks.map((b) => b.latex)).toEqual(['2x']);
+    expect(text).toBe(`Формула ${mathPlaceholder(0)}\nЦена $5`);
+  });
+
+  it('валюта в скобках после формулы', () => {
+    const { blocks } = extractChatMath('Формула $2x + 1$ (цена $5).');
+    expect(blocks.map((b) => b.latex)).toEqual(['2x + 1']);
+  });
+
+  it('preprocessArtifactLatex экранирует валюту, но не формулу в одной строке', () => {
+    expect(preprocessArtifactLatex('Цена $100, формула $2x + y$')).toBe('Цена \\$100, формула $2x + y$');
+  });
+
+  it('закрывающий $ перед цифрой не закрывает формулу (3$4)', () => {
+    expect(extractChatMath('Курс $5 и 3$4').blocks).toEqual([]);
+  });
+
+  it('экранированный \\$ не закрывает формулу', () => {
+    expect(preprocessArtifactLatex('Цена $5 и 2\\$')).toBe('Цена \\$5 и 2\\$');
+  });
+
+  it.each(['Цена $100 и 50$', 'Всего $100 and 50$', 'Итого $5 рублей 7$'])(
+    'сумма с двумя валютными $ и словами между ними остаётся валютой: %s',
+    (src) => {
+      expect(extractChatMath(src)).toEqual({ text: src, blocks: [] });
+    },
+  );
+
+  it('формула с командой LaTeX не принимается за прозу', () => {
+    expect(extractChatMath('$2\\sin x + 1$').blocks).toHaveLength(1);
+  });
+});
+
