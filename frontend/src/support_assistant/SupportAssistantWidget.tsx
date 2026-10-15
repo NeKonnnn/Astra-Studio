@@ -93,7 +93,9 @@ export default function SupportAssistantWidget() {
         position: 'fixed',
         right: rightRailPx + HELP_FAB_GAP_PX,
         bottom: 20,
-        zIndex: 1400,
+        // Выше docked-панелей (1200), но ниже модальных окон (1300): раньше (1400) кнопка
+        // лежала поверх диалога настроек и перекрывала его нижнюю кромку.
+        zIndex: (t) => t.zIndex.modal - 1,
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'flex-end',

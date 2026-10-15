@@ -10,18 +10,19 @@
   height: 8px;
 }
 
+/* Цвета задаёт тема (см. эффект isDarkMode в App.tsx); светлые значения — запасные. */
 ::-webkit-scrollbar-track {
-  background: #f1f1f1;
+  background: var(--scrollbar-track, #f1f1f1);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #c1c1c1;
+  background: var(--scrollbar-thumb, #c1c1c1);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #a8a8a8;
+  background: var(--scrollbar-thumb-hover, #a8a8a8);
 }
 
 /* Animations */

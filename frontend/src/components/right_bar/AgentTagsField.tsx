@@ -11,6 +11,10 @@ import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
 import type { SxProps, Theme } from '@mui/material/styles';
 import { fetchAgentTags, subscribeAgentTagsCache, type AgentTag } from '../../constants/AgentTags';
 import {
+  MODEL_SETTINGS_HELP_ICON_BUTTON_SX,
+  MODEL_SETTINGS_LABEL_WRAPPER_SX,
+} from '../../constants/modelSettingsStyles';
+import {
   DROPDOWN_PAPER_MARGIN_TOP,
   getDropdownItemSx,
   getDropdownItemStateSx,
@@ -157,6 +161,34 @@ export default function AgentTagsField({
     setInputValue(next);
   };
 
+  // Иконка справки — внутри подписи поля (паттерн настроек моделей), а не в одном ряду с полем:
+  // раньше «Теги» были уже соседних полей на ширину иконки.
+  const helpTooltip = help ? (
+    <Tooltip
+      title={
+        <Box sx={{ maxWidth: 300 }}>
+          <Typography variant="subtitle2" fontWeight={600} sx={{ mb: 0.5 }}>
+            {helpTitle || label}
+          </Typography>
+          <Typography variant="body2" sx={{ opacity: 0.95 }}>
+            {help}
+          </Typography>
+        </Box>
+      }
+      arrow
+      placement="top"
+    >
+      <IconButton
+        size="small"
+        aria-label={`Справка: ${label}`}
+        onClick={(e) => e.stopPropagation()}
+        sx={MODEL_SETTINGS_HELP_ICON_BUTTON_SX}
+      >
+        <HelpOutlineIcon sx={{ fontSize: 16 }} />
+      </IconButton>
+    </Tooltip>
+  ) : null;
+
   const field = (
     <Autocomplete<AgentTagValue, true, false, boolean>
       multiple
@@ -220,7 +252,18 @@ export default function AgentTagsField({
       renderInput={(params) => (
         <TextField
           {...params}
-          label={label}
+          label={
+            helpTooltip ? (
+              // inline-flex: иначе звёздочка обязательного поля уезжает на следующую строку.
+              <Box component="span" sx={{ ...MODEL_SETTINGS_LABEL_WRAPPER_SX, display: 'inline-flex' }}>
+                {label}
+                {helpTooltip}
+              </Box>
+            ) : (
+              label
+            )
+          }
+          inputProps={{ ...params.inputProps, 'aria-label': label }}
           placeholder={value.length ? undefined : placeholder}
           variant="outlined"
           size="small"
@@ -234,41 +277,5 @@ export default function AgentTagsField({
     />
   );
 
-  if (!help) {
-    return <Box>{field}</Box>;
-  }
-
-  return (
-    <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.5, width: '100%' }}>
-      <Box sx={{ flex: 1, minWidth: 0 }}>{field}</Box>
-      <Tooltip
-        title={
-          <Box sx={{ maxWidth: 300 }}>
-            <Typography variant="subtitle2" fontWeight={600} sx={{ mb: 0.5 }}>
-              {helpTitle || label}
-            </Typography>
-            <Typography variant="body2" sx={{ opacity: 0.95 }}>
-              {help}
-            </Typography>
-          </Box>
-        }
-        arrow
-        placement="top"
-      >
-        <IconButton
-          size="small"
-          aria-label={`Справка: ${label}`}
-          sx={{
-            mt: 0.75,
-            p: 0.35,
-            color: 'inherit',
-            opacity: 0.45,
-            '&:hover': { opacity: 0.75, bgcolor: 'transparent' },
-          }}
-        >
-          <HelpOutlineIcon sx={{ fontSize: 16 }} />
-        </IconButton>
-      </Tooltip>
-    </Box>
-  );
+  return <Box>{field}</Box>;
 }

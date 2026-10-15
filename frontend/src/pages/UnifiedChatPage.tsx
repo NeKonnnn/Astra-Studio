@@ -2585,6 +2585,7 @@ export default function UnifiedChatPage({
                 currentChatLoading ||
                 hasActiveChatStreaming
               }
+              aria-label="Сравнение моделей"
               sx={multiLlmModeToggleIconButtonSx}
             >
               <MultiLlmModeToggleIcon isDarkMode={isDarkMode} />
@@ -4622,7 +4623,8 @@ export default function UnifiedChatPage({
                     currentChatLoading ||
                     hasActiveChatStreaming
                   }
-                  sx={multiLlmModeToggleIconButtonSx}
+                  aria-label="Сравнение моделей"
+              sx={multiLlmModeToggleIconButtonSx}
                 >
                   <MultiLlmModeToggleIcon isDarkMode={isDarkMode} />
                 </IconButton>
@@ -4671,7 +4673,8 @@ export default function UnifiedChatPage({
                     currentChatLoading ||
                     hasActiveChatStreaming
                   }
-                  sx={multiLlmModeToggleIconButtonSx}
+                  aria-label="Сравнение моделей"
+              sx={multiLlmModeToggleIconButtonSx}
                 >
                   <MultiLlmModeToggleIcon isDarkMode={isDarkMode} />
                 </IconButton>

@@ -24,8 +24,6 @@ export default function TopErrorBanner({
       onClose={onClose}
       ariaLabel={ariaLabel}
       fixed
-      top={12}
-      zIndexOffset={3}
       autoDismissMs={STATUS_TOAST_AUTO_DISMISS_MS}
     />
   );
