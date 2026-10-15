@@ -42,9 +42,29 @@ const CURRENCY_POSTFIX_RE =
 
 const CURRENCY_TOKEN = '\u0000ASTRA_CURRENCY\u0000';
 
+/**
+ * Сколько «математических» `$` стоит на строке до позиции `end`:
+ * неэкранированные (`\$` — не считаем) и не принятые ранее за валюту.
+ */
+function countOpenMathDollars(whole: string, end: number, currencyDollars: Set<number>): number {
+  const lineStart = end > 0 ? whole.lastIndexOf('\n', end - 1) + 1 : 0;
+  let count = 0;
+  for (let i = lineStart; i < end; i += 1) {
+    if (whole[i] === '$' && whole[i - 1] !== '\\' && !currencyDollars.has(i)) count += 1;
+  }
+  return count;
+}
+
 function escapeCurrencyDollars(text: string, replacement: string): string {
   let s = text.replace(CURRENCY_PREFIX_RE, replacement);
-  s = s.replace(CURRENCY_POSTFIX_RE, (_m, amount: string) => `${amount}${replacement}`);
+  const currencyDollars = new Set<number>();
+  s = s.replace(CURRENCY_POSTFIX_RE, (match: string, amount: string, offset: number, whole: string) => {
+    // `x^2$`, `a_1$`, `n=5$`, `x^2 + 1$`: перед числом уже открыт `$` — это закрывающий
+    // `$` формулы, а не валюта `100$` (нечётное число открытых `$` на строке).
+    if (countOpenMathDollars(whole, offset, currencyDollars) % 2 === 1) return match;
+    currencyDollars.add(offset + match.length - 1);
+    return `${amount}${replacement}`;
+  });
   return s;
 }
 

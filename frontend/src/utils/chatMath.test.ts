@@ -175,18 +175,68 @@ describe('preprocessArtifactLatex', () => {
   });
 });
 
-// BUG (продакшн-код): CURRENCY_POSTFIX_RE принимает `2$` в конце формулы за валюту `100$`.
-// Любая inline-формула, оканчивающаяся цифрой, не распознаётся как math,
-// а preprocessArtifactLatex экранирует её закрывающий `$`. Тесты описывают
-// ожидаемое поведение; включить (it.skip → it) после исправления chatMath.ts.
-describe('известный баг: inline-формулы, оканчивающиеся цифрой', () => {
-  it.skip.each(['$x^2$', '$E=mc^2$', '$a_1$', '$n=5$'])('extractChatMath распознаёт %s', (src) => {
-    const { blocks } = extractChatMath(src);
-    expect(blocks).toHaveLength(1);
-    expect(blocks[0].displayMode).toBe(false);
+// Регрессия: CURRENCY_POSTFIX_RE принимал `2$` в конце формулы за валюту `100$`:
+// inline-формула, оканчивающаяся цифрой, не распознавалась, а preprocessArtifactLatex
+// экранировал её закрывающий `$`. Теперь `5$` считается валютой, только если перед ним
+// на строке чётное число «математических» `$`.
+describe('inline-формулы, оканчивающиеся цифрой', () => {
+  it.each(['$x^2$', '$E=mc^2$', '$a_1$', '$n=5$', '$x^2 + 1$', '$a_{10}$', '$f(x) = x + 2$'])(
+    'extractChatMath распознаёт %s',
+    (src) => {
+      const { blocks, text } = extractChatMath(src);
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0].displayMode).toBe(false);
+      expect(text).toBe(mathPlaceholder(0));
+    },
+  );
+
+  it.each(['$x^2$', '$E=mc^2$', '$a_1$', '$x^2 + 1$', '$n=5$'])('preprocessArtifactLatex не портит %s', (src) => {
+    expect(preprocessArtifactLatex(src)).toBe(src);
   });
 
-  it.skip.each(['$x^2$', '$E=mc^2$', '$a_1$'])('preprocessArtifactLatex не портит %s', (src) => {
-    expect(preprocessArtifactLatex(src)).toBe(src);
+  it('несколько формул с цифрой на конце в одной строке', () => {
+    const { blocks, text } = extractChatMath('Даны $x^2$ и $y_1$, тогда $x^2 + y_1$.');
+    expect(blocks.map((b) => b.latex)).toEqual(['x^2', 'y_1', 'x^2 + y_1']);
+    expect(text).toBe(`Даны ${mathPlaceholder(0)} и ${mathPlaceholder(1)}, тогда ${mathPlaceholder(2)}.`);
+  });
+
+  it('формула с цифрой на конце и валюта в одной строке', () => {
+    const { blocks, text } = extractChatMath('Формула $x^2$ стоит 5$.');
+    expect(blocks.map((b) => b.latex)).toEqual(['x^2']);
+    expect(text).toBe(`Формула ${mathPlaceholder(0)} стоит 5$.`);
+  });
+
+  it('валюта до формулы не ломает формулу', () => {
+    const { blocks, text } = extractChatMath('Цена 100$, формула $x^2$.');
+    expect(blocks.map((b) => b.latex)).toEqual(['x^2']);
+    expect(text).toBe(`Цена 100$, формула ${mathPlaceholder(0)}.`);
+  });
+
+  it('две суммы в постфиксной записи по-прежнему валюта', () => {
+    const src = 'Всего 100$ и 50$';
+    expect(extractChatMath(src)).toEqual({ text: src, blocks: [] });
+    expect(preprocessArtifactLatex(src)).toBe('Всего 100\\$ и 50\\$');
+  });
+
+  it('подсчёт открытых $ идёт по строкам: формула на предыдущей строке не влияет', () => {
+    const src = 'Формула $x^2$\nЦена 5$';
+    const { blocks, text } = extractChatMath(src);
+    expect(blocks.map((b) => b.latex)).toEqual(['x^2']);
+    expect(text).toBe(`Формула ${mathPlaceholder(0)}\nЦена 5$`);
+  });
+
+  it('незакрытый $ на предыдущей строке не превращает валюту в формулу', () => {
+    const src = 'Одинокий $\nЦена 5$';
+    expect(extractChatMath(src).blocks).toEqual([]);
+  });
+
+  it('экранированный \\$ не считается открывающим', () => {
+    expect(preprocessArtifactLatex('Цена \\$5 и 7$')).toBe('Цена \\$5 и 7\\$');
+  });
+
+  it('display-формула с цифрой на конце не затрагивается', () => {
+    const { blocks } = extractChatMath('$$x^2$$');
+    expect(blocks).toEqual([{ latex: 'x^2', displayMode: true }]);
+    expect(preprocessArtifactLatex('$$x^2$$')).toBe('$$x^2$$');
   });
 });
