@@ -1,6 +1,17 @@
 # Dockerfile для AstraChat Backend
 FROM ubuntu:22.04
 
+# Необязательное зеркало apt (по умолчанию пусто - официальные репозитории Ubuntu).
+# Пример: --build-arg APT_MIRROR=http://mirror.yandex.ru
+# Покрывает archive/security.ubuntu.com (amd64) и ports.ubuntu.com (arm64).
+ARG APT_MIRROR=
+RUN if [ -n "$APT_MIRROR" ]; then \
+      sed -i -E \
+        -e "s#https?://(archive|security)\.ubuntu\.com/ubuntu#${APT_MIRROR%/}/ubuntu#g" \
+        -e "s#https?://ports\.ubuntu\.com/ubuntu-ports#${APT_MIRROR%/}/ubuntu-ports#g" \
+        /etc/apt/sources.list; \
+    fi
+
 # Установка Python и системных зависимостей
 RUN apt-get update && apt-get install -y \
     python3 \
