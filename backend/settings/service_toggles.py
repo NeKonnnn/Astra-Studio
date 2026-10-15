@@ -145,6 +145,24 @@ def require_service(key: str) -> None:
         raise ServiceDisabledError(key)
 
 
+def register_service_disabled_handler(app) -> None:
+    """Регистрирует обработчик ServiceDisabledError: 503 «в разработке» вместо голого 500.
+
+    Без обработчика исключение уходит в ServerErrorMiddleware: клиент получает
+    plain-text 500 без CORS-заголовков, и браузер показывает это как CORS-ошибку.
+    Обработчик исключения работает внутри CORSMiddleware, поэтому ответ его проходит.
+    """
+    from fastapi import Request
+    from fastapi.responses import JSONResponse
+
+    @app.exception_handler(ServiceDisabledError)
+    async def _service_disabled_handler(request: Request, exc: ServiceDisabledError):
+        return JSONResponse(
+            status_code=503,
+            content={"detail": str(exc), "service": exc.key},
+        )
+
+
 _logged_once = False
 
 

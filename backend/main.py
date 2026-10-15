@@ -82,6 +82,9 @@ app.add_middleware(
 from backend.settings.cef_logger.cef_audit_middleware import CefAuditMiddleware
 
 app.add_middleware(CefAuditMiddleware)
+# ServiceDisabledError (выключенный фича-флагом микросервис) -> 503 «в разработке», а не 500
+from backend.settings.service_toggles import register_service_disabled_handler  # FEATURE-FLAG
+register_service_disabled_handler(app)  # FEATURE-FLAG
 # -- Socket.IO
 from backend.realtime import sio, socket_app
 from backend.realtime import register_handlers
