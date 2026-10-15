@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import MagicMock
 
 from app.services.llama_handler import LlamaHandler, _Slot
-from app.models.schemas import Message
+from app.models.schemas import UserMessage
 
 
 @pytest.fixture
@@ -13,7 +13,7 @@ def llama_handler():
 @pytest.mark.asyncio
 async def test_generate_response_not_loaded(llama_handler):
     with pytest.raises(ValueError, match="Model not loaded"):
-        await llama_handler.generate_response([Message(role="user", content="Hello")])
+        await llama_handler.generate_response([UserMessage(content="Hello")])
 
 
 @pytest.mark.asyncio

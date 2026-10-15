@@ -1,0 +1,63 @@
+# ---- Env files: НЕ игнорируются, остаются в репозитории ----
+!*.env
+!.env
+!.env.*
+!env.*
+!MAIN.env
+!localhost.env
+!env.main
+!env.example
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---- Node / Frontend ----
+node_modules/
+frontend/build/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.eslintcache
+
+# ---- AI-модели (большие файлы) ----
+model_small/
+silero_models/
+whisperx_models/
+diarize_models/
+models/
+*.gguf
+*.bin
+*.pt
+*.pth
+*.safetensors
+
+# ---- Кэш моделей ----
+.cache/
+huggingface/
+torch/
+
+# ---- Логи и временные файлы ----
+*.log
+logs/
+tmp/
+*.tmp
+*.swp
+
+# ---- IDE / OS ----
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

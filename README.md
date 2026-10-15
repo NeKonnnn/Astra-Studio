@@ -312,6 +312,42 @@ docker-compose ps
 - **MinIO API**: http://localhost:9000
 - **MinIO Console**: http://localhost:9001
 
+## Запуск тестов
+
+Юнит-тесты не требуют запущенных контейнеров, баз данных и моделей: внешние сервисы в них замоканы.
+
+Установите инструменты для тестов и зависимости того сервиса, который проверяете:
+
+```bash
+pip install -r requirements-dev.txt        # pytest, pytest-asyncio, pytest-cov, httpx
+pip install -r backend/requirements.txt    # зависимости backend (для тестов backend)
+```
+
+У каждого сервиса свой пакет `app`, поэтому наборы запускаются **по отдельности**, каждый из своей директории:
+
+| Набор | Команда |
+|---|---|
+| backend | `pytest` (из корня репозитория) |
+| SVC-RAG | `cd SVC-RAG && pytest` |
+| SVC-RAG-MODELS | `cd SVC-RAG-MODELS && pytest` |
+| SVC-OCR | `cd SVC-OCR && pytest` |
+| SVC-SPEECH-DIAR / -RECG / -SYNT | `cd SVC-SPEECH-<имя> && pytest` |
+| llm-svc | `cd llm-svc && pytest` |
+| frontend | `cd frontend && npm install && CI=true npm test -- --watchAll=false` |
+
+Покрытие backend:
+
+```bash
+pytest --cov=backend --cov-report=term-missing
+```
+
+Что важно знать:
+
+- Конфигурация pytest лежит в `pytest.ini` (backend) и `<сервис>/pytest.ini`. Для backend `backend/tests/conftest.py` задаёт минимальное тестовое окружение (`USE_LLM_SVC`, JWT-переменные с синтетическими значениями), поэтому реальные `.env` для тестов не нужны.
+- В llm-svc нативный `llama_cpp` в тестах подменяется заглушкой (`llm-svc/conftest.py`), устанавливать его не нужно.
+- Тесты, помеченные `xfail` или `skip`, описывают известные дефекты кода: причина указана в самом тесте. После исправления дефекта пометку нужно убрать.
+- Тесты общих модулей OCR и SPEECH-сервисов (`core/security`, `utils/downloader`) одинаковы, потому что сами модули в этих сервисах идентичны. При изменении теста обновляйте копии во всех четырёх сервисах.
+
 ---
 
 ## Star History

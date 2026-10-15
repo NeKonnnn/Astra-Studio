@@ -34,11 +34,13 @@ class TestRelevanceLibreChatStyle(unittest.TestCase):
     def test_batch_cosine(self):
         self.assertEqual(self.rel.scores_to_relevance_percents([0.1, 0.5, 0.9]), [10, 50, 90])
 
-    def test_batch_relative_for_rrf(self):
+    def test_batch_rrf_scores_are_absolute(self):
+        # min-max растяжки в выдаче больше нет: RRF-скоры честно дают 1–3%.
         out = self.rel.scores_to_relevance_percents([0.01, 0.02, 0.03])
-        self.assertEqual(out[-1], 100)
-        self.assertEqual(out[0], 1)
-        self.assertTrue(1 <= out[1] <= 100)
+        self.assertEqual(out, [1, 2, 3])
+
+    def test_batch_empty(self):
+        self.assertEqual(self.rel.scores_to_relevance_percents([]), [])
 
 
 class TestContextBudget(unittest.TestCase):
