@@ -258,7 +258,8 @@ _BOOT_RERANKER_MODEL = (
 
 def _model_path_row(value: str, kind: ModelKind) -> Dict[str, str]:
     models_dir = os.path.abspath(settings.rag_models.models_dir)
-    folder = _folder_name(value) or value
+    # Модель не задана ни активной, ни дефолтной: строка с пустым именем, а не TypeError.
+    folder = _folder_name(value or "") or (value or "")
     local_path = os.path.join(models_dir, folder)
     return {
         "path": f"local/{folder}",
@@ -266,7 +267,7 @@ def _model_path_row(value: str, kind: ModelKind) -> Dict[str, str]:
         "display_name": folder,
         "source": "local",
         "kind": kind,
-        "available": _is_model_dir(local_path),
+        "available": bool(folder) and _is_model_dir(local_path),
     }
 
 

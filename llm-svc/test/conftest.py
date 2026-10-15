@@ -120,22 +120,3 @@ def auth_enabled_no_key_config():
     # Восстанавливаем оригинальные значения
     settings.security.enabled = original_enabled
     settings.security.api_key = original_api_key
-
-
-_AUTH_FIXTURES = {"auth_enabled_config", "auth_enabled_no_key_config"}
-
-
-def pytest_collection_modifyitems(config, items):
-    """Известный баг продакшн-кода: SecurityConfig не объявляет поле api_key.
-
-    verify_api_key читает settings.security.api_key, а модель его не содержит
-    (значение из config.yml теряется), поэтому при security.enabled=true
-    аутентификация падает с AttributeError вместо 401. Тесты ниже описывают
-    ожидаемое поведение; убрать xfail после добавления поля в SecurityConfig.
-    """
-    marker = pytest.mark.xfail(
-        reason="SecurityConfig.api_key не объявлено (app/core/config.py)", strict=False
-    )
-    for item in items:
-        if _AUTH_FIXTURES & set(getattr(item, "fixturenames", ())):
-            item.add_marker(marker)

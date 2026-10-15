@@ -229,6 +229,18 @@ class TestModelPaths:
         monkeypatch.setattr(settings.rag_models, "reranker_model", "rr")
         assert mc.current_model_paths()["embedding"]["name"] == "active"
 
+    def test_nothing_configured_gives_empty_rows_instead_of_crashing(self, catalog):
+        paths = mc.current_model_paths()
+        for kind in ("embedding", "reranker"):
+            assert paths[kind]["name"] == ""
+            assert paths[kind]["kind"] == kind
+            assert paths[kind]["available"] is False
+
+    def test_empty_name_is_not_reported_available_even_if_models_dir_is_a_model(self, catalog):
+        # Пустое имя даёт путь к самому models_dir: он не должен считаться моделью.
+        (catalog / "config.json").write_text("{}")
+        assert mc.current_model_paths()["embedding"]["available"] is False
+
     def test_cluster_default_is_a_boot_snapshot(self, catalog, monkeypatch):
         before = mc.cluster_default_model_paths()
         monkeypatch.setattr(settings.rag_models, "embedding_model", "changed-at-runtime")

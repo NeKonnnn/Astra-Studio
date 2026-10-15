@@ -99,13 +99,20 @@ class TestParseContentItem:
         parsed = rp._parse_content_item({"type": "resource"})
         assert parsed.text == "[resource]"
 
-    @pytest.mark.xfail(
-        reason="Приоритет тернарного оператора: uri верхнего уровня игнорируется без вложенного resource",
-        strict=False,
-    )
     def test_resource_flat_uri(self):
         parsed = rp._parse_content_item({"type": "resource", "uri": "u://flat"})
         assert parsed.resources[0]["uri"] == "u://flat"
+        assert parsed.text == "u://flat"
+
+    def test_flat_uri_wins_over_nested(self):
+        parsed = rp._parse_content_item(
+            {"type": "resource", "uri": "u://flat", "resource": {"uri": "u://nested"}}
+        )
+        assert parsed.resources[0]["uri"] == "u://flat"
+
+    def test_resource_not_a_dict_is_ignored(self):
+        parsed = rp._parse_content_item({"type": "resource", "resource": "строка"})
+        assert parsed.resources[0]["uri"] is None
 
 
 class TestCompactToolResult:

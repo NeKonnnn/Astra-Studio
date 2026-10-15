@@ -11,7 +11,6 @@ import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from app.core import security
 from app.exceptions import (
     ModelNotLoadedError,
     PoolExhaustedError,
@@ -89,6 +88,14 @@ class TestToolCallProcessor:
     )
     def test_should_use_tools(self, tools, expected):
         assert ToolCallProcessor.should_use_tools(tools) is expected
+
+
+def _security():
+    """Ленивый импорт: app.core.security захватывает settings при импорте, а сессионная
+    фикстура conftest пересоздаёт настройки; ранний импорт на сборе тестов ломал test_api."""
+    from app.core import security
+
+    return security
 
 
 def _touch(path, size=0):
@@ -343,21 +350,41 @@ class TestModelPool:
         assert issubclass(PoolExhaustedError, ServiceUnavailableError)
 
 
+class TestSecurityConfig:
+    """Регрессия: поле api_key не было объявлено, и значение из config.yml терялось."""
+
+    def test_api_key_is_declared_and_defaults_to_none(self):
+        from app.core.config import SecurityConfig
+
+        assert SecurityConfig().api_key is None
+
+    def test_api_key_is_kept(self):
+        from app.core.config import SecurityConfig
+
+        cfg = SecurityConfig(enabled=True, api_key="k", api_key_header="X-Key")
+        assert (cfg.enabled, cfg.api_key, cfg.api_key_header) == (True, "k", "X-Key")
+
+    def test_loaded_settings_expose_api_key(self):
+        from app.core.config import get_settings
+
+        assert hasattr(get_settings().security, "api_key")
+
+
 @pytest.fixture
 def sec(monkeypatch):
     """Подмена настроек безопасности (реальный SecurityConfig не имеет поля api_key)."""
     holder = SimpleNamespace(security=SimpleNamespace(enabled=True, api_key="secret"))
-    monkeypatch.setattr(security, "settings", holder)
+    monkeypatch.setattr(_security(), "settings", holder)
     return holder.security
 
 
 class TestVerifyApiKey:
     async def test_disabled_allows_everything(self, sec):
         sec.enabled = False
-        assert await security.verify_api_key(None) is True
+        assert await _security().verify_api_key(None) is True
 
     async def test_valid_key(self, sec):
-        assert await security.verify_api_key("secret") is True
+        assert await _security().verify_api_key("secret") is True
 
     @pytest.mark.parametrize(
         "key, detail",
@@ -365,7 +392,7 @@ class TestVerifyApiKey:
     )
     async def test_rejected(self, sec, key, detail):
         with pytest.raises(HTTPException) as exc:
-            await security.verify_api_key(key)
+            await _security().verify_api_key(key)
         assert exc.value.status_code == 401
         assert exc.value.detail == detail
         assert exc.value.headers == {"WWW-Authenticate": "API-Key"}
@@ -374,5 +401,5 @@ class TestVerifyApiKey:
     async def test_unconfigured_server_key(self, sec, configured):
         sec.api_key = configured
         with pytest.raises(HTTPException) as exc:
-            await security.verify_api_key("anything")
+            await _security().verify_api_key("anything")
         assert exc.value.detail == "API key is not configured on server"

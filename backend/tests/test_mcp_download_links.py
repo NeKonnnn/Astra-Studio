@@ -220,6 +220,11 @@ class TestAppendDownloadLinks:
         out = rp.append_download_links_to_content("", self.LINKS[:1])
         assert out.startswith("**Файлы:**")
 
-    def test_link_without_url_never_produces_a_broken_markdown_link(self):
-        out = rp.append_download_links_to_content("t", [{"label": "x"}])
+    def test_links_without_url_leave_content_untouched(self):
+        assert rp.append_download_links_to_content("t", [{"label": "x"}, {"url": ""}]) == "t"
+
+    def test_link_without_url_does_not_block_valid_links(self):
+        # Регрессия: пустой url «входил» в любой текст и отключал добавление блока файлов.
+        out = rp.append_download_links_to_content("t", [{"label": "x"}, {"url": "u", "label": "L"}])
+        assert "- [L](u)" in out
         assert "[x]" not in out
