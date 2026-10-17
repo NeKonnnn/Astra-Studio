@@ -9,6 +9,7 @@ import GlobalKeyboardShortcuts from './components/GlobalKeyboardShortcuts';
 import SettingsModal from './components/SettingsModal';
 import { ASTRA_FOCUS_CHAT_SEARCH, ASTRA_OPEN_SETTINGS, ASTRA_OPEN_SETTINGS_SECTION } from './constants/hotkeys';
 import { useRightSidebarInsetCssVar } from './hooks/useRightSidebarInsetCssVar';
+import { useResponsiveSidebars } from './hooks/useResponsiveSidebars';
 import {
   readRightSidebarWidthPinned,
   readRightSidebarWidthPx,
@@ -192,6 +193,16 @@ function App() {
 
   useRightSidebarInsetCssVar(rightSidebarOpen, rightSidebarHidden, rightSidebarWidthPx);
 
+  // Узкое окно: панели сворачиваются в рельсы (<900 px), правая скрывается (<600 px).
+  useResponsiveSidebars({
+    sidebarOpen,
+    rightSidebarOpen,
+    rightSidebarHidden,
+    setSidebarOpen,
+    setRightOpen: setRightOpenStable,
+    setRightHidden: setRightHiddenStable,
+  });
+
   /** Счётчик для фокуса поля «Поиск в чатах» (в т.ч. после показа скрытого сайдбара). */
   const [searchFocusNonce, setSearchFocusNonce] = useState(0);
   /** Настройки по Alt+S — в App, чтобы работало даже при скрытой левой панели. */
@@ -273,6 +284,12 @@ function App() {
     root.style.setProperty('--menu-icon-min-width', `${MENU_ICON_MIN_WIDTH}px`);
     root.style.setProperty('--menu-icon-to-text-gap', `${MENU_ICON_TO_TEXT_GAP_PX}px`);
     root.style.setProperty('--menu-icon-font-size', `${MENU_ICON_FONT_SIZE_PX}px`);
+    // Нативные элементы (скроллбары, поля) и полосы прокрутки в цветах темы:
+    // раньше трек был жёстко #f1f1f1 и белел в тёмной теме.
+    root.style.setProperty('color-scheme', isDarkMode ? 'dark' : 'light');
+    root.style.setProperty('--scrollbar-track', isDarkMode ? '#1f1f1f' : '#f1f1f1');
+    root.style.setProperty('--scrollbar-thumb', isDarkMode ? '#4a4a4a' : '#c1c1c1');
+    root.style.setProperty('--scrollbar-thumb-hover', isDarkMode ? '#626262' : '#a8a8a8');
   }, [isDarkMode]);
 
   const theme = createAppTheme(isDarkMode);
@@ -373,6 +390,11 @@ function App() {
                             // При hide с collapsed: margin -64→0 без анимации, иначе на 0.3s шире viewport → серые скроллбары.
                             marginLeft: sidebarHidden ? 0 : (sidebarOpen ? 0 : '-64px'),
                             marginRight: rightSidebarHidden ? 0 : (rightSidebarOpen ? 0 : '-64px'),
+                            // Контент заходит под свёрнутые «рельсы» (центрирование на широком экране).
+                            // На узких экранах это прятало левый край поля ввода под рельсой —
+                            // компенсируем отступом ровно на ширину рельсы.
+                            paddingLeft: { xs: sidebarHidden || sidebarOpen ? 0 : '64px', md: 0 },
+                            paddingRight: { xs: rightSidebarHidden || rightSidebarOpen ? 0 : '64px', md: 0 },
                             transition: [
                               sidebarHidden ? 'margin-left 0s' : 'margin-left 0.3s ease',
                               rightSidebarHidden ? 'margin-right 0s' : 'margin-right 0.3s ease',

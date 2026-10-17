@@ -42,9 +42,60 @@ const CURRENCY_POSTFIX_RE =
 
 const CURRENCY_TOKEN = '\u0000ASTRA_CURRENCY\u0000';
 
+/**
+ * Сколько «математических» `$` стоит на строке до позиции `end`:
+ * неэкранированные (`\$` — не считаем) и не принятые ранее за валюту.
+ */
+function countOpenMathDollars(whole: string, end: number, currencyDollars: Set<number>): number {
+  const lineStart = end > 0 ? whole.lastIndexOf('\n', end - 1) + 1 : 0;
+  let count = 0;
+  for (let i = lineStart; i < end; i += 1) {
+    if (whole[i] === '$' && whole[i - 1] !== '\\' && !currencyDollars.has(i)) count += 1;
+  }
+  return count;
+}
+
+/**
+ * `$100` — валюта или начало формулы (`$2x + y$`, `$2 + 3$`, `$10^n$`)?
+ * Смотрим на следующий неэкранированный `$` на той же строке (правило TeX/pandoc):
+ * - после непробельного символа и не перед цифрой — закрывающий `$`; это формула, если между
+ *   `$` нет слов (`$100 и 50$` — проза с двумя суммами, остаётся валютой, как задумано);
+ * - после пробела, скобки или кавычки — новый открывающий (`Цена $100 и $200`, `$100, а $x^n$`) → валюта;
+ * - `$$` или конец строки без закрывающего — валюта.
+ */
+/** Похоже на текст, а не на формулу: кириллица или слово из 3+ латинских букв (команды LaTeX вроде `\sin`, `\text` не считаются). */
+function looksLikeProse(span: string): boolean {
+  return /[А-Яа-яЁё]/.test(span) || /(?<![\\A-Za-z])[A-Za-z]{3,}(?![A-Za-z])/.test(span);
+}
+
+function isPrefixCurrency(whole: string, pos: number): boolean {
+  const lineEnd = whole.indexOf('\n', pos);
+  const end = lineEnd === -1 ? whole.length : lineEnd;
+  for (let i = pos + 1; i < end; i += 1) {
+    if (whole[i] !== '$' || whole[i - 1] === '\\') continue;
+    if (whole[i + 1] === '$') return true;
+    if (!/[\s([{"'«]/.test(whole[i - 1])) {
+      // Закрывающий `$`: слева непробельный символ, справа не цифра (`3$4` — не закрывающий).
+      if (!/\d/.test(whole[i + 1] ?? '')) return looksLikeProse(whole.slice(pos + 1, i));
+      continue;
+    }
+    return true;
+  }
+  return true;
+}
+
 function escapeCurrencyDollars(text: string, replacement: string): string {
-  let s = text.replace(CURRENCY_PREFIX_RE, replacement);
-  s = s.replace(CURRENCY_POSTFIX_RE, (_m, amount: string) => `${amount}${replacement}`);
+  let s = text.replace(CURRENCY_PREFIX_RE, (match: string, _amount: string, offset: number, whole: string) =>
+    isPrefixCurrency(whole, offset) ? replacement : match,
+  );
+  const currencyDollars = new Set<number>();
+  s = s.replace(CURRENCY_POSTFIX_RE, (match: string, amount: string, offset: number, whole: string) => {
+    // `x^2$`, `a_1$`, `n=5$`, `x^2 + 1$`: перед числом уже открыт `$` — это закрывающий
+    // `$` формулы, а не валюта `100$` (нечётное число открытых `$` на строке).
+    if (countOpenMathDollars(whole, offset, currencyDollars) % 2 === 1) return match;
+    currencyDollars.add(offset + match.length - 1);
+    return `${amount}${replacement}`;
+  });
   return s;
 }
 

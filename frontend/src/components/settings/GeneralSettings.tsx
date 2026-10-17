@@ -263,15 +263,17 @@ export default function GeneralSettings({ isDarkMode, onToggleTheme }: GeneralSe
                         step={5}
                         defaultValue={memorySettings.max_messages}
                         integer
+                        inputProps={{ 'aria-label': 'Максимум сообщений в контексте' }}
                         InputLabelProps={{ shrink: true }}
                       />
                     </Box>
-                    <Box sx={{ maxWidth: { xs: '100%', sm: 236 }, minWidth: 0, flex: { sm: '0 0 auto' } }}>
+                    <Box sx={{ maxWidth: { xs: '100%', sm: 300 }, minWidth: { sm: 260 }, flex: { sm: '0 0 auto' } }}>
                       <TextField
                         fullWidth
                         size="small"
                         type="number"
                         disabled
+                        inputProps={{ 'aria-label': 'Размер контекста (токены)' }}
                         label={
                           <Box sx={MODEL_SETTINGS_LABEL_WRAPPER_SX} component="span">
                             Размер контекста (токены)

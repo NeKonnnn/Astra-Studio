@@ -85,8 +85,6 @@ export default function LlmStatusBanner() {
       }}
       ariaLabel="Закрыть уведомление о подключении к LLM"
       fixed
-      top={12}
-      zIndexOffset={2}
       autoDismissMs={STATUS_TOAST_AUTO_DISMISS_MS}
     />
   );

@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo } from 'react';
-import { Box } from '@mui/material';
 import { useAppActions, useAppContext } from '../contexts/AppContext';
 import {
   STATUS_TOAST_SHORT_DISMISS_MS,
@@ -34,24 +33,14 @@ export default function StatusToastHost() {
 
   if (visible.length === 0) return null;
 
+  // Все тосты встают в общий стек (см. StatusToast), поэтому не перекрывают друг друга
+  // и баннеры LLM / перечанковки RAG.
   return (
-    <Box
-      sx={{
-        position: 'fixed',
-        top: 12,
-        left: '50%',
-        transform: 'translateX(-50%)',
-        zIndex: (theme) => theme.zIndex.snackbar + 4,
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 1,
-        pointerEvents: 'none',
-        '& > *': { pointerEvents: 'auto' },
-      }}
-    >
+    <>
       {visible.map((n) => (
         <StatusToast
           key={n.id}
+          fixed
           type={normalizeType(n.type)}
           message={n.message}
           onClose={() => removeNotification(n.id)}
@@ -59,6 +48,6 @@ export default function StatusToastHost() {
           ariaLabel="Закрыть уведомление"
         />
       ))}
-    </Box>
+    </>
   );
 }

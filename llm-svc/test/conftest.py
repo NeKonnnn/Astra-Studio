@@ -21,11 +21,10 @@ def test_environment():
         del os.environ["CONFIG_PATH"]
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope="session")
 def global_mock_llama():
-    """Глобальный мок LlamaHandler на уровне сессии."""
-    with patch('app.dependencies.LlamaHandler') as mock_handler:
-        # Создаем асинхронный мок для экземпляра
+    """Фейковый LLM-handler на уровне сессии (подставляется через dependency_overrides)."""
+    if True:
         instance = MagicMock()
         instance.is_loaded.return_value = True
         instance.model_name = "test-model"
@@ -60,23 +59,23 @@ def global_mock_llama():
         instance.is_model_id_loaded = MagicMock(return_value=True)
         instance.get_loaded_model_ids = MagicMock(return_value=["test-model"])
 
-        mock_handler.return_value = instance
-        mock_handler.get_instance.return_value = instance
-
         yield instance
 
 @pytest.fixture(scope="session")
-def test_app():
-    """Создание тестового приложения с переопределенными зависимостями."""
+def test_app(global_mock_llama):
+    """Тестовое приложение: реальный handler подменён фейком через dependency_overrides."""
+    from app.llm_dependencies import get_llm_handler
     from app.main import create_application
+
     app = create_application()
+    app.dependency_overrides[get_llm_handler] = lambda: global_mock_llama
     yield app
+    app.dependency_overrides.clear()
 
 @pytest.fixture
 def test_client(test_app):
-    """Создание тестового клиента."""
-    with TestClient(test_app) as client:
-        yield client
+    """Тестовый клиент без lifespan (без загрузки модели из Nexus/диска)."""
+    return TestClient(test_app)
 
 
 @pytest.fixture

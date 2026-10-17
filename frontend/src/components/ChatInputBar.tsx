@@ -139,12 +139,21 @@ const iconButtonSx = (isDark: boolean, isClassic: boolean) => ({
   borderRadius: isClassic ? '8px' : '50%',
   p: 0,
   '&:active': { transform: 'none' },
+  // Сенсорные экраны: визуально кнопка 36 px, но область касания расширена до 44 px
+  // (псевдоэлемент не меняет размеры и расчёт выравнивания блока под «Инструменты»).
+  '@media (pointer: coarse)': {
+    position: 'relative',
+    '&::after': { content: '""', position: 'absolute', inset: -4 },
+  },
 });
 
 const CHAT_INPUT_CONTRAST_KEY = 'chat_input_contrast';
 const CHAT_INPUT_COLOR_KEY = 'chat_input_color';
 const CHAT_INPUT_CONTRAST_DEFAULT = 35;
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+/** Ширина оболочки композера (px), ниже которой кнопки уходят под поле ввода. */
+const COMPOSER_NARROW_SHELL_PX = 480;
 
 export default function ChatInputBar({
   value,
@@ -723,6 +732,20 @@ export default function ChatInputBar({
   const CHARS_FIRST_LINE = 100;   // примерно столько символов влезает в одну строку (шрифт 0.875rem, кнопки по бокам)
   const CHARS_SINGLE_BACK = 100;  // обратно в одну строку только когда короче (гистерезис)
   const [compactMultiline, setCompactMultiline] = useState(false);
+  /**
+   * Колонка узкая (планшет, обе боковые панели открыты): в одну строку с кнопками плейсхолдер
+   * ломался по слогу на строку. Узкая оболочка → кнопки под полем, поле на всю ширину.
+   */
+  const [narrowShell, setNarrowShell] = useState(false);
+  useEffect(() => {
+    const node = skillAnchorRef.current;
+    if (!node || typeof ResizeObserver === 'undefined') return undefined;
+    const apply = () => setNarrowShell(node.getBoundingClientRect().width < COMPOSER_NARROW_SHELL_PX);
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(node);
+    return () => ro.disconnect();
+  }, [isClassic]);
   /** Как в ChatGPT: развернуть поле ввода, когда текст упёрся в maxRows */
   const [composerExpanded, setComposerExpanded] = useState(false);
   const [showExpandToggle, setShowExpandToggle] = useState(false);
@@ -953,6 +976,7 @@ export default function ChatInputBar({
       <span>
         <IconButton
           size="small"
+          aria-label="Инструменты"
           onClick={onSettingsClick}
           disabled={settingsDisabled}
           sx={{
@@ -1030,6 +1054,7 @@ export default function ChatInputBar({
       <span>
         <IconButton
           size="small"
+          aria-label="Отправить"
           onClick={onSendClick}
           disabled={sendDisabled}
           sx={{
@@ -1425,10 +1450,11 @@ export default function ChatInputBar({
 
   // ─── КОМПАКТНЫЙ стиль: 1 строка — кнопки по бокам; со 2-й строки — кнопки снизу ─
   // Один TextField всегда в DOM: при смене compactMultiline меняется только order и обёртка кнопок, фокус и перенос по ширине сохраняются
+  const stackedLayout = compactMultiline || composerExpanded || narrowShell;
   const textFieldSx = {
     minWidth: 0,
-    flex: compactMultiline ? undefined : 1,
-    order: compactMultiline ? 0 : 1,
+    flex: compactMultiline || narrowShell ? undefined : 1,
+    order: compactMultiline || narrowShell ? 0 : 1,
     '& .MuiOutlinedInput-root': {
       bgcolor: 'transparent',
       border: 'none',
@@ -1469,8 +1495,8 @@ export default function ChatInputBar({
       <Box
         sx={{
           display: 'flex',
-          flexDirection: compactMultiline || composerExpanded ? 'column' : 'row',
-          alignItems: compactMultiline || composerExpanded ? 'stretch' : 'center',
+          flexDirection: stackedLayout ? 'column' : 'row',
+          alignItems: stackedLayout ? 'stretch' : 'center',
           gap: 0.5,
           flexWrap: 'nowrap',
           minHeight: 40,
@@ -1497,11 +1523,11 @@ export default function ChatInputBar({
             variant="outlined"
             size="small"
             disabled={inputDisabled}
-            fullWidth={compactMultiline || composerExpanded}
+            fullWidth={stackedLayout}
             sx={textFieldSx}
           />
         )}
-        {dictationActive ? null : compactMultiline || composerExpanded ? (
+        {dictationActive ? null : stackedLayout ? (
           <Box sx={{ order: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'nowrap' }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25 }}>
               {attachBtn}
