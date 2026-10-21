@@ -6,7 +6,7 @@ import yaml
 import os
 import re
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field, model_validator
 # Попытка загрузить переменные окружения из .env файла
 try:
@@ -376,9 +376,67 @@ class SessionTimeoutConfig(BaseModel):
     def load_from_env_only(cls, data: dict) -> dict:
         env_seconds = _get_env_value_int("AUTH_SESSION_TIMEOUT_SECONDS")
         if env_seconds is None:
-            # Локальная разработка: 0 = таймаут сессии отключён
-            env_seconds = 0
+            raise ValueError(
+                "AUTH_SESSION_TIMEOUT_SECONDS не задан. "
+                "Укажите переменную в ConfigMap/Deployment контейнера astra-chat-backend."
+            )
         return {"timeout_seconds": env_seconds}
+
+
+class ModelHealthConfig(BaseModel):
+    """Фильтрация списка LLM-моделей по health-check при list_models / /api/models/available.
+
+    Источник (приоритет): переменные окружения ConfigMap/Deployment контейнера astra-chat-backend.
+    ENV: MODEL_HEALTH_FILTER_ENABLED, MODEL_HEALTH_PROBE_MAX, MODELS_AVAILABLE_CACHE_SECONDS.
+    """
+
+    filter_enabled: bool = True
+    probe_max: int = 64
+    models_available_cache_seconds: int = 60
+
+    @model_validator(mode="before")
+    @classmethod
+    def load_from_env(cls, data: Any) -> dict:
+        result = dict(data) if isinstance(data, dict) else {}
+
+        env_filter = _get_env_value("MODEL_HEALTH_FILTER_ENABLED")
+        if env_filter is not None and str(env_filter).strip():
+            result["filter_enabled"] = str(env_filter).strip().lower() not in (
+                "0",
+                "false",
+                "no",
+                "off",
+            )
+        elif "filter_enabled" not in result:
+            result["filter_enabled"] = True
+
+        env_probe = _get_env_value_int("MODEL_HEALTH_PROBE_MAX")
+        if env_probe is not None:
+            result["probe_max"] = max(1, env_probe)
+        elif "probe_max" not in result:
+            result["probe_max"] = 64
+
+        env_cache = _get_env_value_int("MODELS_AVAILABLE_CACHE_SECONDS")
+        if env_cache is not None:
+            result["models_available_cache_seconds"] = max(1, env_cache)
+        elif "models_available_cache_seconds" not in result:
+            result["models_available_cache_seconds"] = 60
+
+        return result
+
+
+class MicroservicesEnabledConfig(BaseModel):
+    """ENV перекрывает в service_toggles; без явных YAML-значений — всегда False."""
+
+    stt: bool = False
+    tts: bool = False
+    diarization: bool = False
+    rag: bool = False
+    rag_models: bool = False
+    agents: bool = False
+    minio: bool = False
+    postgresql: bool = False
+    model_config = {"extra": "allow"}
 
 
 class AuthConfig(BaseModel):
@@ -837,8 +895,12 @@ class Settings(BaseModel):
     llm_service: LLMServiceConnectionConfig = Field(default_factory=LLMServiceConnectionConfig)
     llm_providers: List[Dict[str, Any]] = Field(default_factory=list)
     default_llm_provider: Optional[str] = None
+    model_health: ModelHealthConfig = Field(default_factory=ModelHealthConfig)
     mcp: McpPlatformConfig = Field(default_factory=McpPlatformConfig)
     plugins: PluginsPlatformConfig = Field(default_factory=PluginsPlatformConfig)
+    microservices_enabled: MicroservicesEnabledConfig = Field(
+        default_factory=MicroservicesEnabledConfig
+    )  # FEATURE-FLAG
     coding_agent: CodingAgentConfig = Field(default_factory=CodingAgentConfig)
     image_generation: ImageGenerationConfig = Field(default_factory=ImageGenerationConfig)
     video_generation: VideoGenerationConfig = Field(default_factory=VideoGenerationConfig)
@@ -1057,7 +1119,21 @@ def reset_settings() -> Settings:
     global _settings
     config_path = os.environ.get("CONFIG_PATH")
     _settings = Settings.from_yaml(config_path)
+    _clear_dependent_caches()
     return _settings
+
+
+def _clear_dependent_caches() -> None:
+    """Сбрасывает кэши модулей, завязанных на ENV/конфигурацию (роли платформы)."""
+    try:
+        from backend.auth.agent_platform_roles import clear_role_cache
+
+        clear_role_cache()
+    except Exception:
+        # Сброс кэша не должен ломать перезагрузку конфига.
+        pass
+
+
 # Инициализация настроек при импорте модуля (ленивая)
 # Не инициализируем сразу, чтобы избежать ошибок при импорте
 settings = None

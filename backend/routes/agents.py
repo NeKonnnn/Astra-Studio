@@ -4,9 +4,12 @@ routes/agents.py — совместимость MCP status (оркестрато
 """
 
 from datetime import datetime
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from backend.utils.http_errors import public_error_detail
 
+from backend.auth.jwt_handler import get_current_user
 from backend.settings.logging import get_logger
 
 logger = get_logger(__name__)
@@ -15,7 +18,9 @@ router = APIRouter(prefix="/api/agent", tags=["agents"])
 
 
 @router.get("/mcp/status")
-async def get_mcp_status():
+async def get_mcp_status(
+    current_user: Annotated[dict, Depends(get_current_user)],
+):
     """Статус MCP-платформы (используется фронтом)."""
     try:
         from backend.mcp.platform import get_mcp_platform
@@ -52,4 +57,4 @@ async def get_mcp_status():
         }
     except Exception as e:
         logger.exception("Ошибка операции")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail=public_error_detail(e)) from e

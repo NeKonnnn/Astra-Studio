@@ -1,0 +1,47 @@
+# Конфиг только для автотестов svc-rag: внешние сервисы не нужны, адреса — заглушки.
+server:
+  host: 127.0.0.1
+  port: 8011
+  log_level: warning
+
+urls:
+  backend_service_port: "http://backend.test:8000"
+  llm_service_port: "http://llm.test:8001"
+  rag_models_service_port: "http://rag-models.test:8010"
+  rag_models_service_docker: "http://rag-models.test:8010"
+
+postgresql:
+  host: localhost
+  port: 5432
+  database: astrachat_test
+  user: test
+  password: test
+  embedding_dim: 8
+
+minio:
+  endpoint: localhost
+  port: 9000
+  access_key: test
+  secret_key: test-secret-key
+  use_ssl: false
+  bucket_name: test-bucket
+  documents_bucket_name: test-documents
+
+llm_service:
+  base_url: "http://llm.test:8001"
+  default_model: test-model
+  timeout: 5
+
+rag:
+  enabled: true
+  chunk_size: 500
+  chunk_overlap: 50
+  min_chunk_length: 20
+
+rag_models_client:
+  base_url: "http://rag-models.test:8010"
+  timeout: 5
+
+ocr:
+  url: "http://ocr.test:8002"
+  timeout: 5

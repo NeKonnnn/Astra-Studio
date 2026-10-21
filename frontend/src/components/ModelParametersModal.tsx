@@ -94,10 +94,30 @@ function providerOfPath(path: string): string {
   return p.includes('/') ? p.split('/')[0] : '';
 }
 
-const PROVIDER_OPTIONS = [
+const FALLBACK_PROVIDER_OPTIONS = [
   { value: 'OpenAI', label: 'OpenAI' },
   { value: 'Local', label: 'Local' },
 ];
+
+/** Список провайдеров для селектора: ids из конфига важнее каталога моделей. */
+export function resolveProviderOptions(
+  providerIds?: string[] | null,
+  providerModels?: Array<{ provider_id?: string; path?: string }> | null,
+): Array<{ value: string; label: string }> {
+  const fromIds = (providerIds || []).map((id) => String(id || '').trim()).filter(Boolean);
+  const fromModels = Array.from(
+    new Set(
+      (providerModels || [])
+        .map((m) => (m.provider_id || providerOfPath(m.path || '')).trim())
+        .filter(Boolean),
+    ),
+  );
+  const ids = fromIds.length ? fromIds : fromModels;
+  if (!ids.length) return FALLBACK_PROVIDER_OPTIONS;
+  return ids
+    .filter((id) => String(id).toUpperCase() !== 'SC')
+    .map((id) => ({ value: id, label: id }));
+}
 
 function formatModelLabel(path: string) {
   return path.replace('llm-svc://', '').split('/').pop() || path || '—';
@@ -143,23 +163,15 @@ export default function ModelParametersModal({
     ...initialModelSettings,
   }));
 
-  const providerMode = Array.isArray(providerModels) && providerModels.length > 0;
-  const providerOptions = useMemo(() => {
-    if (!providerMode) return PROVIDER_OPTIONS;
-    const ids =
-      providerIds && providerIds.length
-        ? providerIds
-        : Array.from(
-            new Set(
-              (providerModels || [])
-                .map((m) => m.provider_id || providerOfPath(m.path))
-                .filter(Boolean),
-            ),
-          );
-    return ids
-      .filter((id) => String(id).toUpperCase() !== 'SC')
-      .map((id) => ({ value: id as string, label: id as string }));
-  }, [providerMode, providerModels, providerIds]);
+  // Провайдеры из /api/llm-providers (CORSUR/PHOENIX) важнее плоского каталога моделей.
+  // Раньше при пустом providerModels UI откатывался на захардкоженные OpenAI/Local.
+  const providerMode =
+    (Array.isArray(providerIds) && providerIds.length > 0)
+    || (Array.isArray(providerModels) && providerModels.length > 0);
+  const providerOptions = useMemo(
+    () => resolveProviderOptions(providerIds, providerModels),
+    [providerIds, providerModels],
+  );
 
   const selectedProvider = params.provider || '';
 

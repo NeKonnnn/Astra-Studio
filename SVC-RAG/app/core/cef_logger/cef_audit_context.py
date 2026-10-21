@@ -8,6 +8,11 @@ from typing import Any, Dict, NamedTuple, Optional
 _request: contextvars.ContextVar = contextvars.ContextVar("svc_rag_cef_request", default=None)
 _user: contextvars.ContextVar = contextvars.ContextVar("svc_rag_cef_user", default=None)
 
+# Модель чата из заголовка backend (X-Astra-Model): judge/summary в той же модели.
+_chat_model: contextvars.ContextVar = contextvars.ContextVar(
+    "svc_rag_chat_model", default=None
+)
+
 
 class _Tokens(NamedTuple):
     request: Any
@@ -32,6 +37,71 @@ def cef_audit_reset(tokens: _Tokens) -> None:
 
 def cef_audit_peek() -> tuple[Optional[Any], Optional[Dict[str, Any]]]:
     return _request.get(), _user.get()
+
+
+def chat_model_set(model_path: Optional[str]) -> None:
+    _chat_model.set(str(model_path or "").strip() or None)
+
+
+def chat_model_peek() -> Optional[str]:
+    return _chat_model.get()
+
+
+def chat_model_set_from_request(request: Any) -> None:
+    """Взять путь модели из X-Astra-Model (прокидывает backend RagClient)."""
+    if request is None:
+        chat_model_set(None)
+        return
+    headers = getattr(request, "headers", None) or {}
+    raw = (
+        headers.get("x-astra-model")
+        or headers.get("X-Astra-Model")
+        or ""
+    )
+    chat_model_set(raw)
+
+
+# Логин для запросов, которые делает сам сервис, а не пользователь.
+MODELS_SYSTEM_USER_ID = "astrachat"
+
+
+def model_identity_headers() -> Dict[str, str]:
+    """X-User-ID для запросов к моделям через шлюз."""
+    import os
+
+    login = ""
+    try:
+        _req, user = cef_audit_peek()
+        if user:
+            login = str(user.get("username") or user.get("user_id") or "").strip()
+    except Exception:
+        login = ""
+    if not login or login.upper() == "SYSTEM":
+        login = (
+            os.getenv("MODELS_SYSTEM_USER_ID", "") or MODELS_SYSTEM_USER_ID
+        ).strip() or MODELS_SYSTEM_USER_ID
+    return {"X-User-ID": login}
+
+
+def cef_identity_headers() -> Dict[str, str]:
+    """Инициатор для внутренних вызовов backend (OCR, LLM-прокси)."""
+    headers: Dict[str, str] = {}
+    try:
+        _req, user = cef_audit_peek()
+        if not user:
+            return headers
+        suser = str(user.get("username") or "").strip()
+        suid = str(user.get("user_id") or "").strip()
+        sntdom = str(user.get("sntdom") or "").strip()
+        if suser:
+            headers["X-CEF-Suser"] = suser
+        if suid:
+            headers["X-CEF-Suid"] = suid
+        if sntdom:
+            headers["X-CEF-Sntdom"] = sntdom
+    except Exception:
+        return {}
+    return headers
 
 
 def user_from_request_headers(request: Any) -> Optional[Dict[str, Any]]:

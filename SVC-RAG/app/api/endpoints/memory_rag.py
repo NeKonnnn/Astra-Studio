@@ -21,12 +21,14 @@ from app.api.rag_common import (
     filters_body_to_domain,
 )
 from app.dependencies import get_memory_rag_service
+from app.services.document_duplicate import DUPLICATE_CODE, duplicate_http_detail
 from app.services.hit_types import hit_cosine
 from app.services.memory_rag_service import MemoryRagService
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter()
+
 
 class MemoryRagIndexResponse(BaseModel):
     ok: bool
@@ -35,12 +37,14 @@ class MemoryRagIndexResponse(BaseModel):
     chunks_count: Optional[int] = None
     error: Optional[str] = None
 
+
 class MemoryRagDocumentItem(BaseModel):
     id: int
     filename: str
     created_at: Optional[str] = None
     size: Optional[int] = None
     file_type: Optional[str] = None
+
 
 class MemoryRagSearchRequest(RagSearchEvalBody):
     query: str
@@ -57,6 +61,7 @@ class MemoryRagSearchRequest(RagSearchEvalBody):
     reranker_provider: Optional[str] = None
     debug_trace: bool = False
 
+
 class MemoryRagSearchHit(BaseModel):
     content: str
     score: float
@@ -64,9 +69,11 @@ class MemoryRagSearchHit(BaseModel):
     chunk_index: Optional[int] = None
     cosine: Optional[float] = None
 
+
 class MemoryRagSearchResponse(BaseModel):
     hits: List[MemoryRagSearchHit]
     trace: Optional[Dict[str, Any]] = None
+
 
 @router.post("/documents", response_model=MemoryRagIndexResponse)
 async def index_memory_rag_document(
@@ -98,6 +105,15 @@ async def index_memory_rag_document(
         provider=embedding_provider,
     )
     if not result.get("ok"):
+        if result.get("code") == DUPLICATE_CODE:
+            raise HTTPException(
+                status_code=409,
+                detail=duplicate_http_detail(
+                    document_id=result.get("document_id"),
+                    filename=result.get("filename") or file.filename,
+                    message=result.get("error"),
+                ),
+            )
         raise HTTPException(
             status_code=422, detail=result.get("error", "Ошибка индексации")
         )
@@ -107,6 +123,36 @@ async def index_memory_rag_document(
         filename=result.get("filename"),
         chunks_count=result.get("chunks_count"),
     )
+
+
+class MemoryDuplicateCheckRequest(BaseModel):
+    content_hash: str
+    filename: Optional[str] = None
+    size: Optional[int] = None
+
+
+class MemoryDuplicateCheckResponse(BaseModel):
+    duplicate: bool
+    document_id: Optional[int] = None
+    filename: Optional[str] = None
+
+
+@router.post("/documents/duplicate-check", response_model=MemoryDuplicateCheckResponse)
+async def memory_rag_duplicate_check(
+    body: MemoryDuplicateCheckRequest,
+    svc: MemoryRagService = Depends(get_memory_rag_service),
+):
+    out = await svc.check_duplicate(
+        content_hash=body.content_hash,
+        filename=body.filename,
+        size=body.size,
+    )
+    return MemoryDuplicateCheckResponse(
+        duplicate=bool(out.get("duplicate")),
+        document_id=out.get("document_id"),
+        filename=out.get("filename"),
+    )
+
 
 @router.get("/documents", response_model=List[MemoryRagDocumentItem])
 async def list_memory_rag_documents(
@@ -124,6 +170,7 @@ async def list_memory_rag_documents(
         for d in docs
     ]
 
+
 @router.delete("/documents/{document_id}")
 async def delete_memory_rag_document(
     document_id: int,
@@ -134,6 +181,7 @@ async def delete_memory_rag_document(
         raise HTTPException(status_code=404, detail="Документ не найден")
     return out
 
+
 class MemoryReindexRequest(BaseModel):
     chunk_size: Optional[int] = None
     chunk_overlap: Optional[int] = None
@@ -141,7 +189,9 @@ class MemoryReindexRequest(BaseModel):
     embedding_model: Optional[str] = None
     embedding_provider: Optional[str] = None
 
+
 _memory_reindex_lock = asyncio.Lock()
+
 
 async def _memory_reindex_bg(
     svc: MemoryRagService,
@@ -173,6 +223,7 @@ async def _memory_reindex_bg(
             logger.info("[REINDEX memory] фоновая переиндексация завершена: %s", res)
         except Exception:
             logger.exception("[REINDEX memory] фоновая переиндексация упала")
+
 
 @router.post("/reindex")
 async def memory_rag_reindex(

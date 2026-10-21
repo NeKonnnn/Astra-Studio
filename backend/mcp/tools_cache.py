@@ -47,3 +47,18 @@ class McpToolsCache:
     def invalidate(self, server_id: str) -> None:
         for key in list(self._index.pop(server_id, set())):
             self._store.pop(key, None)
+
+    def count_cached_tools(self, server_id: str) -> int:
+        """Число tools из свежего кэша (без MCP-подключения)."""
+        keys = self._index.get(server_id, set())
+        now = time.monotonic()
+        best = 0
+        for key in keys:
+            entry = self._store.get(key)
+            if not entry:
+                continue
+            ts, tools = entry
+            if now - ts > self.ttl_seconds:
+                continue
+            best = max(best, len(tools))
+        return best

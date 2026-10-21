@@ -1,4 +1,4 @@
-"""LLM-as-a-Judge: бинарная релевантность каждого чанка к запросу (OpenAI-совместимый chat)."""
+"""LLM-as-a-Judge: бинарная релевантность каждого чанка к запросу."""
 
 from __future__ import annotations
 
@@ -7,14 +7,24 @@ import logging
 import re
 from typing import Dict, List, Optional
 
-import httpx
-
 from app.core.config import get_settings
-from app.core.http_verify import resolve_httpx_verify
 
 logger = logging.getLogger(__name__)
 
 _MAX_PASSAGE_CHARS = 480
+
+_TRUE_STRINGS = frozenset({"true", "yes", "y", "1", "да"})
+
+
+def _coerce_flag(value: object) -> bool:
+    """Строгое приведение к bool: ``bool("false")`` был бы True и помечал всё релевантным."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in _TRUE_STRINGS
+    return False
 
 
 def _extract_json_object(text: str) -> Optional[Dict]:
@@ -30,10 +40,21 @@ def _extract_json_object(text: str) -> Optional[Dict]:
     try:
         return json.loads(t)
     except json.JSONDecodeError:
+        pass
+    # Закрывающий ``` или фраза после JSON: берём первый корректный объект с первой «{».
+    start = t.find("{")
+    if start == -1:
         return None
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(t[start:])
+    except json.JSONDecodeError:
+        return None
+    return obj if isinstance(obj, dict) else None
 
 
-async def judge_chunk_relevance(query: str, passages: List[str]) -> tuple[List[bool], Optional[str]]:
+async def judge_chunk_relevance(
+    query: str, passages: List[str]
+) -> tuple[List[bool], Optional[str]]:
     """
     Возвращает список флагов релевантности длины len(passages) и опциональное сообщение об ошибке.
     При сбое парсинга — все False.
@@ -42,9 +63,10 @@ async def judge_chunk_relevance(query: str, passages: List[str]) -> tuple[List[b
         return [], None
     cfg = get_settings()
     if not getattr(cfg.rag, "eval_llm_judge_allowed", False):
-        return [False] * len(passages), "LLM-judge отключён (RAG_EVAL_LLM_JUDGE_ALLOWED=false)"
+        return [False] * len(
+            passages
+        ), "LLM-judge отключён (RAG_EVAL_LLM_JUDGE_ALLOWED=false)"
 
-    llm_cfg = cfg.llm_service
     lines: List[str] = []
     for i, p in enumerate(passages):
         snippet = (p or "").replace("\n", " ").strip()[:_MAX_PASSAGE_CHARS]
@@ -64,25 +86,19 @@ async def judge_chunk_relevance(query: str, passages: List[str]) -> tuple[List[b
         (query or "")[:120],
     )
     try:
-        async with httpx.AsyncClient(
-            timeout=llm_cfg.timeout, verify=resolve_httpx_verify()
-        ) as client:
-            r = await client.post(
-                f"{llm_cfg.base_url.rstrip('/')}/v1/chat/completions",
-                json={
-                    "model": llm_cfg.default_model,
-                    "messages": [{"role": "user", "content": user_prompt}],
-                    "temperature": 0.0,
-                    "max_tokens": 512,
-                    "stream": False,
-                },
-            )
-            r.raise_for_status()
-            data = r.json()
-        content = (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+        from app.services import llm_chat
+
+        content = await llm_chat.chat(
+            user_prompt,
+            purpose="judge",
+            temperature=0.0,
+            max_tokens=512,
+        )
         parsed = _extract_json_object(content)
         if not parsed or "relevant" not in parsed:
-            logger.warning("[SVC-RAG] LLM-judge: не удалось разобрать JSON из ответа модели")
+            logger.warning(
+                "[SVC-RAG] LLM-judge: не удалось разобрать JSON из ответа модели"
+            )
             return [False] * len(passages), "parse_error"
         rel = parsed["relevant"]
         if not isinstance(rel, list):
@@ -90,7 +106,7 @@ async def judge_chunk_relevance(query: str, passages: List[str]) -> tuple[List[b
         out: List[bool] = []
         for i in range(len(passages)):
             if i < len(rel):
-                out.append(bool(rel[i]))
+                out.append(_coerce_flag(rel[i]))
             else:
                 out.append(False)
         return out, None

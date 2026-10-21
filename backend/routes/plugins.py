@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import os
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from backend.auth.jwt_handler import get_current_user
 from backend.settings.logging import get_logger
+from backend.utils.http_errors import public_error_detail
 
 logger = get_logger(__name__)
 
@@ -17,10 +19,52 @@ router = APIRouter(tags=["plugins"])
 __all__ = ["router"]
 
 
+PLUGIN_MAX_UPLOAD_MB_ENV = "PLUGIN_INVOKE_MAX_UPLOAD_MB"
+DEFAULT_PLUGIN_MAX_UPLOAD_MB = 20
+_UPLOAD_READ_CHUNK = 1024 * 1024
+
+
+def _max_upload_bytes() -> int:
+    """Лимит размера одного загружаемого файла (env PLUGIN_INVOKE_MAX_UPLOAD_MB, по умолчанию 20 МБ)."""
+    raw = (os.getenv(PLUGIN_MAX_UPLOAD_MB_ENV) or "").strip()
+    try:
+        mb = float(raw) if raw else float(DEFAULT_PLUGIN_MAX_UPLOAD_MB)
+    except ValueError:
+        logger.warning(
+            "%s=%r не число — используется %s МБ",
+            PLUGIN_MAX_UPLOAD_MB_ENV,
+            raw,
+            DEFAULT_PLUGIN_MAX_UPLOAD_MB,
+        )
+        mb = float(DEFAULT_PLUGIN_MAX_UPLOAD_MB)
+    if mb <= 0:
+        mb = float(DEFAULT_PLUGIN_MAX_UPLOAD_MB)
+    return int(mb * 1024 * 1024)
+
+
 def _platform():
     from backend.plugins.platform import get_plugins_platform
 
     return get_plugins_platform()
+
+
+async def _read_upload_limited(upload: UploadFile, field: str) -> bytes:
+    """Читает файл кусками и обрывает чтение при превышении лимита (HTTP 413)."""
+    limit = _max_upload_bytes()
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await upload.read(_UPLOAD_READ_CHUNK)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(
+                status_code=413,
+                detail=f"{field}: файл слишком большой (максимум {limit // (1024 * 1024)} МБ)",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 @router.get("/api/plugins")
@@ -124,7 +168,9 @@ async def plugin_health(
 async def invoke_plugin(
     plugin_id: str,
     current_user: Annotated[dict, Depends(get_current_user)],
-    model_file: UploadFile = File(..., description="Основной файл для плагина (Excel для cash-flow)"),
+    model_file: UploadFile = File(
+        ..., description="Основной файл для плагина (Excel для cash-flow)"
+    ),
     quality_file: Optional[UploadFile] = File(None),
     prompt: Optional[str] = Form(None),
     request_id: Optional[str] = Form(None),
@@ -140,7 +186,7 @@ async def invoke_plugin(
     if not plugin.enabled:
         raise HTTPException(status_code=503, detail="Plugin disabled")
 
-    model_bytes = await model_file.read()
+    model_bytes = await _read_upload_limited(model_file, "model_file")
     if not model_bytes:
         raise HTTPException(status_code=400, detail="model_file is empty")
 
@@ -156,7 +202,7 @@ async def invoke_plugin(
         )
     ]
     if quality_file is not None:
-        q_bytes = await quality_file.read()
+        q_bytes = await _read_upload_limited(quality_file, "quality_file")
         if q_bytes:
             files.append(
                 (
@@ -177,7 +223,11 @@ async def invoke_plugin(
         form["request_id"] = request_id
 
     try:
-        result = await platform.invoke_multipart(plugin_id, files=files, form=form or None)
+        result = await platform.invoke_multipart(
+            plugin_id, files=files, form=form or None
+        )
+    except HTTPException:
+        raise
     except KeyError:
         raise HTTPException(status_code=404, detail="Plugin not found") from None
     except PluginInvokeTimeout as e:
@@ -185,9 +235,13 @@ async def invoke_plugin(
         raise HTTPException(status_code=504, detail=str(e)) from e
     except Exception as e:
         logger.exception("Plugin invoke failed id=%s", plugin_id)
-        # str(e) у части исключений httpx пустой — тогда в UI уходил бы 502 без текста.
-        detail = str(e).strip() or f"{type(e).__name__} при вызове плагина '{plugin_id}'"
-        raise HTTPException(status_code=502, detail=detail) from e
+        # Текст исключения (хосты, порты) наружу не отдаём (CWE-209) — он в серверном логе.
+        raise HTTPException(
+            status_code=502,
+            detail=public_error_detail(
+                e, f"Ошибка при вызове плагина '{plugin_id}'"
+            ),
+        ) from e
 
     markdown = ""
     if plugin_id == "cash-flow":
@@ -209,4 +263,10 @@ async def invoke_plugin(
         len(markdown),
     )
 
-    return {"success": True, "plugin_id": plugin_id, "result": result, "markdown": markdown}
+    return {
+        "success": True,
+        "plugin_id": plugin_id,
+        "result": result,
+        "markdown": markdown,
+    }
+

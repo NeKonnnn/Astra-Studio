@@ -31,7 +31,12 @@ _rdns_cache: Dict[str, Tuple[str, float]] = {}
 
 def _cef_shost_debug_enabled() -> bool:
     """Явная диагностика shost/src: CEF_SHOST_DEBUG=true → INFO в логгер cef.shost."""
-    return os.getenv("CEF_SHOST_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
+    return os.getenv("CEF_SHOST_DEBUG", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 def _cef_shost_log(msg: str, *args: Any) -> None:
@@ -48,11 +53,36 @@ class _Tokens:
     pairs: Tuple[Tuple[contextvars.ContextVar, contextvars.Token], ...]
 
 
-_request: contextvars.ContextVar = contextvars.ContextVar("cef_audit_request", default=None)
+_request: contextvars.ContextVar = contextvars.ContextVar(
+    "cef_audit_request", default=None
+)
 _user: contextvars.ContextVar = contextvars.ContextVar("cef_audit_user", default=None)
-_conversation_id: contextvars.ContextVar = contextvars.ContextVar("cef_audit_conversation_id", default=None)
+_conversation_id: contextvars.ContextVar = contextvars.ContextVar(
+    "cef_audit_conversation_id", default=None
+)
 # Для Socket.IO: src/shost/spt/app без Starlette Request (см. request_context в cef_logger).
-_socket_remote: contextvars.ContextVar = contextvars.ContextVar("cef_audit_socket_remote", default=None)
+_socket_remote: contextvars.ContextVar = contextvars.ContextVar(
+    "cef_audit_socket_remote", default=None
+)
+
+# Модель, которой отвечает текущий чат: из карточки агента, если агент
+# выбран, иначе выбранная в чате. Нужна не аудиту, а RAG: judge и
+# суммаризация в SVC-RAG должны идти в ту же модель, а не в дефолтную.
+#
+# Контекстом, а не аргументом: RAG-поиск запускается из десятка мест, и
+# протаскивать модель через все сигнатуры - большая правка с большим
+# шансом что-то забыть.
+_chat_model: contextvars.ContextVar = contextvars.ContextVar(
+    "chat_model_path", default=None
+)
+
+
+def chat_model_set(model_path: Optional[str]) -> None:
+    _chat_model.set(str(model_path or "").strip() or None)
+
+
+def chat_model_peek() -> Optional[str]:
+    return _chat_model.get()
 
 
 def cef_audit_set(
@@ -87,6 +117,27 @@ def cef_audit_reset(tokens: _Tokens) -> None:
 
 def cef_audit_peek() -> tuple[Optional[Any], Optional[Dict[str, Any]], Optional[str]]:
     return _request.get(), _user.get(), _conversation_id.get()
+
+
+# Логин для запросов, которые делает сам сервис, а не пользователь: список
+# моделей и health-check при старте пода. Согласовано с ИБ.
+MODELS_SYSTEM_USER_ID = "astrachat"
+
+
+def model_identity_headers() -> Dict[str, str]:
+    """X-User-ID для запросов к моделям через шлюз."""
+    login = ""
+    try:
+        _req, user, _conv = cef_audit_peek()
+        if user:
+            login = str(user.get("username") or user.get("user_id") or "").strip()
+    except Exception:
+        login = ""
+    if not login or login.upper() == "SYSTEM":
+        login = (
+            os.getenv("MODELS_SYSTEM_USER_ID", "") or MODELS_SYSTEM_USER_ID
+        ).strip() or MODELS_SYSTEM_USER_ID
+    return {"X-User-ID": login}
 
 
 def cef_audit_peek_socket_remote() -> Optional[Dict[str, Any]]:
@@ -174,7 +225,12 @@ def shost_override_from_headers(
 
 
 def _reverse_dns_enabled() -> bool:
-    return os.getenv("CEF_REVERSE_DNS", "true").strip().lower() not in ("0", "false", "no", "off")
+    return os.getenv("CEF_REVERSE_DNS", "true").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
 
 
 def _ldap_url_for_dns() -> str:
@@ -218,10 +274,17 @@ def _cef_ptr_nameservers() -> List[str]:
             ns = part.strip()
             if ns and ns not in ordered:
                 ordered.append(ns)
-    if os.getenv("CEF_DNS_FROM_LDAP", "true").strip().lower() not in ("0", "false", "no", "off"):
+    if os.getenv("CEF_DNS_FROM_LDAP", "true").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
         ldap_raw = _ldap_url_for_dns()
         if ldap_raw:
-            host = urlparse(ldap_raw if "://" in ldap_raw else f"ldap://{ldap_raw}").hostname
+            host = urlparse(
+                ldap_raw if "://" in ldap_raw else f"ldap://{ldap_raw}"
+            ).hostname
             if host:
                 try:
                     for info in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM):
@@ -262,7 +325,9 @@ def _ptr_system(ip: str) -> Optional[str]:
         hostname, _, _ = socket.gethostbyaddr(ip)
         name = (hostname or "").strip().rstrip(".")
         if name and name != ip:
-            _cef_shost_log("shost dns.reverse OK: ip=%s ptr=%s -> shost=%s", ip, ptr_q, name)
+            _cef_shost_log(
+                "shost dns.reverse OK: ip=%s ptr=%s -> shost=%s", ip, ptr_q, name
+            )
             return name
         _cef_shost_log(
             "shost dns.reverse empty: ip=%s ptr=%s hostname=%r (ignored)",
@@ -287,8 +352,8 @@ def _ptr_dnspython(ip: str, nameservers: List[str]) -> Optional[str]:
         )
         return None
     try:
-        import dns.reversename
         import dns.resolver
+        import dns.reversename
     except ImportError:
         _cef_shost_log(
             "shost dns.reverse fallback: ip=%s ptr=%s skipped (dnspython not installed)",
@@ -351,7 +416,10 @@ def reverse_dns(ip: str) -> str:
     if not ip or ip == "127.0.0.1":
         return "localhost"
     if not _reverse_dns_enabled():
-        _cef_shost_log("shost dns.reverse skipped: ip=%s (CEF_REVERSE_DNS disabled) -> shost=ip", ip)
+        _cef_shost_log(
+            "shost dns.reverse skipped: ip=%s (CEF_REVERSE_DNS disabled) -> shost=ip",
+            ip,
+        )
         return ip
 
     now = time.time()
@@ -369,7 +437,9 @@ def reverse_dns(ip: str) -> str:
     if not host:
         host = _ptr_dnspython(ip, _cef_ptr_nameservers())
     if not host:
-        _cef_shost_log("shost dns.reverse: ip=%s -> shost=%s (fallback: no PTR, use src)", ip, ip)
+        _cef_shost_log(
+            "shost dns.reverse: ip=%s -> shost=%s (fallback: no PTR, use src)", ip, ip
+        )
         host = ip
 
     _rdns_cache[ip] = (host, now)
@@ -393,7 +463,9 @@ def resolve_client_shost(src: str, *, shost_override: Optional[str] = None) -> s
     return resolved
 
 
-def cef_socket_remote_from_environ(environ: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def cef_socket_remote_from_environ(
+    environ: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
     """Извлекает IP/порт клиента из WSGI-подобного environ handshake Socket.IO (ASGI внутри engine.io)."""
     if not isinstance(environ, dict):
         return None
@@ -413,13 +485,19 @@ def cef_socket_remote_from_environ(environ: Optional[Dict[str, Any]]) -> Optiona
                 continue
             k, v = item[0], item[1]
             if isinstance(k, (bytes, bytearray)) and isinstance(v, (bytes, bytearray)):
-                hmap[k.decode("latin-1").lower()] = v.decode("latin-1", errors="replace")
+                hmap[k.decode("latin-1").lower()] = v.decode(
+                    "latin-1", errors="replace"
+                )
 
-    xff = (hmap.get("x-forwarded-for") or _top_hdr("HTTP_X_FORWARDED_FOR") or "").strip() or None
+    xff = (
+        hmap.get("x-forwarded-for") or _top_hdr("HTTP_X_FORWARDED_FOR") or ""
+    ).strip() or None
     xri = (hmap.get("x-real-ip") or _top_hdr("HTTP_X_REAL_IP") or "").strip() or None
     rem = _top_hdr("REMOTE_ADDR") or None
     shost_ov = shost_override_from_headers(
-        x_client_hostname=hmap.get("x-client-hostname") or _top_hdr("HTTP_X_CLIENT_HOSTNAME") or None,
+        x_client_hostname=hmap.get("x-client-hostname")
+        or _top_hdr("HTTP_X_CLIENT_HOSTNAME")
+        or None,
     )
     _cef_shost_log(
         "cef_socket_remote_from_environ: x-real-ip=%r x-forwarded-for=%r remote_addr=%r "
@@ -439,7 +517,9 @@ def cef_socket_remote_from_environ(environ: Optional[Dict[str, Any]]) -> Optiona
         if isinstance(client, (list, tuple)) and len(client) >= 1 and client[0]:
             direct_peer = str(client[0])
 
-    src = resolve_client_src(x_real_ip=xri, x_forwarded_for=xff, direct_peer=direct_peer)
+    src = resolve_client_src(
+        x_real_ip=xri, x_forwarded_for=xff, direct_peer=direct_peer
+    )
     _cef_shost_log(
         "cef_socket_remote_from_environ: resolve_client_src -> src=%r (direct_peer=%r)",
         src,

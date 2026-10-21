@@ -13,7 +13,7 @@ from app.database.project_rag_repository import (
     ProjectRagDocumentRepository,
     ProjectRagVectorRepository,
 )
-from app.database.models import Document, DocumentVector
+from app.database.models import Document
 from app.database.graph_repository import GraphRepository
 from app.services.bm25_index import InMemoryBm25Index, Bm25IndexCache
 from app.services.chunker import (
@@ -59,10 +59,12 @@ def bump_project_reindex_generation(key: str = "*") -> int:
 
     return project_queue.bump(key)
 
+
 def current_project_reindex_generation(key: str = "*") -> int:
     from app.services.reindex_queue import project_queue
 
     return project_queue.current(key)
+
 
 def project_generation_is_current(key: str, generation: Optional[int]) -> bool:
     """Актуален ли проход. ``generation=None`` — прерывание не запрашивалось."""
@@ -83,8 +85,7 @@ class ProjectRagService:
         self.vector_repo = vector_repo
         self.rag_client = rag_models_client
         self.graph_repo = graph_repo
-        # Кэш с вытеснением, а не обычный словарь: сервис - синглтон на процесс
-        # Размер - RAG_BM25_INDEX_CACHE_SIZE.
+        # Кэш с вытеснением, а не обычный словарь
         self._bm25_by_key = Bm25IndexCache(get_settings().rag.bm25_retain_seconds)
 
     async def _route(self, model=None, provider=None):
@@ -96,7 +97,9 @@ class ProjectRagService:
 
         return await resolve_for(self.rag_client, self.vector_repo, provider, model)
 
-    async def _rebuild_graph_for_document(self, document_id: int, vector_repo=None) -> None:
+    async def _rebuild_graph_for_document(
+        self, document_id: int, vector_repo=None
+    ) -> None:
         repo = vector_repo or self.vector_repo
         if not self.graph_repo:
             return
@@ -109,13 +112,17 @@ class ProjectRagService:
                     chunks=[(v.chunk_index, v.content) for v in chunks],
                 )
         except Exception as e:
-            logger.warning("project graph индекс не пересобран для документа %s: %s", document_id, e)
+            logger.warning(
+                "project graph индекс не пересобран для документа %s: %s",
+                document_id,
+                e,
+            )
 
     def _bm25_for_project(self, project_id: str, repo=None) -> InMemoryBm25Index:
         repo = repo or self.vector_repo
         dim = int(getattr(repo, "embedding_dim", 0) or 0)
         key = (project_id, dim)
-        
+
         def _make() -> InMemoryBm25Index:
             async def _fetch():
                 return await repo.get_all_contents_for_bm25(project_id=project_id)
@@ -131,13 +138,9 @@ class ProjectRagService:
                 return await repo.bm25_store_load(store_key, project_id=project_id)
 
             async def _save(fingerprint, payload, chunk_count):
-                await repo.bm25_store_save(
-                    store_key, fingerprint, payload, chunk_count
-                )
+                await repo.bm25_store_save(store_key, fingerprint, payload, chunk_count)
 
-            return InMemoryBm25Index(
-                _fetch, load_from_store=_load, save_to_store=_save
-            )
+            return InMemoryBm25Index(_fetch, load_from_store=_load, save_to_store=_save)
 
         return self._bm25_by_key.get_or_create(key, _make)
 
@@ -166,7 +169,32 @@ class ProjectRagService:
         model: Optional[str] = None,
         provider: Optional[str] = None,
     ) -> Dict[str, Any]:
-        timer = StageTimer("INDEX", store="project", file=filename, project_id=project_id)
+        timer = StageTimer(
+            "INDEX", store="project", file=filename, project_id=project_id
+        )
+        from app.services.document_duplicate import (
+            duplicate_index_result,
+            file_content_hash,
+        )
+        from app.services.text_duplicate import (
+            find_text_duplicate,
+            remember_text,
+            text_duplicate_index_result,
+        )
+
+        content_hash = file_content_hash(file_data)
+        existing = await self.doc_repo.find_duplicate(
+            project_id=project_id,
+            content_hash=content_hash,
+            filename=filename,
+            size=len(file_data),
+        )
+        if existing:
+            return duplicate_index_result(
+                document_id=existing.get("id"),
+                filename=existing.get("filename") or filename,
+            )
+
         with timer.stage("parse"):
             parsed = await parse_document(file_data, filename)
         if not parsed:
@@ -180,7 +208,34 @@ class ProjectRagService:
         text = parsed.get("text", "")
         if not text.strip():
             timer.log(logger)
-            return {"ok": False, "error": empty_document_index_error(parsed, filename), "document_id": None}
+            return {
+                "ok": False,
+                "error": empty_document_index_error(parsed, filename),
+                "document_id": None,
+            }
+
+        # Тот же текст под другим именем или в других байтах - до эмбеддингов.
+        async def _project_doc_text(doc_id: int) -> Optional[str]:
+            return ((await self.doc_repo.get_document(doc_id)) or {}).get("content")
+
+        async def _same_text(older_than: Optional[int] = None):
+            return await find_text_duplicate(
+                store="project",
+                text=text,
+                candidates=[
+                    (d["id"], d["filename"])
+                    for d in await self.doc_repo.list_documents_brief(project_id)
+                ],
+                load_text=_project_doc_text,
+                older_than=older_than,
+                upload_name=filename,
+            )
+
+        with timer.stage("text_duplicate"):
+            same = await _same_text()
+        if same:
+            timer.log(logger)
+            return text_duplicate_index_result("project", filename, same)
 
         # Модель выбираем ДО создания документа: иначе при ошибке сохранения
         # в БД останется документ без единого вектора.
@@ -207,6 +262,7 @@ class ProjectRagService:
             "size": len(file_data),
             "source": "project",
             "project_id": project_id,
+            "content_hash": content_hash,
         }
         if minio_object:
             meta["minio_object"] = minio_object
@@ -228,8 +284,20 @@ class ProjectRagService:
             doc_id = await self.doc_repo.create_document(project_id, doc)
         if doc_id is None:
             timer.log(logger)
-            return {"ok": False, "error": "Ошибка сохранения документа в БД", "document_id": None}
-        
+            return {
+                "ok": False,
+                "error": "Ошибка сохранения документа в БД",
+                "document_id": None,
+            }
+        # Одновременная загрузка того же текста (несколько файлов разом) тоже
+        # прошла проверку выше: после вставки поздний документ уступает раннему.
+        same = await _same_text(older_than=doc_id)
+        if same:
+            await self.doc_repo.delete_document(doc_id)
+            timer.log(logger)
+            return text_duplicate_index_result("project", filename, same)
+        remember_text("project", doc_id, text)
+
         # Пометка для логов гардрейла: клиент видит только список строк, имя
         # файла и id документа до него не доезжают. Ставим до ветвления, чтобы
         # покрыть и иерархическую индексацию, и обычную.
@@ -302,34 +370,40 @@ class ProjectRagService:
         if not chunks_with_meta:
             await self.doc_repo.delete_document(doc_id)
             timer.log(logger)
-            return {"ok": False, "error": "Не удалось нарезать чанки", "document_id": None}
-        chunks = [c for c, _m in chunks_with_meta]
+            return {
+                "ok": False,
+                "error": "Не удалось нарезать чанки",
+                "document_id": None,
+            }
 
-        try:
-            with timer.stage("embed"):
-                embeddings = await prof.embed(chunks, kind="document")
-        except Exception as e:
-            logger.error("Ошибка эмбеддингов project_rag: %s", e)
-            await self.doc_repo.delete_document(doc_id)
-            timer.log(logger)
-            return {"ok": False, "error": f"Ошибка эмбеддингов: {e}", "document_id": None}
+        from app.services.index_batching import embed_and_store
 
-        vectors = []
-        for idx, ((chunk, cmeta), embedding) in enumerate(zip(chunks_with_meta, embeddings)):
+        def _project_vector_meta(idx: int, cmeta: dict) -> dict:
             vmeta = {"chunk_index": idx, "document_filename": filename}
             vmeta.update(cmeta)
-            vectors.append(
-                DocumentVector(
-                    document_id=doc_id,
-                    chunk_index=idx,
-                    embedding=embedding,
-                    content=chunk,
-                    metadata=vmeta,
-                )
-            )
+            return vmeta
 
-        with timer.stage("insert"):
-            created = await repo.create_vectors_batch(vectors)
+        try:
+            # Волнами, см. index_batching: пик от размера пачки, а не от
+            # размера документа. vectors приходят без эмбеддингов - ниже
+            # они нужны только графу.
+            created, vectors = await embed_and_store(
+                chunks_with_meta,
+                document_id=doc_id,
+                repo=repo,
+                embed=lambda texts: prof.embed(texts, kind="document"),
+                make_metadata=_project_vector_meta,
+                timer=timer,
+            )
+        except Exception as e:
+            logger.error("Ошибка индексации project_rag: %s", e)
+            await self.doc_repo.delete_document(doc_id)
+            timer.log(logger)
+            return {
+                "ok": False,
+                "error": f"Ошибка эмбеддингов: {e}",
+                "document_id": None,
+            }
         with timer.stage("bm25"):
             self._mark_bm25_dirty(project_id)
         if self.graph_repo:
@@ -341,7 +415,9 @@ class ProjectRagService:
                         chunks=[(v.chunk_index, v.content) for v in vectors],
                     )
             except Exception as e:
-                logger.warning("project graph индекс не собран для документа %s: %s", doc_id, e)
+                logger.warning(
+                    "project graph индекс не собран для документа %s: %s", doc_id, e
+                )
         eff_size, eff_overlap = resolve_chunk_params(chunk_size, chunk_overlap)
         logger.info(
             "[INDEX project] '%s' (project=%s, id=%s, owner=%s, uploader=%s): strategy=%s size=%s overlap=%s "
@@ -431,21 +507,21 @@ class ProjectRagService:
         chunks = [c for c, _m in chunks_with_meta]
         if not chunks:
             return 0
-        embeddings = await prof.embed(chunks, kind="document")
-        vectors = []
-        for idx, ((chunk, cmeta), embedding) in enumerate(zip(chunks_with_meta, embeddings)):
+        from app.services.index_batching import embed_and_store
+
+        def _memory_vector_meta(idx: int, cmeta: dict) -> dict:
             vmeta = {"chunk_index": idx, "document_filename": filename}
             vmeta.update(cmeta)
-            vectors.append(
-                DocumentVector(
-                    document_id=document_id,
-                    chunk_index=idx,
-                    embedding=embedding,
-                    content=chunk,
-                    metadata=vmeta,
-                )
-            )
-        created = await repo.create_vectors_batch(vectors)
+            return vmeta
+
+        # Волнами, см. index_batching.
+        created, vectors = await embed_and_store(
+            chunks_with_meta,
+            document_id=document_id,
+            repo=repo,
+            embed=lambda texts: prof.embed(texts, kind="document"),
+            make_metadata=_memory_vector_meta,
+        )
         self._mark_bm25_dirty(project_id)
         if self.graph_repo:
             try:
@@ -455,7 +531,11 @@ class ProjectRagService:
                     chunks=[(v.chunk_index, v.content) for v in vectors],
                 )
             except Exception as e:
-                logger.warning("project graph индекс не собран для документа %s: %s", document_id, e)
+                logger.warning(
+                    "project graph индекс не собран для документа %s: %s",
+                    document_id,
+                    e,
+                )
         return created
 
     async def reindex_all(
@@ -472,7 +552,9 @@ class ProjectRagService:
         route=None,
     ) -> Dict[str, Any]:
         """Перечанкировать все документы одного проекта."""
-        docs = await self.doc_repo.get_documents_by_project(project_id)
+        # Список без текста: полный документ берём по одному в цикле ниже.
+        # Иначе весь корпус проекта лежал бы в памяти весь проход.
+        docs = await self.doc_repo.list_documents_brief(project_id)
         prof, repo = route if route else await self._route(model, provider)
         _eff_size, _eff_overlap = resolve_chunk_params(chunk_size, chunk_overlap)
         logger.info(
@@ -497,8 +579,11 @@ class ProjectRagService:
                 )
                 break
             try:
+                # Текст одного документа и только на время его обработки:
+                # список выше идёт без текста, здесь он и добирается.
+                full = await self.doc_repo.get_document(d.get("id")) or d
                 c = await self.reindex_document(
-                    d,
+                    full,
                     chunk_size=chunk_size,
                     chunk_overlap=chunk_overlap,
                     chunking_strategy=chunking_strategy,
@@ -506,6 +591,14 @@ class ProjectRagService:
                 )
                 n_docs += 1
                 n_chunks += c
+                # Документ переиндексирован - его текст, чанки и векторы
+                # больше не нужны. Отдаём память сразу, а не в конце
+                # прохода. Реиндекс идёт фоном и через middleware не
+                # проходит, поэтому вызов стоит здесь. Импорт локальный -
+                # одна строка на цикл, тащить её в шапку незачем.
+                from app.core import mem_release
+
+                mem_release.release("реиндекс project")
                 logger.debug(
                     "[REINDEX project=%s] '%s' (id=%s, owner=%s, uploader=%s) чанков=%s",
                     project_id,
@@ -533,7 +626,12 @@ class ProjectRagService:
             n_chunks,
             n_errors,
         )
-        return {"project_id": project_id, "documents": n_docs, "chunks": n_chunks, "errors": n_errors}
+        return {
+            "project_id": project_id,
+            "documents": n_docs,
+            "chunks": n_chunks,
+            "errors": n_errors,
+        }
 
     async def reindex_all_projects(
         self,
@@ -580,8 +678,11 @@ class ProjectRagService:
                     )
                     break
                 try:
+                    # Текст одного документа и только на время его обработки:
+                    # список выше идёт без текста, здесь он и добирается.
+                    full = await self.doc_repo.get_document(d.get("id")) or d
                     c = await self.reindex_document(
-                        d,
+                        full,
                         chunk_size=chunk_size,
                         chunk_overlap=chunk_overlap,
                         chunking_strategy=chunking_strategy,
@@ -589,6 +690,10 @@ class ProjectRagService:
                     )
                     total_docs += 1
                     total_chunks += c
+                    # См. якорь выше: реиндекс идёт фоном, мимо middleware.
+                    from app.core import mem_release
+
+                    mem_release.release("реиндекс project owner")
                     pid = d.get("project_id")
                     if pid:
                         seen_projects.add(pid)
@@ -648,7 +753,9 @@ class ProjectRagService:
                 total_docs += r["documents"]
                 total_chunks += r["chunks"]
             except Exception as e:
-                logger.error("[REINDEX project ALL] проект %s упал, пропускаем: %s", pid, e)
+                logger.error(
+                    "[REINDEX project ALL] проект %s упал, пропускаем: %s", pid, e
+                )
         logger.info(
             "[REINDEX project ALL] проектов=%s документов=%s чанков=%s",
             len(project_ids),
@@ -723,7 +830,9 @@ class ProjectRagService:
             # В проектных RAG запросы всегда скоупятся к project_id —
             # иначе саммари по одному файлу могло бы «склеиваться» с тем же
             # именем из другого проекта.
-            return await self.doc_repo.find_document_ids_by_filename(name, project_id=project_id)
+            return await self.doc_repo.find_document_ids_by_filename(
+                name, project_id=project_id
+            )
 
         hits, trace = await run_retrieval_pipeline(
             store="project",
@@ -755,14 +864,40 @@ class ProjectRagService:
         )
         return (hits, trace) if return_trace else hits
 
+    async def check_duplicate(
+        self,
+        *,
+        project_id: str,
+        content_hash: Optional[str] = None,
+        filename: Optional[str] = None,
+        size: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        existing = await self.doc_repo.find_duplicate(
+            project_id=project_id,
+            content_hash=content_hash,
+            filename=filename,
+            size=size,
+        )
+        if not existing:
+            return {"duplicate": False}
+        return {
+            "duplicate": True,
+            "document_id": existing.get("id"),
+            "filename": existing.get("filename"),
+        }
+
     async def list_documents(self, project_id: str) -> List[Dict[str, Any]]:
-        docs = await self.doc_repo.get_documents_by_project(project_id)
+        # Без текста документов: списку он не нужен, а фронт дёргает этот
+        # метод раз в несколько секунд.
+        docs = await self.doc_repo.list_documents_brief(project_id)
         return [
             {
                 "id": d["id"],
                 "filename": d["filename"],
                 "metadata": d["metadata"],
-                "created_at": d["created_at"].isoformat() if d.get("created_at") else None,
+                "created_at": (
+                    d["created_at"].isoformat() if d.get("created_at") else None
+                ),
                 "size": (d["metadata"] or {}).get("size", 0),
                 "file_type": (d["metadata"] or {}).get("file_type", ""),
                 "project_id": d["project_id"],
@@ -831,7 +966,8 @@ class ProjectRagService:
         Удаляет все документы и векторы проекта.
         Перед вызовом нужно получить список minio-ключей, чтобы удалить файлы из MinIO.
         """
-        docs = await self.doc_repo.get_documents_by_project(project_id)
+        # Нужны только ключи MinIO из metadata - текст не тянем.
+        docs = await self.doc_repo.list_documents_brief(project_id)
         minio_keys = [
             {
                 "minio_object": (d["metadata"] or {}).get("minio_object"),
@@ -841,14 +977,15 @@ class ProjectRagService:
             if (d["metadata"] or {}).get("minio_object")
         ]
         deleted_count = await self.doc_repo.delete_documents_by_project(project_id)
-        # Проекта больше нет - индексы не помечаем грязными, а убираем совсем
+        # Проекта больше нет - индексы не помечаем грязными, а убираем совсем,
+        # вместе с занятой ими памятью и записями в хранилище.
         self._bm25_by_key.drop(lambda k: k[0] == project_id)
         if get_settings().rag.bm25_store_enabled:
             try:
                 await self.vector_repo.bm25_store_drop(project_id)
             except Exception as e:
                 logger.warning("BM25-хранилище: записи проекта не убраны (%s)", e)
-        logger.info(
+        logger.debug(
             "project_rag: удалено %s документов для project_id=%s",
             deleted_count,
             project_id,

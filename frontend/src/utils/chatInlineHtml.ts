@@ -400,15 +400,25 @@ function parseRawAttrs(attrStr: string | undefined): Record<string, string> {
   return out;
 }
 
+/**
+ * Protocol-relative URL (`//host`) и его браузерные варианты (`\\host`, `/\host`, `\/host`):
+ * браузер трактует их как внешний хост, поэтому как «локальный путь» не пропускаем.
+ */
+function isProtocolRelativeUrl(value: string): boolean {
+  return /^[/\\]{2}/.test(value);
+}
+
 function isSafeHref(href: string): boolean {
   const h = href.trim();
   if (!h) return false;
+  if (isProtocolRelativeUrl(h)) return false;
   return /^(https?:|mailto:|tel:|#|\/)/i.test(h);
 }
 
 function isSafeImgSrc(src: string): boolean {
   const s = src.trim();
   if (!s) return false;
+  if (isProtocolRelativeUrl(s)) return false;
   return /^(https?:|data:image\/|\/)/i.test(s);
 }
 

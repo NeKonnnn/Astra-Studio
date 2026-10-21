@@ -461,6 +461,16 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
   const [pluginsPopoverAnchor, setPluginsPopoverAnchor] = useState<HTMLElement | null>(null);
   const pluginsTriggerRef = useRef<HTMLDivElement>(null);
 
+  // Knowledge Bases (config.knowledge_bases_enabled, config.knowledge_base_ids)
+  const [knowledgeBasesEnabled, setKnowledgeBasesEnabled] = useState(false);
+  const [knowledgeBaseIds, setKnowledgeBaseIds] = useState<number[]>([]);
+  const [availableKnowledgeBases, setAvailableKnowledgeBases] = useState<
+    Array<{ id: number; name: string; description?: string }>
+  >([]);
+  const [knowledgeBasesPopoverAnchor, setKnowledgeBasesPopoverAnchor] =
+    useState<HTMLElement | null>(null);
+  const knowledgeBasesTriggerRef = useRef<HTMLDivElement>(null);
+
   // Sequential agent chain (config.agent_ids — LibreChat Mixture-of-Agents)
   const [chainAgentIds, setChainAgentIds] = useState<number[]>([]);
   const [hideSequentialOutputs, setHideSequentialOutputs] = useState(false);
@@ -737,6 +747,31 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
     })();
 
     void (async () => {
+      try {
+        const headers: HeadersInit = tokenRef.current
+          ? { Authorization: `Bearer ${tokenRef.current}` }
+          : {};
+        const resp = await fetch(
+          `${getApiUrl(API_ENDPOINTS.KNOWLEDGE_BASES)}/list?limit=100`,
+          { headers },
+        );
+        if (!resp.ok) return;
+        const data = await resp.json();
+        setAvailableKnowledgeBases(
+          (data.items || []).map(
+            (k: { id: number; name: string; description?: string }) => ({
+              id: Number(k.id),
+              name: k.name,
+              description: k.description,
+            }),
+          ),
+        );
+      } catch {
+        /* silent */
+      }
+    })();
+
+    void (async () => {
       await loadAgents();
       try {
         const raw = sessionStorage.getItem(ASTRA_OPEN_AGENT_CONSTRUCTOR_ID_KEY);
@@ -836,6 +871,18 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
         ? cfg.plugins_enabled
         : Array.isArray(cfg.plugin_ids) && cfg.plugin_ids.length > 0
     );
+    setKnowledgeBaseIds(
+      Array.isArray(cfg.knowledge_base_ids)
+        ? cfg.knowledge_base_ids
+            .map((x: unknown) => Number(x))
+            .filter((x: number) => Number.isFinite(x) && x > 0)
+        : [],
+    );
+    setKnowledgeBasesEnabled(
+      typeof cfg.knowledge_bases_enabled === 'boolean'
+        ? cfg.knowledge_bases_enabled
+        : Array.isArray(cfg.knowledge_base_ids) && cfg.knowledge_base_ids.length > 0,
+    );
     setSupportName(cfg.support_name || '');
     setSupportEmail(cfg.support_email || '');
     const rawMaxChain = cfg.max_chain_agents;
@@ -918,6 +965,8 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
     setMcpServerIds([]);
     setPluginsEnabled(false);
     setPluginIds([]);
+    setKnowledgeBasesEnabled(false);
+    setKnowledgeBaseIds([]);
     setChainAgentIds([]);
     setHideSequentialOutputs(false);
     setSharedChainRag(false);
@@ -1214,6 +1263,12 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
         mcp_server_ids: mcpServerIds,
         plugins_enabled: pluginsEnabled,
         plugin_ids: pluginIds,
+        // Legacy file_search: при наличии документов включаем и entity БЗ
+        // (поиск в чате — per-KB). Сами файлы остаются в kb_document_ids
+        // до фоновой миграции metadata.knowledge_base_id.
+        knowledge_bases_enabled:
+          knowledgeBasesEnabled || (fileSearchEnabled && kbDocumentIds.length > 0),
+        knowledge_base_ids: knowledgeBaseIds,
         support_name: supportName,
         support_email: supportEmail,
         agent_ids: parseAgentIds(
@@ -2388,6 +2443,159 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
           </Box>
         </Box>
 
+        {/* ── Базы знаний ──────────────────────────────────────────────────── */}
+        <Box sx={{ minWidth: 0 }}>
+          <SectionHeader>Базы знаний</SectionHeader>
+          <Box sx={{ mt: 1 }}>
+            <FormControlLabel
+              control={
+                <Checkbox
+                  size="small"
+                  disabled={readOnly}
+                  checked={knowledgeBasesEnabled}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setKnowledgeBasesEnabled(checked);
+                    if (!checked) setKnowledgeBaseIds([]);
+                  }}
+                  sx={{ color: panelChrome.fgSubtle, '&.Mui-checked': { color: '#2196f3' }, p: 0.5 }}
+                />
+              }
+              label={
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  <Typography variant="caption" sx={{ color: panelChrome.fgMuted, fontSize: '0.78rem' }}>
+                    Прикрепить базы знаний
+                  </Typography>
+                  <Tooltip
+                    title="Выберите именованные базы знаний из правой панели. Документы этих БЗ будут доступны агенту при поиске."
+                    arrow
+                  >
+                    <HelpIcon sx={{ fontSize: 12, color: panelChrome.fgSubtle }} />
+                  </Tooltip>
+                </Box>
+              }
+              sx={{ m: 0, mb: knowledgeBasesEnabled ? 1 : 0, '& .MuiFormControlLabel-label': { ml: 0.5 } }}
+            />
+            {knowledgeBasesEnabled && (
+              <Box>
+                <FormControl variant="outlined" fullWidth size="small" sx={categoryFieldSx}>
+                  <InputLabel htmlFor="agent-constructor-knowledge-bases">Базы знаний</InputLabel>
+                  <OutlinedInput
+                    ref={knowledgeBasesTriggerRef}
+                    id="agent-constructor-knowledge-bases"
+                    label="Базы знаний"
+                    value={
+                      knowledgeBaseIds.length === 0
+                        ? ''
+                        : knowledgeBaseIds.length === 1
+                          ? (
+                              availableKnowledgeBases.find((k) => k.id === knowledgeBaseIds[0])
+                                ?.name || String(knowledgeBaseIds[0])
+                            )
+                          : `Выбрано: ${knowledgeBaseIds.length}`
+                    }
+                    readOnly
+                    placeholder="Выберите базы знаний"
+                    sx={AGENT_CONSTRUCTOR_OUTLINED_INPUT_SX}
+                    onClick={() => {
+                      if (readOnly) return;
+                      setKnowledgeBasesPopoverAnchor(knowledgeBasesTriggerRef.current);
+                    }}
+                    endAdornment={
+                      <InputAdornment position="end">
+                        <ExpandMoreIcon
+                          sx={{
+                            ...dropdownChevronSx,
+                            transform: Boolean(knowledgeBasesPopoverAnchor)
+                              ? 'rotate(180deg)'
+                              : 'none',
+                          }}
+                        />
+                      </InputAdornment>
+                    }
+                  />
+                </FormControl>
+                <Popover
+                  open={!readOnly && Boolean(knowledgeBasesPopoverAnchor)}
+                  anchorEl={knowledgeBasesPopoverAnchor}
+                  onClose={() => setKnowledgeBasesPopoverAnchor(null)}
+                  anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+                  transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+                  slotProps={{
+                    paper: {
+                      sx: getDropdownPopoverPaperSx(knowledgeBasesPopoverAnchor, darkFields),
+                    },
+                  }}
+                >
+                  <Box sx={{ py: 0.5, maxHeight: 220, overflowY: 'auto', ...SIDEBAR_HIDE_SCROLLBAR_SX }}>
+                    {availableKnowledgeBases.length === 0 ? (
+                      <Box
+                        sx={{
+                          px: 1.5,
+                          py: 1.5,
+                          fontSize: '0.78rem',
+                          color: darkFields ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.45)',
+                          textAlign: 'center',
+                        }}
+                      >
+                        Нет доступных баз знаний
+                      </Box>
+                    ) : (
+                      availableKnowledgeBases.map((kb) => {
+                        const selected = knowledgeBaseIds.includes(kb.id);
+                        return (
+                          <Box
+                            key={kb.id}
+                            onClick={() => {
+                              setKnowledgeBaseIds((prev) =>
+                                prev.includes(kb.id)
+                                  ? prev.filter((x) => x !== kb.id)
+                                  : [...prev, kb.id],
+                              );
+                            }}
+                            sx={{
+                              ...dropdownItemSx,
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 0.75,
+                              ...getDropdownItemStateSx(darkFields, selected),
+                            }}
+                          >
+                            {selected ? (
+                              <CheckBoxIcon sx={{ fontSize: 16, color: '#2196f3', flexShrink: 0 }} />
+                            ) : (
+                              <CheckBoxBlankIcon
+                                sx={{
+                                  fontSize: 16,
+                                  color: darkFields ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.35)',
+                                  flexShrink: 0,
+                                }}
+                              />
+                            )}
+                            <Box sx={{ minWidth: 0 }}>
+                              <Box component="span" sx={{ display: 'block' }}>
+                                {kb.name}
+                              </Box>
+                              {kb.description ? (
+                                <Box
+                                  component="span"
+                                  sx={{ display: 'block', opacity: 0.5, fontSize: '0.72rem' }}
+                                >
+                                  {kb.description}
+                                </Box>
+                              ) : null}
+                            </Box>
+                          </Box>
+                        );
+                      })
+                    )}
+                  </Box>
+                </Popover>
+              </Box>
+            )}
+          </Box>
+        </Box>
+
         {/* ── Субагенты ─────────────────────────────────────────────────────── */}
         <Box sx={{ minWidth: 0 }}>
           <SectionHeader>Субагенты</SectionHeader>
@@ -2509,10 +2717,10 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
               label={
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
                   <Typography variant="caption" sx={{ color: panelChrome.fgMuted, fontSize: '0.78rem' }}>
-                    Искать по файлам агента
+                    Искать по файлам агента (устарело — используйте «Базы знаний»)
                   </Typography>
                   <Tooltip
-                    title="Файлы привязаны к этому агенту (не общая библиотека и не документы проекта). В чате поиск включается при выбранном агенте с этим флагом. Параметры индексации — в «Настройки РАГ для агента»."
+                    title="Устаревший режим: новые корпуса подключайте через «Базы знаний» выше. Старые файлы агента по-прежнему ищутся в чате; предпочтительнее перенести их в БЗ."
                     arrow
                   >
                     <HelpIcon sx={{ fontSize: 12, color: panelChrome.fgSubtle, opacity: 0.7 }} />

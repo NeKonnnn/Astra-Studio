@@ -9,7 +9,6 @@ from typing import Dict, Optional
 from backend.mcp.types import McpCallContext
 from backend.settings.config import get_settings
 
-
 _TEMPLATE_RE = re.compile(r"\{\{(\w+)\}\}")
 
 
@@ -19,9 +18,9 @@ def _render_template(value: str, context: McpCallContext) -> str:
         mapping = {
             "USER_ID": context.user_id,
             "USERNAME": context.username,
+            "EMAIL": getattr(context, "email", None) or "",
             "CHAT_ID": context.chat_id or "",
             "MESSAGE_ID": context.message_id or "",
-            "EMAIL": context.email or "",
         }
         return str(mapping.get(key, ""))
 
@@ -29,7 +28,7 @@ def _render_template(value: str, context: McpCallContext) -> str:
 
 
 def build_mcp_context_headers(context: McpCallContext) -> Dict[str, str]:
-    """LDAP user + OWUI session headers"""
+    """LDAP user + OWUI session headers (GPB naming из config)."""
     settings = get_settings()
     fh = settings.mcp.forward_headers
     headers: Dict[str, str] = {}
@@ -40,8 +39,10 @@ def build_mcp_context_headers(context: McpCallContext) -> Dict[str, str]:
             headers[user_map.username] = context.username
         if user_map.user_id and context.user_id:
             headers[user_map.user_id] = context.user_id
-        if user_map.email and context.email:
-            headers[user_map.email] = context.email
+        email_hdr = getattr(user_map, "email", None)
+        email_val = getattr(context, "email", None)
+        if email_hdr and email_val:
+            headers[email_hdr] = str(email_val)
 
     chat_hdr = fh.chat_id_header or os.getenv(
         "MCP_FORWARD_HEADER_CHAT_ID", "X-OpenWebUI-Chat-Id"

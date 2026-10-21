@@ -4,8 +4,9 @@ routes/system.py - health-check, системный статус, socket-test
 
 import asyncio
 from datetime import datetime
+from typing import Annotated
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from backend.app_state import (
     ask_agent, save_dialog_entry, get_recent_dialog_history, clear_dialog_history,
@@ -15,7 +16,10 @@ from backend.app_state import (
     settings,
 )
 import backend.app_state as state
+from backend.auth.jwt_handler import get_current_user
 from backend.settings.logging import get_logger
+from backend.settings.logging.errors import logged_suppress
+from backend.utils.http_errors import public_error_detail
 
 router = APIRouter(tags=["system"])
 logger = get_logger(__name__)
@@ -29,7 +33,9 @@ async def root():
 
 
 @router.get("/socket-test")
-async def socket_test():
+async def socket_test(
+    current_user: Annotated[dict, Depends(get_current_user)],
+):
     return {
         "socketio_status": "active",
         "endpoint": "/socket.io/",
@@ -52,11 +58,17 @@ async def health_check():
 
         rag_available = False
         if rag_client:
-            try:
+            with logged_suppress(logger):
                 health = await rag_client.health()
                 rag_available = bool(health)
-            except Exception:
-                pass
+                from backend.settings.rag_client import reconcile_rag_models_provider
+
+                await reconcile_rag_models_provider(
+                    rag_client,
+                    health,
+                    str(getattr(state, "rag_embedding_model_path", "") or ""),
+                    str(getattr(state, "rag_reranker_model_path", "") or ""),
+                )
 
         mcp_status = {"enabled": False, "initialized": False}
         try:
@@ -95,11 +107,18 @@ async def health_check():
             },
         }
     except Exception as e:
-        return {"status": "unhealthy", "error": str(e), "timestamp": datetime.now().isoformat()}
+        logger.exception("Ошибка операции")
+        return {
+            "status": "unhealthy",
+            "error": public_error_detail(e),
+            "timestamp": datetime.now().isoformat(),
+        }
 
 
 @router.get("/api/system/status")
-async def get_system_status():
+async def get_system_status(
+    current_user: Annotated[dict, Depends(get_current_user)],
+):
     module_status = {
         "ai_agent": {
             "available": ask_agent is not None,

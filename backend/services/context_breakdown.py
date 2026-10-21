@@ -13,7 +13,7 @@ from backend.realtime.helpers import _resolve_agent_chat_params
 from backend.rag_query.prompts import merge_strict_rag_system_prompt
 from backend.services.user_llm_settings import (
     enrich_agent_profile_with_user_settings,
-    get_user_model_settings, 
+    get_user_model_settings,
     get_user_prompt_manager,
 )
 
@@ -53,7 +53,9 @@ async def _entity_context_size(
         return None
 
 
-async def _estimate_mcp_tools_tokens(tool_ids: Optional[List[str]], user: Optional[dict]) -> int:
+async def _estimate_mcp_tools_tokens(
+    tool_ids: Optional[List[str]], user: Optional[dict]
+) -> int:
     if not tool_ids or not user:
         return 0
 
@@ -87,7 +89,9 @@ async def _estimate_mcp_tools_tokens(tool_ids: Optional[List[str]], user: Option
             all_tools.extend(specs)
         except Exception:
             continue
-    all_tools = platform.filter_tools_by_context(all_tools, mcp_ctx, enabled_server_ids=server_ids)
+    all_tools = platform.filter_tools_by_context(
+        all_tools, mcp_ctx, enabled_server_ids=server_ids
+    )
     if not all_tools:
         _MCP_TOKENS_CACHE[cache_key] = (0, now)
         return 0
@@ -127,7 +131,7 @@ async def build_context_overhead(
     segments: List[Dict[str, Any]] = []
     user_id = (user or {}).get("user_id") if user else None
 
-    agent_profile = await _resolve_agent_chat_params(agent_id, user_id)
+    agent_profile = await _resolve_agent_chat_params(agent_id, user_id, user=user)
     # Тот же итог настроек, что применяется в чате: кластер -> пользователь -> агент
     agent_profile = await enrich_agent_profile_with_user_settings(
         agent_profile, user_id
@@ -200,6 +204,54 @@ async def build_context_overhead(
             }
         )
 
+    # Скиллы агента (тот же injection, что в handlers.apply_skills_to_chat).
+    try:
+        from backend.services.skills import (
+            resolve_agent_skill_scope,
+            resolve_and_build_skill_injection,
+        )
+
+        skills_enabled, agent_skill_ids = resolve_agent_skill_scope(agent_profile)
+        if skills_enabled or agent_skill_ids:
+            skill_block, _, _, _ = await resolve_and_build_skill_injection(
+                user_skill_ids=[],
+                agent_skill_ids=agent_skill_ids,
+                user_id=user_id,
+                is_admin=bool((user or {}).get("is_admin")),
+                skills_enabled=skills_enabled,
+                eager_agent_fallback=True,
+            )
+            skill_tokens = estimate_tokens(skill_block)
+            if skill_tokens > 0 or skills_enabled:
+                segments.append(
+                    {
+                        "id": "skills",
+                        "label": "Скиллы",
+                        "tokens": skill_tokens,
+                        "active": skill_tokens > 0,
+                    }
+                )
+    except Exception:
+        pass
+
+    # Artifacts-промпт, если включён у агента.
+    try:
+        from backend.prompts.artifacts import maybe_artifacts_prompt_for_agent
+
+        artifacts_block = maybe_artifacts_prompt_for_agent(agent_profile) or ""
+        art_tokens = estimate_tokens(artifacts_block)
+        if art_tokens > 0 or bool(agent_profile.get("artifacts_enabled")):
+            segments.append(
+                {
+                    "id": "artifacts",
+                    "label": "Artifacts",
+                    "tokens": art_tokens,
+                    "active": art_tokens > 0,
+                }
+            )
+    except Exception:
+        pass
+
     overhead_active = sum(s["tokens"] for s in segments if s.get("active", True))
     overhead_all = sum(s["tokens"] for s in segments)
 
@@ -211,4 +263,9 @@ async def build_context_overhead(
         "segments": segments,
         "overhead_tokens_active": overhead_active,
         "overhead_tokens_configured": overhead_all,
+        "skills_enabled": bool(
+            (agent_profile or {}).get("skills_enabled")
+            or (agent_profile or {}).get("skill_ids")
+        ),
+        "artifacts_enabled": bool((agent_profile or {}).get("artifacts_enabled")),
     }

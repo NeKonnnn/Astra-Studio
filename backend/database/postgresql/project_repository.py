@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import secrets
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -17,9 +18,31 @@ def _normalize_user_id(user_id: str) -> str:
     return (user_id or "").strip().lower()
 
 
+def _parse_kb_ids(raw: Any) -> List[int]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return []
+    if not isinstance(raw, list):
+        return []
+    out: List[int] = []
+    for v in raw:
+        try:
+            kid = int(v)
+        except (TypeError, ValueError):
+            continue
+        if kid > 0:
+            out.append(kid)
+    return sorted(set(out))
+
+
 def _row_to_project(row) -> Dict[str, Any]:
     created = row["created_at"]
     updated = row["updated_at"]
+    keys = set(row.keys())
     return {
         "id": row["id"],
         "name": row["name"],
@@ -28,8 +51,20 @@ def _row_to_project(row) -> Dict[str, Any]:
         "icon": row["icon"],
         "iconType": row["icon_type"],
         "iconColor": row["icon_color"],
-        "createdAt": created.isoformat() if isinstance(created, datetime) else str(created),
-        "updatedAt": updated.isoformat() if isinstance(updated, datetime) else str(updated),
+        "knowledgeBasesEnabled": bool(
+            row["knowledge_bases_enabled"]
+            if "knowledge_bases_enabled" in keys
+            else False
+        ),
+        "knowledgeBaseIds": _parse_kb_ids(
+            row["knowledge_base_ids"] if "knowledge_base_ids" in keys else []
+        ),
+        "createdAt": (
+            created.isoformat() if isinstance(created, datetime) else str(created)
+        ),
+        "updatedAt": (
+            updated.isoformat() if isinstance(updated, datetime) else str(updated)
+        ),
     }
 
 
@@ -44,8 +79,7 @@ class ProjectRepository:
     async def create_tables(self) -> None:
         try:
             async with await self.db_connection.acquire() as conn:
-                await conn.execute(
-                    """
+                await conn.execute("""
                     CREATE TABLE IF NOT EXISTS user_projects (
                         id VARCHAR(64) PRIMARY KEY,
                         user_id VARCHAR(100) NOT NULL,
@@ -58,14 +92,20 @@ class ProjectRepository:
                         created_at TIMESTAMP DEFAULT NOW(),
                         updated_at TIMESTAMP DEFAULT NOW()
                     )
-                    """
-                )
+                    """)
                 await conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_user_projects_user ON user_projects(user_id)"
                 )
                 await conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_user_projects_updated ON user_projects(updated_at DESC)"
                 )
+                for stmt in (
+                    "ALTER TABLE user_projects ADD COLUMN IF NOT EXISTS "
+                    "knowledge_bases_enabled BOOLEAN NOT NULL DEFAULT false",
+                    "ALTER TABLE user_projects ADD COLUMN IF NOT EXISTS "
+                    "knowledge_base_ids JSONB NOT NULL DEFAULT '[]'::jsonb",
+                ):
+                    await conn.execute(stmt)
             logger.info("Таблица user_projects готова")
         except Exception:
             logger.exception("Ошибка при создании таблицы user_projects")
@@ -80,6 +120,7 @@ class ProjectRepository:
                 rows = await conn.fetch(
                     """
                     SELECT id, user_id, name, instructions, memory, icon, icon_type, icon_color,
+                           knowledge_bases_enabled, knowledge_base_ids,
                            created_at, updated_at
                     FROM user_projects
                     WHERE user_id = $1
@@ -92,7 +133,9 @@ class ProjectRepository:
             logger.exception("user_projects.list_by_user failed user_id=%s", uid)
             return []
 
-    async def get_by_id(self, user_id: str, project_id: str) -> Optional[Dict[str, Any]]:
+    async def get_by_id(
+        self, user_id: str, project_id: str
+    ) -> Optional[Dict[str, Any]]:
         uid = _normalize_user_id(user_id)
         pid = (project_id or "").strip()
         if not uid or not pid:
@@ -102,6 +145,7 @@ class ProjectRepository:
                 row = await conn.fetchrow(
                     """
                     SELECT id, user_id, name, instructions, memory, icon, icon_type, icon_color,
+                           knowledge_bases_enabled, knowledge_base_ids,
                            created_at, updated_at
                     FROM user_projects
                     WHERE user_id = $1 AND id = $2
@@ -111,10 +155,14 @@ class ProjectRepository:
                 )
             return _row_to_project(row) if row else None
         except Exception:
-            logger.exception("user_projects.get_by_id failed user_id=%s project_id=%s", uid, pid)
+            logger.exception(
+                "user_projects.get_by_id failed user_id=%s project_id=%s", uid, pid
+            )
             return None
 
-    async def create(self, user_id: str, data: ProjectCreate) -> Optional[Dict[str, Any]]:
+    async def create(
+        self, user_id: str, data: ProjectCreate
+    ) -> Optional[Dict[str, Any]]:
         uid = _normalize_user_id(user_id)
         if not uid:
             return None
@@ -122,15 +170,18 @@ class ProjectRepository:
         name = (data.name or "").strip()
         if not name:
             return None
-        memory = data.memory if data.memory in ("default", "project-only") else "default"
+        memory = (
+            data.memory if data.memory in ("default", "project-only") else "default"
+        )
         try:
             async with await self.db_connection.acquire() as conn:
                 row = await conn.fetchrow(
                     """
                     INSERT INTO user_projects (
-                        id, user_id, name, instructions, memory, icon, icon_type, icon_color, updated_at
+                        id, user_id, name, instructions, memory, icon, icon_type, icon_color,
+                        knowledge_bases_enabled, knowledge_base_ids, updated_at
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, NOW())
                     ON CONFLICT (id) DO UPDATE SET
                         user_id = EXCLUDED.user_id,
                         name = EXCLUDED.name,
@@ -139,9 +190,12 @@ class ProjectRepository:
                         icon = EXCLUDED.icon,
                         icon_type = EXCLUDED.icon_type,
                         icon_color = EXCLUDED.icon_color,
+                        knowledge_bases_enabled = EXCLUDED.knowledge_bases_enabled,
+                        knowledge_base_ids = EXCLUDED.knowledge_base_ids,
                         updated_at = NOW()
                     WHERE user_projects.user_id = EXCLUDED.user_id
                     RETURNING id, user_id, name, instructions, memory, icon, icon_type, icon_color,
+                              knowledge_bases_enabled, knowledge_base_ids,
                               created_at, updated_at
                     """,
                     pid,
@@ -152,10 +206,14 @@ class ProjectRepository:
                     data.icon,
                     data.icon_type,
                     data.icon_color,
+                    bool(data.knowledge_bases_enabled),
+                    json.dumps(_parse_kb_ids(data.knowledge_base_ids)),
                 )
             return _row_to_project(row) if row else None
         except Exception:
-            logger.exception("user_projects.create failed user_id=%s project_id=%s", uid, pid)
+            logger.exception(
+                "user_projects.create failed user_id=%s project_id=%s", uid, pid
+            )
             return None
 
     async def update(
@@ -181,7 +239,9 @@ class ProjectRepository:
             params.append(data.instructions.strip())
             idx += 1
         if data.memory is not None:
-            memory = data.memory if data.memory in ("default", "project-only") else "default"
+            memory = (
+                data.memory if data.memory in ("default", "project-only") else "default"
+            )
             fields.append(f"memory = ${idx}")
             params.append(memory)
             idx += 1
@@ -197,6 +257,14 @@ class ProjectRepository:
             fields.append(f"icon_color = ${idx}")
             params.append(data.icon_color)
             idx += 1
+        if data.knowledge_bases_enabled is not None:
+            fields.append(f"knowledge_bases_enabled = ${idx}")
+            params.append(bool(data.knowledge_bases_enabled))
+            idx += 1
+        if data.knowledge_base_ids is not None:
+            fields.append(f"knowledge_base_ids = ${idx}::jsonb")
+            params.append(json.dumps(_parse_kb_ids(data.knowledge_base_ids)))
+            idx += 1
 
         if not fields:
             return await self.get_by_id(uid, pid)
@@ -207,6 +275,7 @@ class ProjectRepository:
             SET {", ".join(fields)}
             WHERE user_id = $1 AND id = $2
             RETURNING id, user_id, name, instructions, memory, icon, icon_type, icon_color,
+                      knowledge_bases_enabled, knowledge_base_ids,
                       created_at, updated_at
         """
         try:
@@ -214,7 +283,9 @@ class ProjectRepository:
                 row = await conn.fetchrow(sql, *params)
             return _row_to_project(row) if row else None
         except Exception:
-            logger.exception("user_projects.update failed user_id=%s project_id=%s", uid, pid)
+            logger.exception(
+                "user_projects.update failed user_id=%s project_id=%s", uid, pid
+            )
             return None
 
     async def delete(self, user_id: str, project_id: str) -> bool:
@@ -234,7 +305,9 @@ class ProjectRepository:
                 return True
             return False
         except Exception:
-            logger.exception("user_projects.delete failed user_id=%s project_id=%s", uid, pid)
+            logger.exception(
+                "user_projects.delete failed user_id=%s project_id=%s", uid, pid
+            )
             return False
 
     async def delete_by_id(self, project_id: str) -> bool:
@@ -244,7 +317,9 @@ class ProjectRepository:
             return False
         try:
             async with await self.db_connection.acquire() as conn:
-                result = await conn.execute("DELETE FROM user_projects WHERE id = $1", pid)
+                result = await conn.execute(
+                    "DELETE FROM user_projects WHERE id = $1", pid
+                )
             if result.endswith("1"):
                 await self._delete_entity_settings(pid)
                 return True

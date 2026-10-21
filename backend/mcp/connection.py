@@ -28,7 +28,9 @@ class McpServerSession:
     async def call_tool(self, name: str, arguments: dict) -> Any:
         return await self.client.call_tool(name, arguments)
 
-    async def list_resources(self, cursor: Optional[str] = None) -> List[Dict[str, Any]]:
+    async def list_resources(
+        self, cursor: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         return await self.client.list_resources(cursor=cursor)
 
     async def read_resource(self, uri: str) -> Dict[str, Any]:

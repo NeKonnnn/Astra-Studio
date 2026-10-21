@@ -159,10 +159,26 @@ _DEFAULT_TEXTS: Dict[str, str] = {
         "не пересказывай сам себя.\n"
         "- Итог не вводит новых фактов и не добавляет того, чего нет выше."
     ),
+    "documents_inventory_rule": (
+        "Перечень доступных файлов:\n"
+        "- В начале CONTEXT может идти блок «ДОСТУПНЫЕ ФАЙЛЫ» — это полный "
+        "список документов, которые тебе доступны. Он не фрагмент документа "
+        "и не ответ на вопрос: это опись.\n"
+        "- Если спрашивают, какие документы ты видишь, что у тебя есть, какие "
+        "файлы загружены — отвечай по этому блоку и перечисли файлы. Это НЕ "
+        "тот случай, когда нужно писать, что ничего не нашлось.\n"
+        "- Если в блоке написано «и ещё N», прямо скажи, что перечислил не "
+        "всё и файлов больше.\n"
+        "- Не путай это с вопросом по содержанию: «какие документы нужны для "
+        "открытия счёта» — вопрос про документы ВНУТРИ текста, отвечать надо "
+        "по фрагментам, а не перечнем загруженных файлов.\n"
+        "- Файла нет в перечне — значит он не загружен. Не придумывай."
+    ),
 }
 
 _TRUE = ("1", "true", "yes", "on")
 _FALSE = ("0", "false", "no", "off")
+
 
 def _prompts_config() -> Dict[str, Any]:
     """Секция 'rag_prompts' из config.yml. Ошибка чтения — пустой словарь.
@@ -179,6 +195,7 @@ def _prompts_config() -> Dict[str, Any]:
         return {}
     return section if isinstance(section, dict) else {}
 
+
 def _config_text(key: str) -> Optional[str]:
     texts = _prompts_config().get("texts")
     if not isinstance(texts, dict):
@@ -188,9 +205,11 @@ def _config_text(key: str) -> Optional[str]:
         return raw.strip()
     return None
 
+
 def _text(key: str) -> str:
     """Текст из config.yml, иначе дефолт модуля."""
     return _config_text(key) or _DEFAULT_TEXTS[key]
+
 
 def _rule(key: str) -> str:
     """Блок правил с подставленной канонической фразой «не нашёл».
@@ -199,6 +218,7 @@ def _rule(key: str) -> str:
     и случайная фигурная скобка в тексте не должна ронять сборку промпта.
     """
     return _text(key).replace(_NOT_FOUND_PLACEHOLDER, rag_strict_not_found_message())
+
 
 def _flag(env_name: str, config_key: str, default: bool) -> bool:
     """ENV > config.yml > дефолт. Нераспознанное значение = как будто не задано."""
@@ -218,6 +238,7 @@ def _flag(env_name: str, config_key: str, default: bool) -> bool:
             return True
     return default
 
+
 def _strict_answer_mode() -> str:
     """soft (по умолчанию) | strict.
 
@@ -230,26 +251,43 @@ def _strict_answer_mode() -> str:
         raw = str(_prompts_config().get("strict_answer_mode") or "").strip().lower()
     return "strict" if raw in ("strict", "hard", *_TRUE) else "soft"
 
+
 def rag_strict_not_found_message() -> str:
     """Единственный ответ, который backend отдаёт без вызова LLM."""
     return _text("not_found_message")
+
 
 def cite_sources_enabled() -> bool:
     """По умолчанию False: ссылки на чанки в ответ пользователя не выводятся."""
     return _flag("RAG_CITE_SOURCES", "cite_sources", False)
 
+
 def answer_summary_enabled() -> bool:
     """По умолчанию True: ответ завершается кратким итогом."""
     return _flag("RAG_ANSWER_SUMMARY", "answer_summary", True)
+
 
 def answer_gaps_note_enabled() -> bool:
     """По умолчанию True: абзац «Примечание:» о том, чего нет в документах."""
     return _flag("RAG_ANSWER_GAPS_NOTE", "answer_gaps_note", True)
 
+
+def documents_inventory_enabled() -> bool:
+    """По умолчанию True: перечень доступных файлов в начале CONTEXT.
+
+    Читается дважды и в разных местах: здесь — чтобы подмешать правило, и в
+    rag_evidence.build_rag_inventory_block — чтобы вообще не собирать блок.
+    Так модули не тянут друг друга ради одного флага, а выключатель остаётся
+    один.
+    """
+    return _flag("RAG_DOCUMENTS_INVENTORY", "documents_inventory", True)
+
+
 # Значения на момент импорта — их читают модули, которым нужна константа
 # ('rag_evidence', 'handlers', 'document_agent'). Правка ConfigMap
 # применяется при рестарте пода, как и остальные настройки из config.yml.
 RAG_STRICT_NOT_FOUND_MESSAGE = rag_strict_not_found_message()
+
 
 def _policy_rules() -> str:
     """Политика ответа: что и как отвечать по документам.
@@ -260,15 +298,20 @@ def _policy_rules() -> str:
     механику работы с контекстом, а дополняет её.
     """
     parts = [
-        _rule("strict_context_rules")
-        if _strict_answer_mode() == "strict"
-        else _rule("soft_context_rules")
+        (
+            _rule("strict_context_rules")
+            if _strict_answer_mode() == "strict"
+            else _rule("soft_context_rules")
+        )
     ]
+    if documents_inventory_enabled():
+        parts.append(_rule("documents_inventory_rule"))
     if answer_gaps_note_enabled():
         parts.append(_rule("gaps_note_rule"))
     if answer_summary_enabled():
         parts.append(_rule("summary_rule"))
     return "\n\n".join(parts)
+
 
 def mandatory_output_rules(with_citations: Optional[bool] = None) -> str:
     """То, что не отменяется пользовательским промптом ни при каких условиях.
@@ -286,7 +329,7 @@ def mandatory_output_rules(with_citations: Optional[bool] = None) -> str:
         [
             _rule("answer_guarantees"),
             _rule("citation_rule") if cite else _rule("no_service_markup_rule"),
-            # Не зависит от cite_sources: ссылки на источники - это одно, 
+            # Не зависит от cite_sources: ссылки на источники - это одно,
             # вываленный в ответ текст чанка - другое.
             _rule("no_raw_chunks_rule"),
         ]
@@ -310,13 +353,16 @@ def answer_formatting_rules(with_citations: Optional[bool] = None) -> str:
         ]
     )
 
+
 def _active_rules() -> str:
     """Совместимость: прежнее имя блока правил контекста."""
     return _policy_rules()
 
+
 def build_rag_user_instruction(with_citations: Optional[bool] = None) -> str:
     """Полный блок правил RAG без пользовательского промпта: политика + гарантии."""
     return f"{_policy_rules()}\n\n{mandatory_output_rules(with_citations)}"
+
 
 def merge_strict_rag_system_prompt(
     existing: Optional[str], rag_override: Optional[str] = None
@@ -358,6 +404,7 @@ def merge_strict_rag_system_prompt(
     ):
         return ex
     return f"{ex}\n\n{block}"
+
 
 def prompts_overview() -> Dict[str, object]:
     """Что реально применилось — для стартового лога и диагностики.

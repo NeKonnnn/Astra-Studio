@@ -17,8 +17,32 @@ from backend.rag_query.stage_timer import StageTimer
 
 logger = get_logger(__name__)
 
+
 class RagReindexInProgress(RuntimeError):
     """SVC-RAG вернул 409: стор переиндексируется, поиск временно недоступен."""
+
+
+class RagDuplicateDocument(RuntimeError):
+    """SVC-RAG/проверка: документ с таким содержимым уже есть в scope."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        document_id: Optional[int] = None,
+        filename: Optional[str] = None,
+        detail: Any = None,
+    ):
+        super().__init__(message)
+        self.document_id = document_id
+        self.filename = filename
+        self.detail = detail
+
+
+def _is_duplicate_document_detail(detail: Any) -> bool:
+    from backend.rag_query.document_duplicate import is_duplicate_detail
+
+    return is_duplicate_detail(detail)
 
 
 def _looks_like_rag_model_error(detail: Any) -> bool:
@@ -88,6 +112,13 @@ def _with_chunk_index_form_data(
     return data
 
 
+# Ниже этого косинуса выдача считается провальной и запускается переспрос
+# (коммит 49). 0.3 - стартовое значение: ноль означал бы «только пустая
+# выдача», а её почти не бывает из-за rescue top-N в SVC-RAG.
+# Перекрывается переменной RAG_REWRITE_MIN_COSINE.
+_REWRITE_MIN_COSINE_DEFAULT = "0.3"
+
+
 def _svc_rag_search_timeout() -> httpx.Timeout:
     """Ожидание ответа на поиск.
 
@@ -95,11 +126,14 @@ def _svc_rag_search_timeout() -> httpx.Timeout:
     на CPU тратит на вектор запроса 40-80с — запрос рвётся по ReadTimeout
     """
     try:
-        read_sec = float(os.getenv("SVC_RAG_SEARCH_READ_TIMEOUT", "180"))
+        # 240, а не 180: худший путь SVC-RAG - три попытки эмбеддинга вопроса
+        # по ~61 с до 504 шлюза, ~183 с. 25.09 SVC-RAG нашёл фрагменты за
+        # 183.1 с, а бэкенд бросил запрос на 180-й - ребёнок получил ноль.
+        read_sec = float(os.getenv("SVC_RAG_SEARCH_READ_TIMEOUT", "240"))
     except ValueError:
-        read_sec = 180.0
+        read_sec = 240.0
     read_sec = max(30.0, read_sec)
-    return httpx.Timeout(30.0, read=read_sec)    
+    return httpx.Timeout(30.0, read=read_sec)
 
 
 def _svc_rag_document_index_timeout() -> httpx.Timeout:
@@ -141,11 +175,22 @@ def _log_backend_rag_strategy_banner(
     """Видно в `docker compose logs -f astrachat-backend` без svc-rag."""
     bar = "*" * 72
     logger.debug(bar)
-    logger.debug("[astrachat-backend RAG] Использована стратегия в запросе к SVC-RAG: %s", strategy or "(default)")
     logger.debug(
-        "[astrachat-backend RAG] endpoint=%s k=%s document_id=%s use_reranking=%s", path, k, document_id, use_reranking
+        "[astrachat-backend RAG] Использована стратегия в запросе к SVC-RAG: %s",
+        strategy or "(default)",
     )
-    logger.debug("[astrachat-backend RAG] хитов после ответа=%s %s", hits, "(из кэша)" if from_cache else "")
+    logger.debug(
+        "[astrachat-backend RAG] endpoint=%s k=%s document_id=%s use_reranking=%s",
+        path,
+        k,
+        document_id,
+        use_reranking,
+    )
+    logger.debug(
+        "[astrachat-backend RAG] хитов после ответа=%s %s",
+        hits,
+        "(из кэша)" if from_cache else "",
+    )
     logger.debug("[astrachat-backend RAG] запрос: %s", query_preview)
     if prep_suffix:
         logger.debug("[astrachat-backend RAG] %s", prep_suffix.strip())
@@ -168,7 +213,9 @@ class RagClient:
             self.base_url = _normalize_rag_service_base(base_url)
         else:
             self.base_url = _normalize_rag_service_base(
-                settings.microservice_http_base("rag_service_docker", "rag_service_port")
+                settings.microservice_http_base(
+                    "rag_service_docker", "rag_service_port"
+                )
             )
         self.timeout = timeout
 
@@ -214,6 +261,15 @@ class RagClient:
             pass
         return headers
 
+    def _svc_rag_api_key_headers(self) -> Dict[str, str]:
+        """Общий секрет backend↔svc-rag (если задан SVC_RAG_API_KEY / RAG_API_KEY)."""
+        import os
+
+        key = (
+            os.getenv("SVC_RAG_API_KEY") or os.getenv("RAG_API_KEY") or ""
+        ).strip()
+        return {"X-API-Key": key} if key else {}
+
     async def _request(
         self,
         method: str,
@@ -229,8 +285,19 @@ class RagClient:
         _cef_rid = uuid.uuid4().hex
         # Поллинг статусов переиндексации (*/reindex/status) порождает очень много CEF
         # и обычно не нужен для аудита. Пропускаем такие события целиком.
-        _cef_skip = path.rstrip("/").endswith("/reindex/status") or path.rstrip("/") in ("/health",)
-        _headers = self._cef_identity_headers()
+        _cef_skip = path.rstrip("/").endswith("/reindex/status") or path.rstrip(
+            "/"
+        ) in ("/health",)
+        _headers = {**self._cef_identity_headers(), **self._svc_rag_api_key_headers()}
+        # Модель текущего чата - чтобы LLM-вызовы, которые SVC-RAG сделает по
+        # ходу этого запроса (judge, суммаризация), вернулись в неё же.
+        # Пусто - SVC-RAG модель не пришлёт, backend возьмёт текущую.
+        with logged_suppress(logger):
+            from backend.settings.cef_logger.cef_audit_context import chat_model_peek
+
+            _model_path = chat_model_peek()
+            if _model_path:
+                _headers["X-Astra-Model"] = _model_path
         try:
             async with httpx.AsyncClient(timeout=client_timeout) as client:
                 resp = await client.request(
@@ -246,7 +313,9 @@ class RagClient:
                 result = resp.json()
             if not _cef_skip:
                 with logged_suppress(logger):
-                    from backend.settings.cef_logger.cef_audit_context import cef_audit_peek
+                    from backend.settings.cef_logger.cef_audit_context import (
+                        cef_audit_peek,
+                    )
                     from backend.settings.cef_logger.cef_logger import log_cef_event
                     from backend.settings.cef_logger.poll_audit import (
                         is_polling_read,
@@ -285,14 +354,18 @@ class RagClient:
                 detail = e.response.text
             if not _cef_skip:
                 with logged_suppress(logger):
-                    from backend.settings.cef_logger.cef_audit_context import cef_audit_peek
+                    from backend.settings.cef_logger.cef_audit_context import (
+                        cef_audit_peek,
+                    )
                     from backend.settings.cef_logger.cef_logger import log_cef_event
 
                     _req, _user, _ = cef_audit_peek()
                     _ex = self._cef_extra(method, path, _cef_rid)
                     _ex["codeStatus"] = str(e.response.status_code)
                     _ex["textStatus"] = str(detail or "")[:512]
-                    event_id = "INT007" if _looks_like_rag_model_error(detail) else "INT006"
+                    event_id = (
+                        "INT007" if _looks_like_rag_model_error(detail) else "INT006"
+                    )
                     log_cef_event(
                         event_id,
                         request=_req,
@@ -302,13 +375,43 @@ class RagClient:
                     )
             msg = f"SVC-RAG {method} {url} failed: {e.response.status_code} {detail}"
             if e.response.status_code == 409:
+                parsed = detail
+                if isinstance(detail, dict) and "detail" in detail:
+                    parsed = detail.get("detail")
+                if _is_duplicate_document_detail(parsed):
+                    from backend.rag_query.document_duplicate import DUPLICATE_MESSAGE
+
+                    message = DUPLICATE_MESSAGE
+                    doc_id = None
+                    fname = None
+                    if isinstance(parsed, dict):
+                        message = str(parsed.get("message") or message)
+                        try:
+                            doc_id = (
+                                int(parsed["document_id"])
+                                if parsed.get("document_id") is not None
+                                else None
+                            )
+                        except (TypeError, ValueError):
+                            doc_id = None
+                        fname = parsed.get("filename")
+                    elif isinstance(parsed, str) and parsed.strip():
+                        message = parsed.strip()
+                    raise RagDuplicateDocument(
+                        message,
+                        document_id=doc_id,
+                        filename=fname,
+                        detail=parsed,
+                    ) from e
                 raise RagReindexInProgress(msg) from e
             raise RuntimeError(msg) from e
         except Exception as e:
             logger.exception("Ошибка операции")
             if not _cef_skip:
                 with logged_suppress(logger):
-                    from backend.settings.cef_logger.cef_audit_context import cef_audit_peek
+                    from backend.settings.cef_logger.cef_audit_context import (
+                        cef_audit_peek,
+                    )
                     from backend.settings.cef_logger.cef_logger import log_cef_event
 
                     _req, _user, _ = cef_audit_peek()
@@ -363,11 +466,14 @@ class RagClient:
                 )
             )
         return out
-        
+
     async def _merge_variant_searches(
         self, path: str, base_body: Dict[str, Any], variants: List[str], k: int
     ) -> List[Tuple[str, float, Optional[int], Optional[int]]]:
-        merged: Dict[Tuple[Optional[int], Optional[int]], Tuple[str, float, Optional[int], Optional[int]]] = {}
+        merged: Dict[
+            Tuple[Optional[int], Optional[int]],
+            Tuple[str, float, Optional[int], Optional[int]],
+        ] = {}
         order_q: List[str] = []
         for q in [base_body["query"]] + list(variants):
             t = (q or "").strip()
@@ -402,13 +508,22 @@ class RagClient:
         strategy: Optional[str] = None,
         project_id: Optional[str] = None,
         settings_source: str = "user",
+        settings_override: Optional[Dict[str, Any]] = None,
+        _retry_done: bool = False,
     ) -> List[Tuple[str, float, Optional[int], Optional[int]]]:
         from backend.rag_query.pipeline import process_user_query
         from backend.rag_query.postprocess import dedupe_rag_hits
-        from backend.rag_query.semantic_cache import cache_get, cache_set, make_cache_key, semantic_cache_enabled
+        from backend.rag_query.semantic_cache import (
+            cache_get,
+            cache_set,
+            make_cache_key,
+            semantic_cache_enabled,
+        )
         from backend.services.memory_rag_env import get_memory_rag_retrieval_settings
         from backend.services.user_rag_settings import (
+            embedding_fields_from_rag_settings,
             get_runtime_rag_settings,
+            reranker_fields_from_rag_settings,
             runtime_embedding_fields,
             runtime_reranker_fields,
         )
@@ -416,12 +531,19 @@ class RagClient:
         # Библиотека вне пер-юзерности: её модели задаются в ENV
         # (RAG_MEMORY_EMBEDDING_MODEL / RAG_MEMORY_RERANKER_MODEL). Если они
         # не заданы — пустые поля, и svc-rag берёт кластерную модель, как раньше.
+        #
+        # settings_override — явный снимок настроек сущности (per-KB search):
+        # тогда embedding/rerank/strategy/top_k берутся из него, а не из
+        # ContextVar runtime (у разных БЗ разные модели).
+        override = settings_override if isinstance(settings_override, dict) else None
         src = (settings_source or "user").strip().lower()
+        if override is not None and src not in ("memory",):
+            src = "kb"
         is_memory = src == "memory"
-        # Проекты и агенты настраиваются раздельно: модель, top_k, порог и реранк
-        # берём из скоупа того стора, по которому идёт поиск. "user" — как раньше,
-        # то есть скоуп по умолчанию.
-        scope = src if src in ("project", "agent") else None
+        # Проекты, агенты и БЗ настраиваются раздельно: модель, top_k, порог и
+        # реранк берём из скоупа того стора, по которому идёт поиск. "user" —
+        # как раньше, то есть скоуп по умолчанию.
+        scope = src if src in ("project", "agent", "kb") else None
         if is_memory:
             from backend.services.memory_rag_env import (
                 get_memory_embedding_fields,
@@ -430,21 +552,37 @@ class RagClient:
 
             emb_fields = get_memory_embedding_fields()
             rr_fields = get_memory_reranker_fields()
+        elif override is not None:
+            emb_fields = embedding_fields_from_rag_settings(override)
+            rr_fields = reranker_fields_from_rag_settings(override)
         else:
             emb_fields = runtime_embedding_fields(scope)
             rr_fields = runtime_reranker_fields(scope)
 
-        # Стратегия поиска у каждого стора своя. Явное значение (разовый выбор
-        # в чате) выигрывает; None — берём настройку этого стора.
-        if strategy is None:
+        # Настройка стора - источник истины
+        _st_in = str(strategy or "").strip().lower()
+        if is_memory or scope in ("project", "agent", "kb") or _st_in in ("", "auto"):
             from backend.services.user_rag_settings import (
                 runtime_memory_strategy,
                 runtime_rag_strategy,
             )
 
-            strategy = (
-                runtime_memory_strategy() if is_memory else runtime_rag_strategy(scope)
-            )
+            if override is not None and not is_memory:
+                strategy = str(override.get("rag_strategy") or "auto")
+            else:
+                strategy = (
+                    runtime_memory_strategy()
+                    if is_memory
+                    else runtime_rag_strategy(scope)
+                )
+            if str(strategy or "").strip().lower() != _st_in:
+                logger.debug(
+                    "[%s] стратегия из настроек %s: %r вместо %r",
+                    log_tag or path,
+                    scope or ("memory" if is_memory else "по умолчанию"),
+                    strategy,
+                    _st_in or None,
+                )
 
         st = (strategy or "").strip().lower()
         raw_mode = st == "raw_cosine"
@@ -482,13 +620,17 @@ class RagClient:
             return hits
         if is_memory:
             user_rag = get_memory_rag_retrieval_settings()
+        elif override is not None:
+            user_rag = override
         else:
             user_rag = get_runtime_rag_settings(scope)
         _fix = bool(user_rag.get("rag_query_fix_typos", False))
         _multi = bool(user_rag.get("rag_multi_query_enabled", False))
         _hyde = bool(user_rag.get("rag_hyde_enabled", False))
         with timer.stage("preprocess"):
-            pq = await process_user_query(query, fix_typos=_fix, multi_query=_multi, hyde=_hyde)
+            pq = await process_user_query(
+                query, fix_typos=_fix, multi_query=_multi, hyde=_hyde
+            )
         body: Dict[str, Any] = {"query": pq.query_for_search, "k": k}
         body.update(emb_fields)
         body.update(rr_fields)
@@ -497,7 +639,9 @@ class RagClient:
         if document_ids:
             body["document_ids"] = [int(x) for x in document_ids]
         _rr_enabled = bool(user_rag.get("rag_reranking_enabled", False))
-        effective_reranking = bool(use_reranking) if use_reranking is not None else _rr_enabled
+        effective_reranking = (
+            bool(use_reranking) if use_reranking is not None else _rr_enabled
+        )
         if strategy and str(strategy).strip().lower() == "lexical":
             effective_reranking = False
         try:
@@ -553,7 +697,9 @@ class RagClient:
         if semantic_cache_enabled():
             cached = cache_get(cache_key)
             if cached is not None:
-                hits_cached = dedupe_rag_hits(cached, jaccard_threshold=_dedupe_jaccard_threshold())
+                hits_cached = dedupe_rag_hits(
+                    cached, jaccard_threshold=_dedupe_jaccard_threshold()
+                )
                 _log_backend_rag_strategy_banner(
                     path=path,
                     strategy=body.get("strategy"),
@@ -572,7 +718,9 @@ class RagClient:
                 return hits_cached
         with timer.stage("svc_rag_http"):
             if pq.multi_variants:
-                hits = await self._merge_variant_searches(path, body, pq.multi_variants, k)
+                hits = await self._merge_variant_searches(
+                    path, body, pq.multi_variants, k
+                )
             else:
                 resp = await self._request(
                     "POST", path, json=body, http_timeout=_svc_rag_search_timeout()
@@ -584,6 +732,77 @@ class RagClient:
                 hits = hits[: max(1, min(rerank_top_n, k))]
         with timer.stage("llm_judge"):
             hits = await judge_and_filter_hits(pq.query_for_search, hits)
+        # Поиск отработал и показывать нечего - пробуем переписать вопрос по
+        # истории и поискать ещё раз. Вызов модели тратится ТОЛЬКО здесь, на
+        # реальном промахе, а не на каждом коротком вопросе.
+        #
+        # Порог берём тот же, по которому отбирает filter_rag_hits_by_score в
+        # handlers: не осталось ни одного хита - пользователю всё равно
+        # нечего показать. Порог не задан - критерий вырождается в «пусто».
+        if not _retry_done:
+            # Порог для переспроса - своей переменной и в шкале КОСИНУСА.
+            # rag_similarity_threshold сюда не годится по двум причинам: его
+            # же применяет filter_rag_hits_by_score в handlers (выставив его
+            # тут, порезали бы выдачу пользователю), и применяет он его к
+            # score - а тот в шкале стратегии (RRF ~0.016, логит реранкера),
+            # с косинусным порогом несопоставим. См. докстринг RagHit.
+            try:
+                _thr = float(
+                    os.getenv("RAG_REWRITE_MIN_COSINE", _REWRITE_MIN_COSINE_DEFAULT)
+                    or 0.0
+                )
+            except (TypeError, ValueError):
+                _thr = 0.0
+            _cosines = [
+                c
+                for c in (getattr(h, "cosine", None) for h in hits)
+                if isinstance(c, (int, float))
+            ]
+            # Пусто - промах всегда. Иначе смотрим лучший косинус, и только
+            # если порог задан: ноль значит «фильтр выключен», а не «нулевой
+            # косинус» - такой фильтр не отсёк бы ничего.
+            _best_cos = max(_cosines) if _cosines else None
+            _weak = not hits or (
+                _thr > 0 and _best_cos is not None and _best_cos < _thr
+            )
+            if _weak:
+                # Косинус в логе - чтобы подобрать порог по живым данным.
+                logger.debug(
+                    "[%s] выдача слабая: хитов=%s лучший cosine=%s порог=%.2f",
+                    log_tag,
+                    len(hits),
+                    "нет" if _best_cos is None else "%.3f" % _best_cos,
+                    _thr,
+                )
+                from backend.rag_query.pipeline import rewrite_query_with_context
+
+                with timer.stage("query_rewrite"):
+                    _rewritten = await rewrite_query_with_context(query)
+                if _rewritten:
+                    _retry_hits = await self._search_with_pipeline(
+                        path,
+                        _rewritten,
+                        k,
+                        log_tag=log_tag,
+                        document_id=document_id,
+                        document_ids=document_ids,
+                        use_reranking=use_reranking,
+                        strategy=strategy,
+                        project_id=project_id,
+                        settings_source=settings_source,
+                        settings_override=override,
+                        _retry_done=True,
+                    )
+                    if _retry_hits:
+                        from backend.realtime.rag_evidence import merge_extra_hits
+
+                        _before = len(hits)
+                        hits = merge_extra_hits(hits, _retry_hits)
+                        logger.debug(
+                            "[%s] переспрос по переписанному вопросу: +%s фрагментов",
+                            log_tag,
+                            len(hits) - _before,
+                        )
         if semantic_cache_enabled():
             cache_set(cache_key, hits)
         prep_bits: List[str] = []
@@ -609,7 +828,7 @@ class RagClient:
 
     async def health(self) -> Dict[str, Any]:
         return await self._request("GET", "/health")
-    
+
     async def ensure_embedding_dim(self, embedding_dim: int) -> Dict[str, Any]:
         """Привести колонки vector(*) в Postgres к размерности текущей модели."""
         return await self._request(
@@ -630,7 +849,7 @@ class RagClient:
             "/schema/models-provider",
             json={"model_type": model_type, "provider": provider, "model": model},
         )
-        
+
     async def upload_document(
         self,
         file_bytes: bytes,
@@ -649,9 +868,15 @@ class RagClient:
             data["minio_bucket"] = minio_bucket
         if original_path:
             data["original_path"] = original_path
-        data = _with_chunk_index_form_data(data, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        data = _with_chunk_index_form_data(
+            data, chunk_size=chunk_size, chunk_overlap=chunk_overlap
+        )
         return await self._request(
-            "POST", "/documents", files=files, data=data, http_timeout=_svc_rag_document_index_timeout()
+            "POST",
+            "/documents",
+            files=files,
+            data=data,
+            http_timeout=_svc_rag_document_index_timeout(),
         )
 
     async def list_documents(self) -> List[Dict[str, Any]]:
@@ -670,7 +895,9 @@ class RagClient:
         """Legacy: /v1/documents/... в текущем SVC-RAG не смонтирован. Для project — project_rag_get_document_start_chunks."""
         try:
             resp = await self._request(
-                "GET", f"/documents/{document_id}/chunks", params={"start": 0, "limit": max_chunks}
+                "GET",
+                f"/documents/{document_id}/chunks",
+                params={"start": 0, "limit": max_chunks},
             )
         except Exception:
             logger.warning(
@@ -680,7 +907,10 @@ class RagClient:
             )
             return []
         chunks = resp.get("chunks", []) if isinstance(resp, dict) else []
-        return [(c.get("content", ""), 1.0, c.get("document_id"), c.get("chunk_index")) for c in chunks]
+        return [
+            (c.get("content", ""), 1.0, c.get("document_id"), c.get("chunk_index"))
+            for c in chunks
+        ]
 
     async def project_rag_get_document_start_chunks(
         self, project_id: str, document_id: int, max_chunks: int = 2
@@ -744,7 +974,9 @@ class RagClient:
         minio_bucket: Optional[str] = None,
         owner_user_id: Optional[str] = None,
         agent_id: Optional[int] = None,
+        knowledge_base_id: Optional[int] = None,
         uploaded_by: Optional[str] = None,
+        relative_path: Optional[str] = None,
         embedding_model: Optional[str] = None,
         embedding_provider: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -761,6 +993,10 @@ class RagClient:
             data["uploaded_by"] = str(uploaded_by).strip().lower()
         if agent_id is not None:
             data["agent_id"] = str(int(agent_id))
+        if knowledge_base_id is not None:
+            data["knowledge_base_id"] = str(int(knowledge_base_id))
+        if relative_path:
+            data["relative_path"] = str(relative_path).replace("\\", "/").strip()
         # Документ индексируется моделью владельца, а не того, кто заливает.
         if embedding_model:
             # Регистр НЕ понижаем: шлюз чувствителен к нему (embed/FRIDA != embed/frida)
@@ -774,8 +1010,33 @@ class RagClient:
             chunking_strategy=chunking_strategy,
         )
         return await self._request(
-            "POST", "/kb/documents", files=files, data=data, http_timeout=_svc_rag_document_index_timeout()
+            "POST",
+            "/kb/documents",
+            files=files,
+            data=data,
+            http_timeout=_svc_rag_document_index_timeout(),
         )
+
+    async def kb_check_duplicate(
+        self,
+        *,
+        content_hash: str,
+        filename: Optional[str] = None,
+        size: Optional[int] = None,
+        agent_id: Optional[int] = None,
+        knowledge_base_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"content_hash": str(content_hash).strip().lower()}
+        if filename:
+            body["filename"] = filename
+        if size is not None:
+            body["size"] = int(size)
+        if agent_id is not None:
+            body["agent_id"] = int(agent_id)
+        if knowledge_base_id is not None:
+            body["knowledge_base_id"] = int(knowledge_base_id)
+        resp = await self._request("POST", "/kb/documents/duplicate-check", json=body)
+        return resp if isinstance(resp, dict) else {"duplicate": False}
 
     async def kb_list_documents(self) -> List[Dict[str, Any]]:
         """Список документов в Базе Знаний."""
@@ -786,6 +1047,41 @@ class RagClient:
         """Удалить документ из Базы Знаний."""
         return await self._request("DELETE", f"/kb/documents/{document_id}")
 
+    async def kb_get_document(self, document_id: int) -> Optional[Dict[str, Any]]:
+        """Метаданные одного KB-документа."""
+        resp = await self._request("GET", f"/kb/documents/{document_id}")
+        return resp if isinstance(resp, dict) else None
+
+    async def kb_clone_document(
+        self,
+        document_id: int,
+        *,
+        agent_id: Optional[int] = None,
+        knowledge_base_id: Optional[int] = None,
+        owner_user_id: Optional[str] = None,
+        uploaded_by: Optional[str] = None,
+        minio_object: Optional[str] = None,
+        minio_bucket: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Клон KB-документа с векторами (агент или база знаний)."""
+        body: Dict[str, Any] = {}
+        if agent_id is not None:
+            body["agent_id"] = int(agent_id)
+        if knowledge_base_id is not None:
+            body["knowledge_base_id"] = int(knowledge_base_id)
+        if owner_user_id:
+            body["owner_user_id"] = str(owner_user_id).strip().lower()
+        if uploaded_by:
+            body["uploaded_by"] = str(uploaded_by).strip().lower()
+        if minio_object is not None:
+            body["minio_object"] = minio_object
+        if minio_bucket is not None:
+            body["minio_bucket"] = minio_bucket
+        resp = await self._request(
+            "POST", f"/kb/documents/{document_id}/clone", json=body
+        )
+        return resp if isinstance(resp, dict) else {"ok": False}
+
     async def kb_search(
         self,
         query: str,
@@ -794,11 +1090,21 @@ class RagClient:
         use_reranking: Optional[bool] = None,
         strategy: Optional[str] = None,
         document_ids: Optional[List[int]] = None,
+        settings_override: Optional[Dict[str, Any]] = None,
+        settings_source: Optional[str] = None,
     ) -> List[Tuple[str, float, Optional[int], Optional[int]]]:
         """Поиск по Базе Знаний.
 
         Возвращает список (content, score, document_id, chunk_index).
+
+        ``settings_override`` — снимок настроек конкретной БЗ (per-KB search).
+        Без него: runtime ``kb`` если привязан, иначе legacy ``agent``.
         """
+        from backend.services.user_rag_settings import runtime_kb_search_scope
+
+        src = (settings_source or "").strip().lower() or runtime_kb_search_scope()
+        if isinstance(settings_override, dict) and settings_override:
+            src = "kb"
         return await self._search_with_pipeline(
             "/kb/search",
             query,
@@ -809,7 +1115,8 @@ class RagClient:
             use_reranking=use_reranking,
             strategy=strategy,
             project_id=None,
-            settings_source="agent",
+            settings_source=src,
+            settings_override=settings_override,
         )
 
     async def kb_reindex(
@@ -822,11 +1129,12 @@ class RagClient:
         embedding_model: Optional[str] = None,
         embedding_provider: Optional[str] = None,
         agent_id: Optional[int] = None,
+        knowledge_base_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Перечанкировать Базу Знаний (опционально только документы владельца).
 
-        ```agent_id``` — ключ очереди в svc-rag: у двух агентов одного владельца
-        пересборки идут независимо и не прерывают друг друга.
+        ```agent_id``` / ```knowledge_base_id``` — ключ очереди в svc-rag: у двух
+        сущностей одного владельца пересборки идут независимо.
         """
         body: Dict[str, Any] = {}
         if chunk_size is not None:
@@ -843,6 +1151,8 @@ class RagClient:
             body["owner_user_id"] = str(owner_user_id).strip().lower()
         if agent_id is not None:
             body["agent_id"] = int(agent_id)
+        if knowledge_base_id is not None:
+            body["knowledge_base_id"] = int(knowledge_base_id)
         if document_ids:
             body["document_ids"] = [int(x) for x in document_ids if x is not None]
         if embedding_model:
@@ -904,8 +1214,29 @@ class RagClient:
 
         data.update(get_memory_embedding_fields())
         return await self._request(
-            "POST", "/memory-rag/documents", files=files, data=data, http_timeout=_svc_rag_document_index_timeout()
+            "POST",
+            "/memory-rag/documents",
+            files=files,
+            data=data,
+            http_timeout=_svc_rag_document_index_timeout(),
         )
+
+    async def memory_rag_check_duplicate(
+        self,
+        *,
+        content_hash: str,
+        filename: Optional[str] = None,
+        size: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"content_hash": str(content_hash).strip().lower()}
+        if filename:
+            body["filename"] = filename
+        if size is not None:
+            body["size"] = int(size)
+        resp = await self._request(
+            "POST", "/memory-rag/documents/duplicate-check", json=body
+        )
+        return resp if isinstance(resp, dict) else {"duplicate": False}
 
     async def memory_rag_list_documents(self) -> List[Dict[str, Any]]:
         resp = await self._request("GET", "/memory-rag/documents")
@@ -991,14 +1322,40 @@ class RagClient:
             http_timeout=_svc_rag_document_index_timeout(),
         )
 
+    async def project_rag_check_duplicate(
+        self,
+        *,
+        project_id: str,
+        content_hash: str,
+        filename: Optional[str] = None,
+        size: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"content_hash": str(content_hash).strip().lower()}
+        if filename:
+            body["filename"] = filename
+        if size is not None:
+            body["size"] = int(size)
+        resp = await self._request(
+            "POST",
+            f"/project-rag/projects/{project_id}/documents/duplicate-check",
+            json=body,
+        )
+        return resp if isinstance(resp, dict) else {"duplicate": False}
+
     async def project_rag_list_documents(self, project_id: str) -> List[Dict[str, Any]]:
         """Список документов проекта."""
-        resp = await self._request("GET", f"/project-rag/projects/{project_id}/documents")
+        resp = await self._request(
+            "GET", f"/project-rag/projects/{project_id}/documents"
+        )
         return resp if isinstance(resp, list) else []
 
-    async def project_rag_delete_document(self, project_id: str, document_id: int) -> Dict[str, Any]:
+    async def project_rag_delete_document(
+        self, project_id: str, document_id: int
+    ) -> Dict[str, Any]:
         """Удалить один документ из RAG проекта."""
-        return await self._request("DELETE", f"/project-rag/projects/{project_id}/documents/{document_id}")
+        return await self._request(
+            "DELETE", f"/project-rag/projects/{project_id}/documents/{document_id}"
+        )
 
     async def project_rag_delete_project(self, project_id: str) -> Dict[str, Any]:
         """Удалить все RAG-данные проекта (при удалении проекта)."""
@@ -1118,6 +1475,7 @@ def rag_model_path_to_provider(model_path: str):
     if provider == "native":
         return "native", None
     return provider, model
+
 
 async def reconcile_rag_models_provider(
     client,

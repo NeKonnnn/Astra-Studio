@@ -110,8 +110,7 @@ def _parse_content_item(item: dict) -> ParsedMcpResult:
         meta = {"type": "audio", "mimeType": mime, "data": data, "uri": item.get("uri")}
         return ParsedMcpResult(text="[audio]", audio=[meta], raw=item)
     if ctype == "resource":
-        nested = item.get("resource") if isinstance(item.get("resource"), dict) else {}
-        uri = item.get("uri") or nested.get("uri")
+        uri = item.get("uri") or item.get("resource", {}).get("uri") if isinstance(item.get("resource"), dict) else None
         text = item.get("text")
         if not text and isinstance(item.get("resource"), dict):
             text = item["resource"].get("text")
@@ -472,11 +471,13 @@ def append_download_links_to_content(content: str, links: List[Dict[str, str]]) 
     if not links:
         return content
     body = (content or "").strip()
-    # Ссылки без url пропускаем сразу: пустая строка «входит» в любой текст и ломала дедупликацию.
-    urls = [(item.get("label") or "Скачать", item.get("url")) for item in links if item.get("url")]
-    if not urls:
-        return content
-    if body and any(url in body for _, url in urls):
+    block_lines = ["", "**Файлы:**"]
+    for item in links:
+        label = item.get("label") or "Скачать"
+        url = item.get("url") or ""
+        if url:
+            block_lines.append(f"- [{label}]({url})")
+    block = "\n".join(block_lines)
+    if body and any(url in body for url in (x.get("url") or "" for x in links)):
         return body
-    block_lines = ["", "**Файлы:**"] + [f"- [{label}]({url})" for label, url in urls]
-    return f"{body}{chr(10).join(block_lines)}".strip()
+    return f"{body}{block}".strip()

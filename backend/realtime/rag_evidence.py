@@ -23,6 +23,7 @@ def _rag_env_flag(name: str, default: bool) -> bool:
         return default
     return raw in ("1", "true", "yes", "on")
 
+
 def memory_rag_enabled() -> bool:
     """Глобальный выключатель Библиотеки: ```RAG_MEMORY_ENABLED=0```
 
@@ -69,6 +70,157 @@ def rag_document_label(doc_id: Optional[Any], id_to_name: Dict[int, str]) -> str
     return "документ без имени"
 
 
+_IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"})
+
+
+def rag_fragment_source(title: Any) -> str:
+    """Человекочитаемая подпись источника фрагмента по имени файла."""
+    name = str(title or "").strip() or "без имени"
+    ext = ""
+    if "." in name:
+        ext = "." + name.rsplit(".", 1)[-1].lower()
+    if ext in _IMAGE_EXTS:
+        return f"текст, распознанный на изображении «{name}»"
+    return f"документ «{name}»"
+
+
+def rag_scoped_filenames(
+    id_to_name: Dict[int, str],
+    only_ids: Optional[List[Any]] = None,
+) -> List[str]:
+    """Имена файлов хранилища; only_ids сужает перечень до документов сущности.
+
+    Для Базы Знаний это обязательно: kb_list_documents отдаёт всю KB, а
+    агент видит только свои kb_document_ids. Показать ему чужие файлы -
+    утечка, пусть и одними именами.
+
+    only_ids=None - без сужения (проект и библиотека и так свои).
+    Пустой список - пустой перечень, а не "всё".
+    """
+    names = dict(id_to_name or {})
+    if only_ids is not None:
+        keep = set()
+        for raw in only_ids or []:
+            try:
+                keep.add(int(raw))
+            except (TypeError, ValueError):
+                continue
+        names = {k: v for k, v in names.items() if k in keep}
+    out = [str(v).strip() for v in names.values() if str(v or "").strip()]
+    return sorted(set(out))
+
+
+# Основа имени короче — не признак: файл «1.pdf» совпал бы с любой цифрой
+# в вопросе. Полное имя с расширением проверяется всегда.
+_NAMED_DOC_MIN_STEM = 3
+
+
+def documents_named_in_query(
+    query: str,
+    id_to_name: Dict[int, str],
+    *,
+    only_ids: Optional[List[Any]] = None,
+    limit: int = 3,
+) -> List[int]:
+    """document_id тех документов, чьи имена названы в вопросе.
+
+    Вопрос «что в файле image.png?» семантически про ИМЯ файла, а чанки
+    хранят его СОДЕРЖИМОЕ. Вектор их не связывает, и поиск возвращает
+    пусто - хотя документ проиндексирован. Находим его по имени, чтобы
+    дотянуть чанки отдельным запросом.
+
+    only_ids сужает перечень (для KB - документы агента: kb_list_documents
+    отдаёт всю базу, и без сужения можно было бы вытащить чужой файл,
+    просто назвав его). None - без сужения.
+
+    limit держит разумным число дополнительных поисков.
+    """
+    q = (query or "").lower()
+    if not q:
+        return []
+
+    allowed: Optional[set] = None
+    if only_ids is not None:
+        allowed = set()
+        for raw in only_ids or []:
+            try:
+                allowed.add(int(raw))
+            except (TypeError, ValueError):
+                continue
+
+    found: List[int] = []
+    for raw_id, raw_name in (id_to_name or {}).items():
+        try:
+            doc_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if allowed is not None and doc_id not in allowed:
+            continue
+        name = str(raw_name or "").strip().lower()
+        if not name:
+            continue
+        hit = name in q
+        if not hit:
+            stem = name.rsplit(".", 1)[0].strip()
+            if stem != name and len(stem) >= _NAMED_DOC_MIN_STEM:
+                hit = stem in q
+        if hit:
+            found.append(doc_id)
+    found.sort()
+    return found[: max(0, int(limit))]
+
+
+def merge_extra_hits(primary: List[Any], extra: List[Any]) -> List[Any]:
+    """Добавить недостающие фрагменты к основным, без дублей.
+
+    Ключ - пара (документ, чанк). Порядок основных не меняется:
+    дотянутое дописывается в хвост.
+    """
+    out = list(primary or [])
+    seen = set()
+    for hit in out:
+        try:
+            _, _, doc_id, chunk_idx = hit
+        except (TypeError, ValueError):
+            continue
+        seen.add((doc_id, chunk_idx))
+    for hit in extra or []:
+        try:
+            _, _, doc_id, chunk_idx = hit
+        except (TypeError, ValueError):
+            continue
+        if (doc_id, chunk_idx) in seen:
+            continue
+        seen.add((doc_id, chunk_idx))
+        out.append(hit)
+    return out
+
+
+def build_rag_inventory_block(
+    sections: List[Tuple[str, List[str]]],
+) -> str:
+    """Перечень доступных файлов - в начало CONTEXT, всегда и целиком.
+    Пустой результат - если выключено или показывать нечего.
+    """
+    try:
+        from backend.rag_query.prompts import documents_inventory_enabled
+
+        if not documents_inventory_enabled():
+            return ""
+    except Exception:
+        logger.exception("Перечень файлов: не удалось прочитать настройку")
+
+    lines: List[str] = []
+    for label, names in sections or []:
+        names = [n for n in (names or []) if n]
+        if not names:
+            continue
+        lines.append(f"{label} ({len(names)}): " + ", ".join(names))
+    if not lines:
+        return ""
+    return "ДОСТУПНЫЕ ФАЙЛЫ (полный перечень того, что загружено):\n" + "\n".join(lines)
+
+
 class ActiveRagSources:
     """Какие RAG-источники активны для текущего запроса.
 
@@ -97,7 +249,11 @@ class ActiveRagSources:
         return self.project or self.agent_kb or self.memory
 
     def as_dict(self) -> Dict[str, bool]:
-        return {"project": self.project, "agent_kb": self.agent_kb, "memory": self.memory}
+        return {
+            "project": self.project,
+            "agent_kb": self.agent_kb,
+            "memory": self.memory,
+        }
 
     def store_list(self) -> List[str]:
         """Имена SVC-RAG store'ов, разрешённые к поиску (для agentic tool)."""
@@ -133,7 +289,11 @@ def resolve_active_rag_sources(
     не искалась вообще и чат отвечал «не нашёл», хотя документы загружены.
     """
     project = bool(project_id)
-    agent_kb = bool(use_agent_scoped_kb) and bool(agent_kb_doc_ids) and len(agent_kb_doc_ids) > 0
+    agent_kb = (
+        bool(use_agent_scoped_kb)
+        and bool(agent_kb_doc_ids)
+        and len(agent_kb_doc_ids) > 0
+    )
     memory = bool(use_memory_library_rag) or bool(use_kb_rag)
     if memory and not memory_rag_enabled():
         logger.info(
@@ -196,7 +356,10 @@ async def rag_reindex_blocks_active_sources(
         try:
             docs = list(await rag_client.project_rag_list_documents(project_id) or [])
         except Exception:
-            logger.warning("[RAG] project_rag_list_documents failed during reindex guard", exc_info=True)
+            logger.warning(
+                "[RAG] project_rag_list_documents failed during reindex guard",
+                exc_info=True,
+            )
             return False
         if docs:
             return True
@@ -232,7 +395,11 @@ def build_reindex_status_message(
     # ситуации не отвечает на вопрос «какого именно».
     titles = _entity_titles(active)
     if titles and not memory_reindexing:
-        stores = titles[0] if len(titles) == 1 else ", ".join(titles[:-1]) + f" и {titles[-1]}"
+        stores = (
+            titles[0]
+            if len(titles) == 1
+            else ", ".join(titles[:-1]) + f" и {titles[-1]}"
+        )
         return (
             f"Идёт пересборка {stores}. "
             "Поиск по ним временно недоступен — дождитесь завершения, иначе ответ может быть «Не знаю»."
@@ -296,12 +463,18 @@ def rag_guard_env(scope: Optional[str] = None) -> Tuple[float, bool]:
         except ValueError:
             min_sim = 0.0
     min_sim = max(0.0, min(min_sim, 1.0))
-    block = os.getenv("RAG_BLOCK_ON_NO_EVIDENCE", "1").strip().lower() not in ("0", "false", "no", "off")
+    block = os.getenv("RAG_BLOCK_ON_NO_EVIDENCE", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
     return (min_sim, block)
 
 
 def filter_rag_hits_by_score(
-    hits: Optional[List[Tuple[str, float, Optional[int], Optional[int]]]], min_score: float
+    hits: Optional[List[Tuple[str, float, Optional[int], Optional[int]]]],
+    min_score: float,
 ) -> List[Tuple[str, float, Optional[int], Optional[int]]]:
     if not hits:
         return []
@@ -332,7 +505,9 @@ def filter_rag_hits_by_score(
             except ValueError:
                 rescue = 10
             rescue = max(4, min(rescue, 24))
-            ranked = sorted([h for h in hits if len(h) > 1], key=lambda h: float(h[1]), reverse=True)
+            ranked = sorted(
+                [h for h in hits if len(h) > 1], key=lambda h: float(h[1]), reverse=True
+            )
             if ranked:
                 logger.debug(
                     "[RAG] max score=%.4f < RAG_MIN_SIMILARITY=%s — спасение recall: топ-%s чанков.",
@@ -362,6 +537,7 @@ def _format_single_fragment(
     except (TypeError, ValueError):
         return None
     title = rag_document_label(doc_id, id_to_name)
+    source = rag_fragment_source(title)
     if include_chunk_meta:
         try:
             from backend.rag_query.relevance import (
@@ -377,8 +553,98 @@ def _format_single_fragment(
                 sc_pct = score_to_relevance_percent(score)
         except Exception:
             sc_pct = 1
-        return f"Фрагмент {number} (документ «{title}», чанк {chunk_idx}, релевантность: {sc_pct}%):\n{content}\n"
-    return f"Фрагмент {number} (документ «{title}»): {content}\n"
+        return f"Фрагмент {number} ({source}, чанк {chunk_idx}, релевантность: {sc_pct}%):\n{content}\n"
+    return f"Фрагмент {number} ({source}): {content}\n"
+
+
+def hits_to_document_search_trace(
+    *,
+    query: str,
+    hits: Optional[List[Tuple[str, float, Optional[int], Optional[int]]]],
+    id_to_name: Dict[int, str],
+    store: str = "kb",
+    strategy: str = "auto",
+) -> Optional[Dict[str, Any]]:
+    """Собрать document_search для UI из сырых RAG-хитов (как в handlers)."""
+    if not hits:
+        return None
+    try:
+        from backend.rag_query.relevance import hits_to_relevance_percents
+    except Exception:
+        return None
+
+    pending: List[Tuple[Any, str]] = []
+    files_used: set = set()
+    for hit in hits:
+        try:
+            content, _score, doc_id, chunk_idx = hit
+        except (TypeError, ValueError):
+            continue
+        if doc_id is None:
+            continue
+        try:
+            fn = id_to_name.get(int(doc_id))
+        except (TypeError, ValueError):
+            fn = None
+        if not fn:
+            fn = f"doc*{doc_id}"
+        files_used.add(fn)
+        pending.append((hit, fn))
+    if not pending:
+        return None
+    pcts = hits_to_relevance_percents([row[0] for row in pending])
+    hits_out: List[Dict[str, Any]] = []
+    for ((content, _score, doc_id, chunk_idx), fn), pct in zip(pending, pcts):
+        hits_out.append(
+            {
+                "file": fn,
+                "anchor": f"chunk@{chunk_idx}({fn})",
+                "relevance": int(pct) if pct is not None else 1,
+                "content": (content or "")[:12000],
+                "chunkIndex": chunk_idx,
+                "documentId": doc_id,
+                "store": store,
+            }
+        )
+    return {
+        "query": query or "",
+        "strategy": strategy,
+        "sourceFiles": sorted(files_used),
+        "hits": hits_out,
+    }
+
+
+def merge_document_search_traces(
+    *traces: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Склеить несколько document_search одного субагента в одну карточку."""
+    merged_hits: List[Dict[str, Any]] = []
+    files: set = set()
+    query = ""
+    strategy = "auto"
+    for trace in traces:
+        if not isinstance(trace, dict):
+            continue
+        if not query:
+            query = str(trace.get("query") or "")
+        if trace.get("strategy"):
+            strategy = str(trace.get("strategy") or strategy)
+        for fn in trace.get("sourceFiles") or []:
+            if fn:
+                files.add(str(fn))
+        for hit in trace.get("hits") or []:
+            if isinstance(hit, dict):
+                merged_hits.append(hit)
+                if hit.get("file"):
+                    files.add(str(hit["file"]))
+    if not merged_hits and not files:
+        return None
+    return {
+        "query": query,
+        "strategy": strategy,
+        "sourceFiles": sorted(files),
+        "hits": merged_hits,
+    }
 
 
 def format_rag_fragments(
@@ -441,7 +707,9 @@ def format_rag_fragments(
             doc_seen.add(d_id)
             doc_order.append(d_id)
     metrics["documents_input"] = len(doc_order)
-    indexed: List[Tuple[int, Optional[int], Tuple[str, float, Optional[int], Optional[int]]]] = []
+    indexed: List[
+        Tuple[int, Optional[int], Tuple[str, float, Optional[int], Optional[int]]]
+    ] = []
     for i, row in enumerate(hits):
         try:
             _, _, d_id, _ = row
@@ -462,7 +730,12 @@ def format_rag_fragments(
         if selected_entries[idx] is not None:
             return True
         num, d_id, row = indexed[idx]
-        frag = _format_single_fragment(row, number=num, id_to_name=id_to_name, include_chunk_meta=include_chunk_meta)
+        frag = _format_single_fragment(
+            row,
+            number=num,
+            id_to_name=id_to_name,
+            include_chunk_meta=include_chunk_meta,
+        )
         if frag is None:
             return False
         if total + len(frag) + reserve_for_marker > max_chars:
@@ -484,7 +757,10 @@ def format_rag_fragments(
             continue
         if total + reserve_for_marker < max_chars:
             frag = _format_single_fragment(
-                row, number=num, id_to_name=id_to_name, include_chunk_meta=include_chunk_meta
+                row,
+                number=num,
+                id_to_name=id_to_name,
+                include_chunk_meta=include_chunk_meta,
             )
             if frag is not None:
                 tail = max(0, max_chars - total - reserve_for_marker)
@@ -521,10 +797,13 @@ def format_rag_fragments(
     )
     return (parts, metrics)
 
+
 def _log_selected_chunks(
     *,
     store_label: str,
-    indexed: List[Tuple[int, Optional[int], Tuple[str, float, Optional[int], Optional[int]]]],
+    indexed: List[
+        Tuple[int, Optional[int], Tuple[str, float, Optional[int], Optional[int]]]
+    ],
     selected_entries: List[Optional[str]],
     id_to_name: Dict[int, str],
     truncated_last: bool,
@@ -545,14 +824,14 @@ def _log_selected_chunks(
     lines = []
     for idx, (num, d_id, row) in enumerate(indexed):
         try:
-            content, score, *doc_id, chunk_idx = row
+            content, score, _doc_id, chunk_idx = row
         except (TypeError, ValueError):
             continue
         used = selected_entries[idx] is not None
         mark = "✓" if used else "✗"
         if used and truncated_last and idx == last_selected:
             mark = "▲"  # попал, но обрезан по бюджету
-        title = id_to_name.get(d_id, f"doc*{d_id}") if d_id is not None else "?"
+        title = id_to_name.get(d_id, f"doc_{d_id}") if d_id is not None else "?"
         preview = " ".join(str(content or "").split())[:80]
         # score — в шкале отработавшей стратегии, cosine — абсолютная близость.
         # Рядом видно и то, и другое: иначе по логу не понять, был ли чанк
@@ -599,7 +878,9 @@ async def fetch_rag_store_counts(
         except Exception:
             logger.exception("kb_list_documents")
     if use_agent_scoped_kb and agent_kb_doc_ids and kb_list:
-        want = {int(x) for x in agent_kb_doc_ids if str(x).isdigit() or isinstance(x, int)}
+        want = {
+            int(x) for x in agent_kb_doc_ids if str(x).isdigit() or isinstance(x, int)
+        }
         n = 0
         for d in kb_list:
             try:

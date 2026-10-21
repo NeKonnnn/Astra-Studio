@@ -104,6 +104,7 @@ class RAGSettings(BaseModel):
     scope: Optional[str] = None
     project_id: Optional[str] = None
     agent_id: Optional[int] = None
+    knowledge_base_id: Optional[int] = None
     entity_name: Optional[str] = None
     strategy: Optional[str] = None  # auto | hybrid | vector | lexical | raw_cosine | graph
     rag_memory_strategy: Optional[str] = None
@@ -140,6 +141,7 @@ class RagModelSelectRequest(BaseModel):
     scope: Optional[str] = None
     project_id: Optional[str] = None
     agent_id: Optional[int] = None
+    knowledge_base_id: Optional[int] = None
     entity_name: Optional[str] = None
 
 

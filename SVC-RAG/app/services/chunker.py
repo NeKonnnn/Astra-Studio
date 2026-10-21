@@ -358,9 +358,17 @@ def split_into_chunks_with_meta(
     else:
         out = _split_universal(text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
-    min_useful = max(20, int(getattr(cfg, "min_chunk_length", 40)) // 2)
-    out = [(t, m) for t, m in out if len(t) >= min_useful]
-    logger.info("[chunker] strategy=%s → чанков=%s (min_useful=%s)", strategy, len(out), min_useful)
+    min_useful = max(8, int(getattr(cfg, "min_chunk_length", 40)) // 2)
+    kept = [(t, m) for t, m in out if len(t) >= min_useful]
+    # Не выбрасываем единственное содержимое крошечного документа.
+    if kept or not out:
+        out = kept
+    logger.debug(
+        "[chunker] strategy=%s → чанков=%s (min_useful=%s)",
+        strategy,
+        len(out),
+        min_useful,
+    )
     return out
 
 

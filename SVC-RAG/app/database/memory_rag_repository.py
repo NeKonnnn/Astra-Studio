@@ -37,6 +37,10 @@ class MemoryRagDocumentRepository:
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_memory_rag_documents_created ON memory_rag_documents(created_at DESC)"
             )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_rag_documents_content_hash "
+                "ON memory_rag_documents ((metadata->>'content_hash'))"
+            )
         logger.info("Таблица memory_rag_documents готова")
 
     async def create_document(self, document: Document) -> Optional[int]:
@@ -57,6 +61,45 @@ class MemoryRagDocumentRepository:
                 document.updated_at,
             )
         return row["id"] if row else None
+
+    async def find_duplicate(
+        self,
+        *,
+        content_hash: Optional[str] = None,
+        filename: Optional[str] = None,
+        size: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Дубликат в глобальной библиотеке памяти: content_hash или filename+size."""
+        digest = (content_hash or "").strip().lower()
+        name = (filename or "").strip()
+        size_s = str(int(size)) if size is not None else None
+        if not digest and not (name and size_s is not None):
+            return None
+
+        async with await self.db.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, filename FROM memory_rag_documents
+                WHERE (
+                    ($1::text <> '' AND LOWER(COALESCE(metadata->>'content_hash', '')) = $1)
+                    OR (
+                        $2::text <> '' AND $3::text IS NOT NULL
+                        AND (metadata->>'content_hash' IS NULL
+                             OR TRIM(COALESCE(metadata->>'content_hash', '')) = '')
+                        AND LOWER(filename) = LOWER($2)
+                        AND COALESCE(metadata->>'size', '') = $3
+                    )
+                )
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                digest,
+                name,
+                size_s,
+            )
+        if not row:
+            return None
+        return {"id": int(row["id"]), "filename": row["filename"]}
 
     async def get_document(self, document_id: int) -> Optional[Document]:
         async with await self.db.acquire() as conn:
@@ -81,7 +124,7 @@ class MemoryRagDocumentRepository:
     async def get_all_documents(self) -> List[Document]:
         async with await self.db.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT id, filename, content, metadata, created_at, updated_at FROM memory_rag_documents ORDER BY created_at DESC"
+                "SELECT id, filename, metadata, created_at, updated_at FROM memory_rag_documents ORDER BY created_at DESC"
             )
         out = []
         for row in rows:
@@ -92,7 +135,7 @@ class MemoryRagDocumentRepository:
                 Document(
                     id=row["id"],
                     filename=row["filename"],
-                    content=row["content"],
+                    content=None,  # текст здесь не нужен, см. Document.content
                     metadata=meta or {},
                     created_at=row["created_at"],
                     updated_at=row["updated_at"],
@@ -100,7 +143,33 @@ class MemoryRagDocumentRepository:
             )
         return out
 
+    async def list_documents_brief(self) -> List[Dict[str, Any]]:
+        """Список документов для интерфейса - без разбора метаданных.
+
+        То же, что в kb_repository: наверху из метаданных берут size и
+        file_type, а разбирался ради них весь блоб на каждый опрос.
+        COALESCE - чтобы ответ остался прежним.
+        """
+        async with await self.db.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT id, filename, created_at,
+                       COALESCE(metadata->>'size', '0') AS size,
+                       COALESCE(metadata->>'file_type', '') AS file_type
+                FROM memory_rag_documents ORDER BY created_at DESC
+                """)
+        return [
+            {
+                "id": r["id"],
+                "filename": r["filename"],
+                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+                "size": r["size"],
+                "file_type": r["file_type"],
+            }
+            for r in rows
+        ]
+
     async def delete_document(self, document_id: int) -> bool:
+        # Векторы удаляются через FK ON DELETE CASCADE (embedding_schema).
         async with await self.db.acquire() as conn:
             await conn.execute("DELETE FROM memory_rag_documents WHERE id = $1", document_id)
         return True

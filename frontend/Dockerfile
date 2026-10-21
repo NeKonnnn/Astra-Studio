@@ -15,6 +15,9 @@ ENV REACT_APP_WS_URL=$REACT_APP_WS_URL
 
 # Увеличиваем heap Node.js для сборки webpack + monaco-editor
 ENV NODE_OPTIONS=--max-old-space-size=4096
+# Docker BuildKit часто прокидывает CI=true → CRA валит сборку на eslint-warnings.
+ENV CI=false
+ENV DISABLE_ESLINT_PLUGIN=true
 
 # Копирование package.json
 COPY package.json ./

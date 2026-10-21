@@ -51,15 +51,9 @@ def _env_bool(name: str):
 
 def _own_enabled(key: str) -> bool:
     """Собственный флаг сервиса без учета зависимостей ENV/YAML"""
-    try:
-        settings = get_settings()
-    except Exception:
-        logger.exception("Ошибка операции")
-        return False
-
     if key == "mcp":
         try:
-            mcp = getattr(settings, "mcp", None)
+            mcp = getattr(get_settings(), "mcp", None)
             return bool(mcp is not None and getattr(mcp, "enabled", False))
         except Exception:
             logger.exception("Ошибка операции")
@@ -69,47 +63,11 @@ def _own_enabled(key: str) -> bool:
     if env_val is not None:
         return env_val
     with logged_suppress(logger):
-        ms = getattr(settings, "microservices_enabled", None)
+        ms = getattr(get_settings(), "microservices_enabled", None)
         if ms is not None:
             yaml_val = getattr(ms, key, None)
             if isinstance(yaml_val, bool):
                 return yaml_val
-    with logged_suppress(logger):
-        ms_new = getattr(settings, "microservices", None)
-        if isinstance(ms_new, dict):
-            block = ms_new.get(key)
-            if isinstance(block, dict) and isinstance(block.get("enabled"), bool):
-                return bool(block["enabled"])
-            alias_map = {
-                "agents": "llm",
-            }
-            alias = alias_map.get(key)
-            if alias:
-                block = ms_new.get(alias)
-                if isinstance(block, dict) and isinstance(block.get("enabled"), bool):
-                    return bool(block["enabled"])
-        else:
-            block = getattr(ms_new, key, None) if ms_new is not None else None
-            if block is not None and isinstance(getattr(block, "enabled", None), bool):
-                return bool(getattr(block, "enabled"))
-
-    with logged_suppress(logger):
-        if key == "postgresql":
-            pg = getattr(settings, "postgresql", None)
-            return bool(pg and getattr(pg, "host", None))
-        if key == "minio":
-            mn = getattr(settings, "minio", None)
-            return bool(mn and getattr(mn, "endpoint", None))
-        if key == "rag":
-            return bool(settings.microservice_http_base("rag_service_docker", "rag_service_port"))
-        if key == "rag_models":
-            return bool(settings.microservice_http_base("rag_models_service_docker", "rag_models_service_port"))
-        if key == "stt":
-            return bool(settings.microservice_http_base("stt_service_docker", "stt_service_port"))
-        if key == "tts":
-            return bool(settings.microservice_http_base("tts_service_docker", "tts_service_port"))
-        if key == "diarization":
-            return bool(settings.microservice_http_base("diarization_service_docker", "diarization_service_port"))
     return False
 
 
@@ -145,24 +103,6 @@ def require_service(key: str) -> None:
         raise ServiceDisabledError(key)
 
 
-def register_service_disabled_handler(app) -> None:
-    """Регистрирует обработчик ServiceDisabledError: 503 «в разработке» вместо голого 500.
-
-    Без обработчика исключение уходит в ServerErrorMiddleware: клиент получает
-    plain-text 500 без CORS-заголовков, и браузер показывает это как CORS-ошибку.
-    Обработчик исключения работает внутри CORSMiddleware, поэтому ответ его проходит.
-    """
-    from fastapi import Request
-    from fastapi.responses import JSONResponse
-
-    @app.exception_handler(ServiceDisabledError)
-    async def _service_disabled_handler(request: Request, exc: ServiceDisabledError):
-        return JSONResponse(
-            status_code=503,
-            content={"detail": str(exc), "service": exc.key},
-        )
-
-
 _logged_once = False
 
 
@@ -180,11 +120,15 @@ def log_disabled_services_once() -> None:
         else:
             # собственный флаг включён, но выключена зависимость
             off = [d for d in _REQUIRES.get(key, ()) if not is_service_enabled(d)]
-            reason = "выключена зависимость: " + ", ".join(f"{_SERVICES[d][0]}=false" for d in off)
+            reason = "выключена зависимость: " + ", ".join(
+                f"{_SERVICES[d][0]}=false" for d in off
+            )
         logger.info(
             "[feature-flag] Микросервис «%s» — В РАЗРАБОТКЕ (%s). Подключение отключено",
             disp,
             reason,
         )
         if key == "rag":
-            logger.info("[feature-flag] RAG отключён — шаг поиска в чате будет пропускаться")
+            logger.info(
+                "[feature-flag] RAG отключён — шаг поиска в чате будет пропускаться"
+            )

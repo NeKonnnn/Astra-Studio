@@ -109,14 +109,27 @@ export async function deleteMcpCredentials(serverId: string): Promise<void> {
   await mcpFetch(MCP_API.SERVER_CREDENTIALS(serverId), { method: 'DELETE' });
 }
 
+function isSameOriginApiUrl(absoluteUrl: string): boolean {
+  try {
+    const target = new URL(absoluteUrl);
+    const apiBase = new URL(getApiUrl('/'));
+    return target.origin === apiBase.origin;
+  } catch {
+    return false;
+  }
+}
+
+/** JWT приложения только на свой origin/API; внешние MCP-ссылки — без Authorization. */
 export async function downloadMcpFile(fileUrl: string, filename?: string): Promise<void> {
   const token = localStorage.getItem('auth_token') || localStorage.getItem('token');
-  const url = fileUrl.startsWith('http://') || fileUrl.startsWith('https://')
+  const isAbsolute = fileUrl.startsWith('http://') || fileUrl.startsWith('https://');
+  const url = isAbsolute
     ? fileUrl
     : getApiUrl(fileUrl.startsWith('/') ? fileUrl : `/${fileUrl}`);
 
+  const sendAuth = Boolean(token) && (!isAbsolute || isSameOriginApiUrl(url));
   const response = await fetch(url, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    headers: sendAuth ? { Authorization: `Bearer ${token}` } : {},
   });
 
   if (!response.ok) {

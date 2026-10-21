@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -18,6 +18,10 @@ class ProjectCreate(BaseModel):
     icon: Optional[str] = Field(None, max_length=64)
     icon_type: Optional[ProjectIconType] = Field(None, alias="iconType")
     icon_color: Optional[str] = Field(None, max_length=32, alias="iconColor")
+    knowledge_bases_enabled: bool = Field(False, alias="knowledgeBasesEnabled")
+    knowledge_base_ids: List[int] = Field(
+        default_factory=list, alias="knowledgeBaseIds"
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -29,5 +33,9 @@ class ProjectUpdate(BaseModel):
     icon: Optional[str] = Field(None, max_length=64)
     icon_type: Optional[ProjectIconType] = Field(None, alias="iconType")
     icon_color: Optional[str] = Field(None, max_length=32, alias="iconColor")
+    knowledge_bases_enabled: Optional[bool] = Field(
+        None, alias="knowledgeBasesEnabled"
+    )
+    knowledge_base_ids: Optional[List[int]] = Field(None, alias="knowledgeBaseIds")
 
     model_config = {"populate_by_name": True}

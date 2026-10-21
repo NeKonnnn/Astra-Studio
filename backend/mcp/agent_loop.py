@@ -29,7 +29,12 @@ from backend.agents.step_debug import (
     log_tool_call,
     log_tool_result,
 )
-from backend.agents.subagents.parent import run_native_tool_call, subagent_call_args
+from backend.agents.subagents.parallel import run_tool_calls
+from backend.agents.subagents.parent import (
+    new_subagent_call,
+    run_native_tool_call,
+    subagent_call_args,
+)
 from backend.agents.subagents.settings import NATIVE_SERVER_ID
 from backend.mcp.types import AgentLoopResult, McpCallContext, McpToolInfo
 from backend.settings.cef_logger.cef_logger import log_cef_event
@@ -408,8 +413,12 @@ class McpAgentLoop:
                 ],
             }
             working.append(assistant_msg)
-            for tc in result.tool_calls:
-                tool_info = _find_tool(tc.name, tools)
+            
+            # Один вызов шага -> tool-сообщение для модели. Вызовы subagent
+            # шага идут одновременно (run_tool_calls), остальные - по очереди.
+            async def _run_call(item) -> Dict[str, Any]:
+                nonlocal tool_calls_executed
+                tc, tool_info, sub_call = item
                 if not tool_info:
                     log_tool_result(
                         step=step,
@@ -418,14 +427,11 @@ class McpAgentLoop:
                         success=False,
                         error="Unknown tool",
                     )
-                    working.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc.id,
-                            "content": f"Unknown tool: {tc.name}",
-                        }
-                    )
-                    continue
+                    return {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": f"Unknown tool: {tc.name}",
+                    }
                 session = sessions.get(tool_info.server_id)
                 started = time.perf_counter()
                 call_id = uuid.uuid4().hex
@@ -462,6 +468,7 @@ class McpAgentLoop:
                             tool_args,
                             subagent_ctx=subagent_ctx,
                             subagent_config=subagent_config,
+                            call=sub_call,
                         )
                         outcome = "success"
                         preview = (result_ui or "")[:500] or None
@@ -484,14 +491,11 @@ class McpAgentLoop:
                         success=False,
                         error=f"MCP session unavailable: {tool_info.server_id}",
                     )
-                    working.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc.id,
-                            "content": f"MCP session unavailable: {tool_info.server_id}",
-                        }
-                    )
-                    continue
+                    return {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": f"MCP session unavailable: {tool_info.server_id}",
+                    }
                 else:
                     log_cef_event(
                         "INT001",
@@ -575,9 +579,23 @@ class McpAgentLoop:
                     document_search=native_doc_search if outcome == "success" else None,
                 )
                 tool_calls_executed += 1
-                working.append(
-                    {"role": "tool", "tool_call_id": tc.id, "content": content}
+                return {"role": "tool", "tool_call_id": tc.id, "content": content}
+
+            calls = []
+            for tc in result.tool_calls:
+                tool_info = _find_tool(tc.name, tools)
+                # Номер метки [[ОТВЕТ N]] субагенту - до запуска, по порядку.
+                calls.append(
+                    (tc, tool_info, new_subagent_call(tool_info, subagent_ctx))
                 )
+            working.extend(
+                await run_tool_calls(
+                    calls,
+                    _run_call,
+                    parallel=lambda item: item[2] is not None,
+                    step=step,
+                )
+            )
         log_llm_call(
             step=limit,
             limit=limit,

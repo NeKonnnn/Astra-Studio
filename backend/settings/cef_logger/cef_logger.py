@@ -973,3 +973,14 @@ def log_cef_event(
     full_cef = f"{prefix}{ext_str}"
     logger.info("%s", full_cef)
     _emit_cef_syslog_udp(full_cef, spec.severity)
+
+def login_audit_cef_extra(user: Optional[dict], auth_method: str) -> Dict[str, Any]:
+    """Общие cs-поля и auth_method для SEC001/USR001 (LDAP или Keycloak)."""
+    method = str(auth_method or "ldap").strip().lower() or "ldap"
+    extra: Dict[str, Any] = {"auth_method": method}
+    if method == "keycloak":
+        extra.update(keycloak_audit_cs_fields(user))
+    else:
+        extra.update(ldap_audit_cs_fields(user))
+    return extra
+

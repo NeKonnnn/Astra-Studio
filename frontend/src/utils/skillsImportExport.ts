@@ -142,10 +142,33 @@ function downloadBlob(blob: Blob, filename: string): void {
 }
 
 function yamlQuote(value: string): string {
-  if (/[:#\[\]{}|>*&!%@`]/.test(value) || /^\s|\s$/.test(value) || value === '') {
+  if (
+    /[:#\[\]{}|>*&!%@`\r\n]/.test(value) ||
+    /^\s|\s$/.test(value) ||
+    /^["']/.test(value) ||
+    value === ''
+  ) {
     return JSON.stringify(value);
   }
   return value;
+}
+
+/** Обратная операция к yamlQuote: JSON-строка → значение, иначе — как есть. */
+function yamlUnquote(raw: string): string {
+  const v = raw.trim();
+  if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) {
+    try {
+      const parsed = JSON.parse(v);
+      if (typeof parsed === 'string') return parsed;
+    } catch {
+      /* не валидный JSON — ниже снимаем обрамляющие кавычки */
+    }
+    return v.slice(1, -1);
+  }
+  if (v.length >= 2 && v.startsWith("'") && v.endsWith("'")) {
+    return v.slice(1, -1);
+  }
+  return v;
 }
 
 /** SKILL.md: YAML frontmatter + body. */
@@ -192,9 +215,11 @@ export function parseSkillFrontmatter(md: string): {
   for (const line of m[1].split(/\r?\n/)) {
     const idx = line.indexOf(':');
     if (idx > 0) {
-      meta[line.slice(0, idx).trim()] = line.slice(idx + 1).trim().replace(/^["']|["']$/g, '');
+      meta[line.slice(0, idx).trim()] = yamlUnquote(line.slice(idx + 1));
     }
   }
+  // serializeSkillToMd вставляет ровно одну пустую строку-разделитель после frontmatter.
+  const body = m[2].replace(/^\r?\n/, '');
   return {
     name: meta.name,
     slug: meta.slug,
@@ -211,7 +236,7 @@ export function parseSkillFrontmatter(md: string): {
     always_apply: meta.always_apply != null ? parseBool(meta.always_apply, false) : undefined,
     allowed_tools: meta.allowed_tools ? splitCsv(meta.allowed_tools) : undefined,
     tags: meta.tags ? splitCsv(meta.tags) : undefined,
-    body: m[2] || '',
+    body,
   };
 }
 

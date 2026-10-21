@@ -17,7 +17,6 @@ RAG-настройки агентов и проектов.
 
 from __future__ import annotations
 
-import os
 from contextvars import ContextVar, Token
 from copy import deepcopy
 from typing import Any, Dict, Optional, Tuple
@@ -60,7 +59,7 @@ INDEX_AFFECTING_KEYS: Tuple[str, ...] = (
     "rag_embedding_model_path",
 )
 
-SCOPES: Tuple[str, ...] = ("project", "agent")
+SCOPES: Tuple[str, ...] = ("project", "agent", "kb")
 DEFAULT_SCOPE = "project"
 
 # Ключ настроек Библиотеки в строке пользователя.
@@ -238,6 +237,7 @@ def _get_user_repo():
 
 # --- настройки сущности -----------------------------------------------------
 
+
 async def get_entity_rag_settings(
     scope: Optional[str], entity_id: Optional[Any]
 ) -> Dict[str, Any]:
@@ -290,7 +290,9 @@ async def save_entity_rag_settings(
     sc = normalize_scope(scope)
     repo = _get_entity_repo()
     if repo is None:
-        logger.warning("entity_rag_settings: репозиторий недоступен — сохранение пропущено")
+        logger.warning(
+            "entity_rag_settings: репозиторий недоступен — сохранение пропущено"
+        )
         return _merge_with_defaults(updates)
 
     stored = _strip_legacy_default_overrides(dict(await repo.get(sc, ek) or {}))
@@ -299,11 +301,12 @@ async def save_entity_rag_settings(
             stored[key] = updates[key]
 
     defaults = _defaults_from_app_state()
+    # Индексные ключи храним ВСЕГДА, даже когда значение совпало с дефолтным
+    # кластера. Иначе выбор такого значения неотличим от "нетрогал"
     payload = {
         k: v
         for k, v in stored.items()
-        if k in RAG_SETTING_KEYS
-        and (k in INDEX_AFFECTING_KEYS or v != defaults.get(k))
+        if k in RAG_SETTING_KEYS and (k in INDEX_AFFECTING_KEYS or v != defaults.get(k))
     }
     if payload:
         await repo.upsert(sc, ek, payload, updated_by)
@@ -328,6 +331,7 @@ async def reset_entity_rag_settings(
 
 
 # --- стратегия Библиотеки (единственная настройка на пользователе) ----------
+
 
 async def get_user_memory_strategy(user_id: Optional[str]) -> str:
     uid = (user_id or "").strip()
@@ -361,6 +365,7 @@ async def save_user_memory_strategy(user_id: str, strategy: str) -> str:
 
 # --- привязка к запросу чата ------------------------------------------------
 
+
 def bind_user_rag_runtime(
     scopes: Optional[Dict[str, Dict[str, Any]]] = None,
     memory_strategy: Optional[str] = None,
@@ -387,6 +392,25 @@ def reset_user_rag_runtime(token: Token) -> None:
     _runtime_memory_strategy.set(None)
 
 
+def runtime_has_scope(scope: Optional[str] = None) -> bool:
+    """Есть ли в текущем запросе снимок настроек для скоупа (не пустой словарь)."""
+    current = _runtime_scopes.get()
+    if not isinstance(current, dict) or not current:
+        return False
+    snapshot = current.get(normalize_scope(scope))
+    return isinstance(snapshot, dict) and bool(snapshot)
+
+
+def runtime_kb_search_scope() -> str:
+    """Скоуп настроек для поиска по документам БЗ / KB чата.
+
+    Настройки entity-БЗ хранятся в embedding-пространстве ``kb``. Если в
+    runtime активен скоуп ``kb`` — ищем по ним; иначе legacy-поведение агента
+    (settings_source=agent).
+    """
+    return "kb" if runtime_has_scope("kb") else "agent"
+
+
 def get_runtime_rag_settings(scope: Optional[str] = None) -> Dict[str, Any]:
     """Настройки стора для текущего запроса. Нет привязки — дефолты кластера."""
     current = _runtime_scopes.get()
@@ -398,6 +422,7 @@ def get_runtime_rag_settings(scope: Optional[str] = None) -> Dict[str, Any]:
 
 
 # --- производные значения для пайплайна поиска ------------------------------
+
 
 def runtime_rag_top_k(scope: Optional[str] = None) -> int:
     try:
@@ -454,7 +479,9 @@ def runtime_rag_similarity_threshold(scope: Optional[str] = None) -> float:
 
         return get_memory_similarity_threshold()
     try:
-        v = float(get_runtime_rag_settings(scope).get("rag_similarity_threshold") or 0.0)
+        v = float(
+            get_runtime_rag_settings(scope).get("rag_similarity_threshold") or 0.0
+        )
     except (TypeError, ValueError):
         v = 0.0
     return max(0.0, min(v, 1.0))
@@ -477,7 +504,8 @@ def merged_rag_system_prompt(scopes) -> str:
             p = get_memory_system_prompt().strip()
         else:
             p = str(
-                get_runtime_rag_settings(normalize_scope(name)).get("rag_system_prompt") or ""
+                get_runtime_rag_settings(normalize_scope(name)).get("rag_system_prompt")
+                or ""
             ).strip()
         if p and p not in seen:
             seen.append(p)
@@ -493,6 +521,7 @@ def runtime_rag_system_prompt(scopes=None) -> str:
 
 # --- параметры нарезки и моделей --------------------------------------------
 
+
 def chunk_params_from_rag_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
     try:
         size = int(settings.get("rag_chunk_size") or 1000)
@@ -502,7 +531,9 @@ def chunk_params_from_rag_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
         overlap = int(settings.get("rag_chunk_overlap") or 200)
     except (TypeError, ValueError):
         overlap = 200
-    strategy = str(settings.get("rag_chunking_strategy") or "hierarchical").strip().lower()
+    strategy = (
+        str(settings.get("rag_chunking_strategy") or "hierarchical").strip().lower()
+    )
     if strategy not in {
         "hierarchical",
         "fixed",
@@ -560,7 +591,8 @@ def settings_response_dict(settings: Dict[str, Any]) -> Dict[str, Any]:
             settings.get("agentic_rag_enabled", get_entity_agentic_rag_enabled())
         ),
         "agentic_max_iterations": int(
-            settings.get("agentic_max_iterations") or get_entity_agentic_max_iterations()
+            settings.get("agentic_max_iterations")
+            or get_entity_agentic_max_iterations()
         ),
         "rag_query_fix_typos": bool(
             settings.get("rag_query_fix_typos", get_entity_query_fix_typos())
@@ -568,8 +600,12 @@ def settings_response_dict(settings: Dict[str, Any]) -> Dict[str, Any]:
         "rag_multi_query_enabled": bool(
             settings.get("rag_multi_query_enabled", get_entity_multi_query_enabled())
         ),
-        "rag_hyde_enabled": bool(settings.get("rag_hyde_enabled", get_entity_hyde_enabled())),
-        "rag_chat_top_k": int(settings.get("rag_chat_top_k") or get_entity_chat_top_k()),
+        "rag_hyde_enabled": bool(
+            settings.get("rag_hyde_enabled", get_entity_hyde_enabled())
+        ),
+        "rag_chat_top_k": int(
+            settings.get("rag_chat_top_k") or get_entity_chat_top_k()
+        ),
         "rag_chunking_strategy": chunking,
         "rag_chunk_size": chunk_size,
         "rag_chunk_overlap": chunk_overlap,
@@ -581,8 +617,12 @@ def settings_response_dict(settings: Dict[str, Any]) -> Dict[str, Any]:
         "rag_reranking_enabled": bool(
             settings.get("rag_reranking_enabled", get_entity_reranking_enabled())
         ),
-        "rag_rerank_top_n": int(settings.get("rag_rerank_top_n") or get_entity_rerank_top_n()),
-        "rag_system_prompt": str(settings.get("rag_system_prompt") or get_entity_system_prompt()),
+        "rag_rerank_top_n": int(
+            settings.get("rag_rerank_top_n") or get_entity_rerank_top_n()
+        ),
+        "rag_system_prompt": str(
+            settings.get("rag_system_prompt") or get_entity_system_prompt()
+        ),
         "rag_embedding_model_path": str(settings.get("rag_embedding_model_path") or ""),
         "rag_reranker_model_path": str(settings.get("rag_reranker_model_path") or ""),
     }
@@ -596,37 +636,35 @@ def index_params_changed(before: Dict[str, Any], after: Dict[str, Any]) -> bool:
 def embedding_fields_from_path(model_path: Optional[str]) -> Dict[str, Any]:
     """Путь модели из настроек → поля запроса к svc-rag.
 
-    'corsur/<id>'                 → CORSUR
-    'phoenix/<id>'                → PHOENIX
-    'phoenix_embeddings/<id>'     → PHOENIX_Embeddings
-    'local/FRIDA'                 → native
+    Префикс уходит провайдером как есть — это id из эrag_models.providers
+    у SVC-RAG, там сравнение регистронезависимое:
+
+    'corsur_rag/embed/FRIDA'      → CORSUR_RAG, модель 'embed/FRIDA'
+    'phoenix_embeddings/<id>'     → phoenix_embeddings
+    'corsur/<id>'                 → corsur (старый путь; запись CORSUR
+                                    должна остаться в конфиге SVC-RAG)
+    'local/FRIDA' | 'native/…'    → native
     ''                            → {} — кластерная модель svc-rag
     """
     p = (model_path or "").strip()
     if not p:
         return {}
-    lower = p.lower()
-    if lower.startswith("phoenix_embeddings/"):
-        provider = (
-            os.getenv("RAG_PHOENIX_EMBEDDINGS_PROVIDER_ID", "PHOENIX_Embeddings").strip()
-            or "PHOENIX_Embeddings"
-        )
-        model = p.split("/", 1)[1].strip()
-    elif lower.startswith("phoenix/"):
-        provider = os.getenv("RAG_PHOENIX_PROVIDER_ID", "PHOENIX").strip() or "PHOENIX"
-        model = p.split("/", 1)[1].strip()
-    elif lower.startswith("corsur/"):
-        provider = os.getenv("RAG_CORSUR_PROVIDER_ID", "CORSUR").strip() or "CORSUR"
-        model = p.split("/", 1)[1].strip()
-    else:
-        provider = "native"
-        model = p.split("/", 1)[1].strip() if "/" in p else p
+    if "/" not in p:
+        return {"embedding_model": p, "embedding_provider": "native"}
+    prefix, model = (part.strip() for part in p.split("/", 1))
     if not model:
         return {}
+    # Префикс — это id провайдера в конфиге SVC-RAG (rag_models.providers), там
+    # сравнение регистронезависимое. Раньше здесь стоял разбор трёх известных
+    # префиксов с переменными окружения на каждый; новый шлюз требовал правки
+    # кода. Теперь имя провайдера одно и то же по обе стороны и берётся как есть.
+    provider = "native" if prefix.lower() in ("local", "native") else prefix
     return {"embedding_model": model, "embedding_provider": provider}
 
 
-def embedding_fields_from_rag_settings(settings: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def embedding_fields_from_rag_settings(
+    settings: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
     return embedding_fields_from_path((settings or {}).get("rag_embedding_model_path"))
 
 
@@ -650,7 +688,9 @@ def reranker_fields_from_path(model_path: Optional[str]) -> Dict[str, Any]:
     }
 
 
-def reranker_fields_from_rag_settings(settings: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def reranker_fields_from_rag_settings(
+    settings: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
     return reranker_fields_from_path((settings or {}).get("rag_reranker_model_path"))
 
 

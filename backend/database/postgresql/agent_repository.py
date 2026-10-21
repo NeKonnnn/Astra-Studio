@@ -22,6 +22,19 @@ from backend.settings.logging import get_logger
 logger = get_logger(__name__)
 
 
+def _config_as_dict(raw) -> dict:
+    """JSONB из пула без JSON-кодека приходит строкой: разбираем её, а не считаем конфиг пустым."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, (str, bytes, bytearray)) and raw:
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            logger.warning("agents.config: не удалось разобрать JSONB-строку")
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
 class AgentRepository:
     """Репозиторий для работы с агентами"""
 
@@ -716,15 +729,13 @@ WHERE id = ${param_num}
         """Убрать удалённого агента из config.agent_ids чужих карточек."""
         try:
             async with await self.db_connection.acquire() as conn:
-                rows = await conn.fetch(
-                    """
+                rows = await conn.fetch("""
                     SELECT id, config FROM agents
                     WHERE jsonb_typeof(config->'agent_ids') = 'array'
-                    """
-                )
+                    """)
                 for row in rows:
-                    cfg = row["config"] if isinstance(row["config"], dict) else {}
-                    raw_ids = cfg.get("agent_ids") if isinstance(cfg, dict) else None
+                    cfg = _config_as_dict(row["config"])
+                    raw_ids = cfg.get("agent_ids")
                     if not isinstance(raw_ids, list):
                         continue
                     new_ids = []
@@ -751,7 +762,10 @@ WHERE id = ${param_num}
                         row["id"],
                     )
         except Exception:
-            logger.exception("Не удалось вычистить agent_ids после удаления %s", deleted_id)
+            logger.exception(
+                "Не удалось вычистить agent_ids после удаления %s", deleted_id
+            )
+
 
     async def list_tags(self) -> List[dict]:
         """Справочник тегов для карточки агента: id, name, color."""
@@ -822,15 +836,13 @@ WHERE id = ${param_num}
         """Убрать удалённого агента из config.subagents.agent_ids чужих карточек."""
         try:
             async with await self.db_connection.acquire() as conn:
-                rows = await conn.fetch(
-                    """
+                rows = await conn.fetch("""
                     SELECT id, config FROM agents
                     WHERE jsonb_typeof(config->'subagents'->'agent_ids') = 'array'
-                    """
-                )
+                    """)
                 for row in rows:
-                    cfg = row["config"] if isinstance(row["config"], dict) else {}
-                    subagents = cfg.get("subagents") if isinstance(cfg, dict) else None
+                    cfg = _config_as_dict(row["config"])
+                    subagents = cfg.get("subagents")
                     if not isinstance(subagents, dict):
                         continue
                     raw_ids = subagents.get("agent_ids")
@@ -862,7 +874,10 @@ WHERE id = ${param_num}
                         row["id"],
                     )
         except Exception:
-            logger.exception("Не удалось вычистить subagents после удаления %s", deleted_id)
+            logger.exception(
+                "Не удалось вычистить subagents после удаления %s", deleted_id
+            )
+
 
     async def _delete_entity_settings(self, agent_id: int) -> None:
         """Убрать RAG-настройки удалённого агента. Сбой тут агента не воскрешает."""
@@ -1093,10 +1108,16 @@ WHERE id = ${param_num}
             logger.exception("Ошибка при получении закладок")
             return ([], 0)
 
-    async def get_user_permission(self, agent_id: int, user_id: Optional[str] = None) -> Optional[str]:
+    async def get_user_permission(
+        self,
+        agent_id: int,
+        user_id: Optional[str] = None,
+        is_admin: bool = False,
+    ) -> Optional[str]:
         """
         Роль пользователя для агента: owner | editor | viewer | None.
 
+        - LDAP/Keycloak admin → owner
         - автор → owner
         - запись в agent_shares → editor/viewer (старое 'use' = viewer)
         - публичный агент → viewer
@@ -1113,6 +1134,8 @@ WHERE id = ${param_num}
                 )
                 if not row:
                     return None
+                if is_admin:
+                    return AGENT_PERMISSION_OWNER
                 normalized = user_id.strip().lower() if user_id else None
                 if normalized and row["author_id"] == normalized:
                     return AGENT_PERMISSION_OWNER

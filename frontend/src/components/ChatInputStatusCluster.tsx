@@ -10,8 +10,10 @@ import AgentStatusIcon from '../icons/AgentIcon';
 import HubIcon from '../icons/McpIcon';
 import SkillStatusIcon from '../icons/SkillsIcon';
 import ArtifactsStatusIcon from '../icons/ArtifactsIcon';
+import KnowledgeBaseIcon from '../icons/KnowledgeBaseIcon';
 import type { ActiveMcpServerIndicator } from '../mcp/hooks/useChatInputMcpIndicators';
 import type { ActiveSkillRef } from '../utils/skillSelectionStorage';
+import type { ActiveKnowledgeBaseRef } from '../utils/knowledgeBaseSelectionStorage';
 
 export interface ChatInputStatusClusterProps {
   isDarkMode: boolean;
@@ -26,6 +28,10 @@ export interface ChatInputStatusClusterProps {
   onMcpClick?: () => void;
   activeSkills?: ActiveSkillRef[];
   onSkillsToggle?: () => void;
+  /** Выбранные базы знаний для чата */
+  activeKnowledgeBases?: ActiveKnowledgeBaseRef[];
+  /** Снять все выбранные базы знаний (клик по сегменту) */
+  onKnowledgeBasesToggle?: () => void;
   /** Артефакты включены для текущего чата */
   artifactsActive?: boolean;
   artifactsTooltip?: string;
@@ -46,6 +52,8 @@ export default function ChatInputStatusCluster({
   onMcpClick,
   activeSkills = [],
   onSkillsToggle,
+  activeKnowledgeBases = [],
+  onKnowledgeBasesToggle,
   artifactsActive = false,
   artifactsTooltip = '',
   onArtifactsToggle,
@@ -54,6 +62,7 @@ export default function ChatInputStatusCluster({
   const agentActive = Boolean(myAgentName);
   const mcpActive = activeMcpServers.length > 0;
   const skillsActive = activeSkills.length > 0;
+  const knowledgeBasesActive = activeKnowledgeBases.length > 0;
   const generationActive = generationImageActive || generationVideoActive;
   const artifactsOn = Boolean(artifactsActive);
 
@@ -70,6 +79,14 @@ export default function ChatInputStatusCluster({
     }
     return `${activeSkills.length} Skills`;
   }, [activeSkills]);
+
+  const knowledgeBasesLabel = useMemo(() => {
+    if (activeKnowledgeBases.length === 0) return '';
+    if (activeKnowledgeBases.length === 1) {
+      return (activeKnowledgeBases[0].name || `БЗ #${activeKnowledgeBases[0].id}`).trim();
+    }
+    return `${activeKnowledgeBases.length} БЗ`;
+  }, [activeKnowledgeBases]);
 
   const tooltipTitle = useMemo(() => {
     const parts: string[] = [];
@@ -107,6 +124,16 @@ export default function ChatInputStatusCluster({
           : `Skills: ${names}.`,
       );
     }
+    if (knowledgeBasesActive) {
+      const names = activeKnowledgeBases
+        .map((k) => k.name || `#${k.id}`)
+        .join(', ');
+      parts.push(
+        onKnowledgeBasesToggle
+          ? `Базы знаний: ${names}. Нажмите, чтобы отключить.`
+          : `Базы знаний: ${names}.`,
+      );
+    }
     if (mcpActive) {
       parts.push(
         `MCP: ${activeMcpServers.map((s) => s.display_name).join(', ')}. Инструменты → MCP.`,
@@ -130,27 +157,31 @@ export default function ChatInputStatusCluster({
     myAgentName,
     skillsActive,
     activeSkills,
+    knowledgeBasesActive,
+    activeKnowledgeBases,
     mcpActive,
     activeMcpServers,
     onAgentToggle,
     onSkillsToggle,
+    onKnowledgeBasesToggle,
     artifactsOn,
     artifactsTooltip,
     onArtifactsToggle,
   ]);
 
-  if (!libraryActive && !generationActive && !agentActive && !skillsActive && !mcpActive && !artifactsOn) return null;
+  if (!libraryActive && !generationActive && !agentActive && !skillsActive && !knowledgeBasesActive && !mcpActive && !artifactsOn) return null;
 
   const borderC = alpha(theme.palette.primary.main, 0.4);
   const bg = alpha(theme.palette.primary.main, 0.12);
   const dividerColor = isDarkMode ? 'rgba(255,255,255,0.28)' : 'rgba(0,0,0,0.18)';
 
-  const segments: Array<'library' | 'genImage' | 'genVideo' | 'agent' | 'skills' | 'artifacts' | 'mcp'> = [];
+  const segments: Array<'library' | 'genImage' | 'genVideo' | 'agent' | 'skills' | 'knowledge-bases' | 'artifacts' | 'mcp'> = [];
   if (libraryActive) segments.push('library');
   if (generationImageActive) segments.push('genImage');
   if (generationVideoActive) segments.push('genVideo');
   if (agentActive) segments.push('agent');
   if (skillsActive) segments.push('skills');
+  if (knowledgeBasesActive) segments.push('knowledge-bases');
   if (artifactsOn) segments.push('artifacts');
   if (mcpActive) segments.push('mcp');
 
@@ -303,6 +334,47 @@ export default function ChatInputStatusCluster({
                     }}
                   >
                     {skillsLabel}
+                  </Typography>
+                ) : null}
+              </Box>
+            ) : null}
+            {seg === 'knowledge-bases' ? (
+              <Box
+                component={onKnowledgeBasesToggle ? 'button' : 'div'}
+                type={onKnowledgeBasesToggle ? 'button' : undefined}
+                onClick={
+                  onKnowledgeBasesToggle
+                    ? (e: React.MouseEvent) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        onKnowledgeBasesToggle();
+                      }
+                    : undefined
+                }
+                sx={{
+                  ...segmentButtonSx,
+                  gap: 0.35,
+                  px: 0.75,
+                  cursor: onKnowledgeBasesToggle ? 'pointer' : 'default',
+                  maxWidth: 160,
+                  '&:hover': onKnowledgeBasesToggle
+                    ? { bgcolor: alpha(theme.palette.primary.main, 0.12) }
+                    : {},
+                }}
+              >
+                <KnowledgeBaseIcon sx={{ fontSize: '1.15rem', flexShrink: 0 }} />
+                {knowledgeBasesLabel ? (
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      fontWeight: 600,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      lineHeight: 1,
+                    }}
+                  >
+                    {knowledgeBasesLabel}
                   </Typography>
                 ) : null}
               </Box>

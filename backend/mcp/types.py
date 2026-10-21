@@ -18,9 +18,9 @@ class McpCallContext:
 
     user_id: str
     username: str
+    email: Optional[str] = None
     chat_id: Optional[str] = None
     message_id: Optional[str] = None
-    email: Optional[str] = None
     is_admin: bool = False
     groups: List[str] = field(default_factory=list)
     ldap_groups: List[str] = field(default_factory=list)
@@ -79,6 +79,10 @@ class AgentLoopResult:
     tool_calls_executed: int = 0
     mode: str = ""
     iterations: int = 0
+    attachments: List[Dict[str, str]] = field(default_factory=list)
+    # Сообщения, которые цикл добавил к входным (вызовы инструментов и их 
+    # результаты), - чтобы повтор хода продолжил с них, а не с начала.
+    new_messages: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

@@ -41,6 +41,7 @@ SUBAGENT_RULES = """РАБОТА С СУБАГЕНТАМИ (инструмент
 - Субагента выбирай по имени и описанию: каждое задание - тому, чья специализация ему соответствует. Не раздавай задания по порядку списка.
 - В поле prompt пиши короткое задание субагенту - 1-3 предложения: что сделать. Вопрос пользователя система передаёт ему дословно сама. Не переписывай в задание список файлов, содержимое документов и свои инструкции: субагент сам видит файлы базы и работает по своей карточке, структура ответа - его. Нужен конкретный файл - назови его имя в задании.
 - Не диктуй субагенту цифры, факты и готовые выводы: он найдёт их в файлах сам, а продиктованное повторит, даже если оно неверно.
+- Части, которые не зависят друг от друга, поручай сразу - несколькими вызовами subagent в одном ответе: они выполняются одновременно.
 - Часть строится из других (выводы, резюме, сводная таблица) - вызывай её субагента после них и поставь в задание метки их ответов, например [[ОТВЕТ 3]]: система передаст ему полный текст. Сам ответы в задание не пересказывай.
 - Метки [[ОТВЕТ N]] появляются только после вызова инструмента subagent. Субагента не вызывал - меток не пиши.
 - Каждый ответ субагента приходит с меткой вида [[ОТВЕТ 1]]. Чтобы показать пользователю ответ субагента целиком и без изменений, поставь эту метку отдельной строкой в своём ответе - система подставит полный текст. Такой ответ не перепечатывай сам.
@@ -121,25 +122,27 @@ def answers_for_child(task: str, ctx: Optional["SubagentRunContext"]) -> Tuple[s
 
 
 def _remember_subagent_answer(
-    ctx: SubagentRunContext, target_id: int, text: str
-) -> None:
+    ctx: SubagentRunContext, target_id: int, text: str, n: Optional[int] = None
+) -> Optional[int]:
+    """Ответ ребёнка под номером метки: n - занятый до запуска, иначе следующий."""
     if not (text or "").strip():
-        return
-    n = len(ctx.answers) + 1
-    name = short_agent_label(ctx.agent_names.get(int(target_id)) or f"Agent {target_id}")
+        return None
+    n = n or ctx.reserve_answer_no()
+    name = short_agent_label(
+        ctx.agent_names.get(int(target_id)) or f"Agent {target_id}"
+    )
     ctx.answers[n] = {"name": name, "text": text.strip()}
-    ctx.pending_answer_no = n
+    return n
 
-
-def subagent_result_for_model(ctx: Optional[SubagentRunContext], content: str) -> str:
-    """Tool-результат для модели родителя: метка + ответ ребёнка.
+def subagent_result_for_model(
+    ctx: Optional[SubagentRunContext], content: str, n: Optional[int] = None
+) -> str:
+    """Tool-результат для модели родителя: метка ответа n + ответ ребёнка.
 
     Только для модели: в карточку субагента в чате уходит ответ без метки.
     """
-    n = getattr(ctx, "pending_answer_no", None) if ctx is not None else None
-    if not n:
+    if not n or ctx is None:
         return content
-    ctx.pending_answer_no = None
     mark = SUBAGENT_ANSWER_MARK.format(n=n)
     name = (ctx.answers.get(n) or {}).get("name") or "субагент"
     return (
@@ -169,12 +172,66 @@ def drop_answer_marks(text: str) -> str:
     return _ANSWER_MARK_RE.sub("", str(text or "")).strip()
 
 
+_HEADING_MAX_CHARS = 200
+_PLAIN_HEADING_MAX_CHARS = 120
+_WORD_RE = re.compile(r"[^\W*]+")
+
+def _heading_words(line: str) -> Optional[Tuple[set, set]]:
+    """Строка-заголовок -> (числа, основы слов); не заголовок - None."""
+    s = line.strip()
+    if not s or len(s) > _HEADING_MAX_CHARS or _ANSWER_MARK_RE.search(s):
+        return None
+    marked = s.startswith("#") or (s.startswith("****") and s.endswith("****"))
+    core = s.strip("#**` \t")
+    if not core or core.endswith(":"):
+        return None
+    if not marked and (len(core) > _PLAIN_HEADING_MAX_CHARS or core[-1] in ".!?;,"):
+        return None
+    words = _WORD_RE.findall(core.lower())
+    nums = {w for w in words if w.isdigit()}
+    stems = {w[:5] for w in words if not w.isdigit() and len(w) >= 3}
+    return (nums, stems) if nums or stems else None
+
+def _same_heading(parent_line: str, answer_text: str) -> bool:
+    first = next((ln for ln in answer_text.splitlines() if ln.strip()), "")
+    p, c = _heading_words(parent_line), _heading_words(first)
+    if not p or not c:
+        return False
+    common = len(p[1] & c[1])
+    return p[0] <= c[0] and common >= 1 and common * 2 > min(len(p[1]), len(c[1]))
+
+def drop_duplicate_headings(text: str, answers: dict) -> str:
+    """Убрать строку-заголовок родителя над меткой, если ответ начинается с неё же."""
+    lines = str(text or "").split("\n")
+    drop: List[int] = []
+    for i, line in enumerate(lines):
+        m = _ANSWER_MARK_RE.fullmatch(line.strip())
+        ans = answers.get(int(m.group(1))) if m else None
+        if not ans:
+            continue
+        j = i - 1
+        while j >= 0 and not lines[j].strip():
+            j -= 1
+        if j >= 0 and j not in drop and _same_heading(lines[j], ans["text"]):
+            # Заголовок и пустые строки между ним и меткой.
+            drop.extend(range(j, i))
+    if not drop:
+        return str(text or "")
+    log.debug(
+        "[subagent] убраны заголовки родителя над метками - ответ субагента "
+        "начинается с того же: %s",
+        [lines[j].strip()[:80] for j in drop if lines[j].strip()],
+    )
+    return "\n".join(ln for k, ln in enumerate(lines) if k not in drop)
+
+
 def expand_subagent_answers(text: str, ctx: Optional[SubagentRunContext]) -> str:
     """Подставить ответы детей вместо меток [[ОТВЕТ N]] в итог родителя."""
     answers = getattr(ctx, "answers", None) or {}
     src = str(text or "")
     if not answers:
         return src
+    src = drop_duplicate_headings(src, answers)
     used: List[int] = []
     unknown: List[str] = []
 

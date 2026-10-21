@@ -7,6 +7,9 @@ from typing import Any, Dict, Optional
 
 from backend.mcp.types import McpCallContext
 from backend.settings.config import McpServerConfig
+from backend.settings.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class AbstractCredentialProvider(ABC):
@@ -30,7 +33,9 @@ class AbstractCredentialProvider(ABC):
 class NullCredentialProvider(AbstractCredentialProvider):
     provider_id = "null"
 
-    async def build_headers(self, server: McpServerConfig, context: McpCallContext) -> Dict[str, str]:
+    async def build_headers(
+        self, server: McpServerConfig, context: McpCallContext
+    ) -> Dict[str, str]:
         return {}
 
 
@@ -48,6 +53,7 @@ def get_credential_provider(provider_id: Optional[str]) -> AbstractCredentialPro
         from backend.mcp.credentials.atlassian import AtlassianCredentialProvider
 
         return AtlassianCredentialProvider()
-    log = __import__("logging").getLogger(__name__)
-    log.warning("Unknown MCP credential_provider=%r — using NullCredentialProvider", provider_id)
+    logger.warning(
+        "Unknown MCP credential_provider=%r — using NullCredentialProvider", provider_id
+    )
     return NullCredentialProvider()

@@ -8,10 +8,12 @@ socket_handlers.py - все @sio.event обработчики Socket.IO
 import asyncio
 import concurrent.futures
 import contextvars
+import threading
 import time
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Iterable, Optional, Tuple
 
+from fastapi import HTTPException
 
 from backend.settings.rag_client import RagReindexInProgress
 import backend.app_state as state
@@ -28,7 +30,11 @@ from backend.app_state import (
     stop_transcription_flags,
 )
 from backend.database.memory_service import save_assistant_response
-from backend.auth.jwt_handler import decode_token, decode_token_signature_only
+from backend.auth.jwt_handler import (
+    decode_token,
+    decode_token_signature_only,
+    get_client_binding_id_from_cookie_header,
+)
 from backend.llm_providers import split_model_path
 from backend.rag_query.post_generation import maybe_replace_ungrounded
 from backend.rag_query.prompts import RAG_STRICT_NOT_FOUND_MESSAGE, merge_strict_rag_system_prompt
@@ -39,8 +45,11 @@ from backend.realtime.helpers import (
     _terminal_chat_inference_banner,
     agent_mcp_tool_ids,
     agent_plugin_ids,
-    kb_search_agent_documents,
+    expand_knowledge_base_document_ids,
+    kb_search_scoped_documents,
     merge_chat_artifacts_settings,
+    resolve_agent_kb_document_ids,
+    resolve_agent_legacy_kb_document_ids,
 )
 from backend.services.user_feedback_context import (
     build_user_feedback_system_block,
@@ -59,6 +68,7 @@ from backend.services.user_rag_settings import (
     reset_user_rag_runtime,
     runtime_agentic_max_iterations,
     runtime_agentic_rag_enabled,
+    runtime_kb_search_scope,
     runtime_memory_strategy,
     runtime_rag_strategy,
     runtime_rag_system_prompt,
@@ -92,6 +102,218 @@ from backend.agents.step_debug import (
 logger = get_logger(__name__)
 
 _PLACEHOLDER_MODEL_PATHS = frozenset({"llm-svc", "llm-svc://", "local", "default"})
+
+
+# --- ported helpers from Astra ---
+_STREAM_EMIT_MIN_INTERVAL_S = 0.12
+_PRESENTATION_MAX_TOKENS_FLOOR = 32768
+_PRESENTATION_SKILL_HINTS = (
+    "present",
+    "gpb-html",
+    "gpb_html",
+    "pptx",
+    "slide",
+    "deck",
+    "презента",
+)
+
+def _make_throttled_ui_stream_cb(sio, sid, loop) -> Tuple[Callable, Callable]:
+    """sync callback для LLM-потока + async flush перед chat_complete."""
+    lock = threading.Lock()
+    state: Dict[str, Any] = {
+        "last_emit_at": 0.0,
+        "pending": None,  # (chunk, acc, stream_role)
+        "in_flight": False,
+        # Монотонный номер emit: фронт отбрасывает пакеты с seq <= уже применённого,
+        # даже если они пришли «не по порядку» по сети / event loop.
+        "stream_seq": 0,
+    }
+
+    async def _emit(chunk, acc, stream_role: str = "content") -> None:
+        with lock:
+            state["stream_seq"] = int(state["stream_seq"] or 0) + 1
+            stream_seq = int(state["stream_seq"])
+        with logged_suppress(logger):
+            if stream_role == "reasoning":
+                await sio.emit(
+                    "chat_thinking",
+                    _stream_ids_payload(
+                        {
+                            "chunk": chunk,
+                            "accumulated": acc,
+                            "thinking": chunk,
+                            "stream_role": "reasoning",
+                            "stream_seq": stream_seq,
+                        }
+                    ),
+                    room=sid,
+                )
+            else:
+                await sio.emit(
+                    "chat_chunk",
+                    _stream_ids_payload(
+                        {
+                            "chunk": chunk,
+                            "accumulated": acc,
+                            "stream_seq": stream_seq,
+                        }
+                    ),
+                    room=sid,
+                )
+
+    async def _pump() -> None:
+        """Один emit за раз; после каждого берём самый свежий pending."""
+        while True:
+            wait_s = 0.0
+            with lock:
+                now = time.monotonic()
+                elapsed = now - float(state["last_emit_at"] or 0.0)
+                if elapsed < _STREAM_EMIT_MIN_INTERVAL_S:
+                    wait_s = _STREAM_EMIT_MIN_INTERVAL_S - elapsed
+            if wait_s > 0:
+                await asyncio.sleep(wait_s)
+            with lock:
+                payload = state["pending"]
+                state["pending"] = None
+                if payload is None:
+                    state["in_flight"] = False
+                    return
+                state["last_emit_at"] = time.monotonic()
+            await _emit(*payload)
+
+    def sync_stream_cb(chunk, acc, stream_role: str = "content"):
+        if _generation_stopped(sid):
+            return False
+        # heartbeat — только проверка стопа, без emit на фронт
+        if stream_role == "heartbeat":
+            return True
+        start_pump = False
+        with lock:
+            state["pending"] = (chunk, acc, stream_role)
+            if not state["in_flight"]:
+                state["in_flight"] = True
+                start_pump = True
+        if start_pump:
+            asyncio.run_coroutine_threadsafe(_pump(), loop)
+        return True
+
+    async def flush_stream_cb() -> None:
+        # Дождаться текущего pump и отправить хвост без гонки порядка.
+        while True:
+            with lock:
+                if not state["in_flight"]:
+                    payload = state["pending"]
+                    state["pending"] = None
+                    break
+            await asyncio.sleep(0.01)
+        if payload is not None:
+            await _emit(*payload)
+
+    sync_stream_cb.flush = flush_stream_cb  # type: ignore[attr-defined]
+    return sync_stream_cb, flush_stream_cb
+
+async def _flush_ui_stream_cb(sync_stream_cb) -> None:
+    flush = getattr(sync_stream_cb, "flush", None)
+    if callable(flush):
+        await flush()
+
+def _system_output_tokens_floor() -> int:
+    """Заводской output_tokens (обычно 50000) — верхний разумный потолок вывода."""
+    try:
+        from backend.utils.llm_defaults import llm_settings_defaults
+
+        value = int(llm_settings_defaults().get("output_tokens") or 0)
+        if value > 0:
+            return value
+    except Exception:
+        logger.debug("не удалось прочитать output_tokens из llm-дефолтов", exc_info=True)
+    return _PRESENTATION_MAX_TOKENS_FLOOR
+
+def _slug_implies_presentation(slug: Any) -> bool:
+    s = str(slug or "").lower()
+    return any(hint in s for hint in _PRESENTATION_SKILL_HINTS)
+
+def _presentation_skill_active(
+    primed: Optional[Dict[str, Any]],
+    *skill_id_lists: Iterable[Any],
+) -> bool:
+    """Активен ли презентационный навык (ручной/always/agent) в этом запросе."""
+    primed = primed or {}
+    for slug in list(primed.get("manual") or []) + list(primed.get("always_apply") or []):
+        if _slug_implies_presentation(slug):
+            return True
+    for ids in skill_id_lists:
+        for slug in ids or []:
+            if _slug_implies_presentation(slug):
+                return True
+    return False
+
+def _effective_max_tokens(
+    base_max_tokens: int,
+    *,
+    presentation: bool,
+    floor: int = 4096,
+) -> int:
+    """Потолок токенов: как минимум floor, а для презентаций — крупный запас.
+
+    Для презентаций берём максимум из базового, жёсткого минимума и системного
+    output_tokens (заводские 50000), чтобы длинные колоды не рвались на лимите.
+    """
+    value = max(int(base_max_tokens or 0), floor)
+    if presentation:
+        value = max(value, _PRESENTATION_MAX_TOKENS_FLOOR, _system_output_tokens_floor())
+    return value
+
+def _log_prompt_trace(agent_profile, system_prompt, user_message, history) -> None:
+    """Одна строка на вызов модели: чей системный промпт ушёл и что в нём есть"""
+    try:
+        import hashlib
+
+        prof = agent_profile if isinstance(agent_profile, dict) else {}
+        sp = str(system_prompt or "")
+        um = str(user_message or "")
+        own = str(prof.get("system_prompt") or "").strip()
+        roles: Dict[str, int] = {}
+        for m in history or []:
+            if isinstance(m, dict):
+                r = str(m.get("role") or "?")
+                roles[r] = roles.get(r, 0) + 1
+        line = (
+            "[PROMPT-TRACE] agent_id=%s system_prompt: len=%s sha=%s head=%r "
+            "own_prompt_in_system=%s | history=%s msgs %s | user_message len=%s"
+        )
+        args = [
+            prof.get("agent_id"),
+            len(sp),
+            hashlib.sha1(sp.encode("utf-8")).hexdigest()[:10],
+            sp[:40],
+            bool(own) and own in sp,
+            len(history or []),
+            roles,
+            len(um),
+        ]
+        trace = prof.get("_chain_trace")
+        if isinstance(trace, dict):
+            prev = [p for p in (trace.get("prev") or []) if isinstance(p, dict)]
+            leaked = [
+                p.get("agent_id")
+                for p in prev
+                if str(p.get("system_prompt") or "").strip()
+                and str(p.get("system_prompt") or "").strip() in sp
+            ]
+            passed = [
+                p.get("agent_id")
+                for p in prev
+                if str(p.get("output") or "").strip()
+                and str(p.get("output") or "").strip() in um
+            ]
+            line += (
+                " | chain step=%s/%s prev_prompts_in_system=%s prev_outputs_in_user=%s"
+            )
+            args += [trace.get("index"), trace.get("total"), leaked, passed]
+        logger.debug(line, *args)
+    except Exception:
+        logger.info("[PROMPT-TRACE] не удалось собрать строку", exc_info=True)
 
 
 def _client_model_path_from_payload(data) -> Optional[str]:
@@ -408,9 +630,11 @@ async def _get_socket_user_context(sio, sid: str) -> Optional[Dict[str, Any]]:
     token = user_ctx.get("token")
     if token:
         try:
-            decode_token(token)
+            decode_token(token, client_binding_id=user_ctx.get("client_binding_id"))
         except Exception:
-            logger.exception("Socket.IO msg rejected: сессия ревоцирована sid= user_id=")
+            logger.exception(
+                "Socket.IO msg rejected: сессия ревоцирована sid= user_id="
+            )
             return None
     return user_ctx
 
@@ -696,34 +920,46 @@ def register_handlers(sio):
     """Регистрирует все Socket.IO обработчики на переданный sio-сервер"""
 
     @sio.event
-    async def connect(sid, environ, auth = None):
+    async def connect(sid, environ, auth=None):
         token = _extract_socket_token(auth, environ)
         if not token:
             logger.warning("Socket.IO connect rejected: отсутствует токен sid=%s", sid)
             raise ConnectionRefusedError("Не авторизован")
+        cookie_header = ""
+        if isinstance(environ, dict):
+            cookie_header = str(environ.get("HTTP_COOKIE") or "")
+        client_binding_id = get_client_binding_id_from_cookie_header(cookie_header)
         try:
             # Проверяем ТОЛЬКО подпись и срок действия JWT, без _is_active_session.
             # Это позволяет переподключиться после рестарта пода (когда in-memory словарь
             # сессий пуст, но JWT ещё валиден). Проверка активности сессии выполняется
             # при обработке каждого сообщения (_get_socket_user_context).
-            user_data = decode_token_signature_only(token)
+            user_data = decode_token_signature_only(
+                token, client_binding_id=client_binding_id
+            )
+        except HTTPException as exc:
+            logger.warning("Socket.IO connect rejected sid=%s: %s", sid, exc.detail)
+            raise ConnectionRefusedError("Неверный или просроченный токен") from None
         except Exception as e:
-            logger.warning("Socket.IO connect rejected: невалидный JWT sid=%s reason=%s", sid, e)
-            raise ConnectionRefusedError("Неверный или просроченный токен")
+            logger.exception("Socket.IO connect rejected: невалидный JWT sid=%s", sid)
+            raise ConnectionRefusedError("Неверный или просроченный токен") from e
 
-        _cef_remote = cef_socket_remote_from_environ(environ if isinstance(environ, dict) else None)
+        _cef_remote = cef_socket_remote_from_environ(
+            environ if isinstance(environ, dict) else None
+        )
         _sess: Dict[str, Any] = {
             "user": {
                 "username": user_data["username"],
                 "user_id": user_data["user_id"],
                 "session_id": user_data.get("session_id"),
                 "token": token,
+                "client_binding_id": client_binding_id,
             }
         }
         if _cef_remote:
             _sess["cef_remote"] = _cef_remote
         await sio.save_session(sid, _sess)
-        logger.info(
+        logger.debug(
             "Socket.IO client connected: sid=%s user_id=%s session_id=%s",
             sid,
             user_data.get("user_id"),
@@ -789,9 +1025,14 @@ def register_handlers(sio):
                 await sio.disconnect(sid)
                 return
             try:
-                validated_user = decode_token(user_ctx.get("token", ""))
+                validated_user = decode_token(
+                    user_ctx.get("token", ""),
+                    client_binding_id=user_ctx.get("client_binding_id"),
+                )
             except Exception:
-                logger.exception("Socket.IO chat rejected: session invalid sid= reason=")
+                logger.exception(
+                    "Socket.IO chat rejected: session invalid sid=%s", sid
+                )
                 await sio.emit(
                     "chat_error", {"error": "Сессия завершена: выполнен вход с другого устройства/окна"}, room=sid
                 )
@@ -889,10 +1130,133 @@ def register_handlers(sio):
             _agent_plugins = agent_plugin_ids(agent_profile if isinstance(agent_profile, dict) else {})
             if _agent_plugins:
                 data["__plugin_ids__"] = _agent_plugins
-            agent_kb_enabled = bool(agent_profile.get("file_search_enabled"))
-            agent_kb_doc_ids = agent_profile.get("kb_document_ids") or []
-            use_agent_scoped_kb = (
-                agent_kb_enabled and isinstance(agent_kb_doc_ids, list) and (len(agent_kb_doc_ids) > 0)
+            agent_kb_doc_ids = await resolve_agent_kb_document_ids(
+                rag_client, agent_profile if isinstance(agent_profile, dict) else {}
+            )
+            # id БЗ для embedding-настроек поиска (должны совпасть с индексом).
+            kb_ids_for_settings: list = []
+
+            def _collect_kb_ids(raw_ids) -> None:
+                if not isinstance(raw_ids, list):
+                    return
+                for raw in raw_ids:
+                    try:
+                        kid = int(raw)
+                    except (TypeError, ValueError):
+                        continue
+                    if kid > 0 and kid not in kb_ids_for_settings:
+                        kb_ids_for_settings.append(kid)
+
+            if isinstance(agent_profile, dict) and agent_profile.get(
+                "knowledge_bases_enabled"
+            ):
+                _collect_kb_ids(agent_profile.get("knowledge_base_ids"))
+            # БЗ из Tools чата (Мои знания / галерея) — дополняют документный scope.
+            chat_kb_ids = data.get("knowledge_base_ids") if isinstance(data, dict) else None
+            # Тумблер «Библиотека» → personal entity KB (legacy memory_rag выключен).
+            if use_kb_rag or use_memory_library_rag:
+                try:
+                    from backend.services.legacy_rag_to_kb import (
+                        ensure_personal_library_kb,
+                    )
+
+                    _personal = await ensure_personal_library_kb(
+                        str(validated_user.get("user_id") or ""),
+                        author_name=str(
+                            validated_user.get("username")
+                            or validated_user.get("full_name")
+                            or ""
+                        ),
+                    )
+                    if _personal is not None and getattr(_personal, "id", None):
+                        _collect_kb_ids([int(_personal.id)])
+                        if not isinstance(chat_kb_ids, list):
+                            chat_kb_ids = []
+                        if int(_personal.id) not in [
+                            int(x)
+                            for x in chat_kb_ids
+                            if str(x).strip().lstrip("-").isdigit()
+                        ]:
+                            chat_kb_ids = list(chat_kb_ids) + [int(_personal.id)]
+                except Exception:
+                    logger.exception(
+                        "[RAG] не удалось подмешать personal library KB"
+                    )
+            chat_docs: list = []
+            if isinstance(chat_kb_ids, list) and chat_kb_ids:
+                _collect_kb_ids(chat_kb_ids)
+                chat_docs = await expand_knowledge_base_document_ids(
+                    rag_client, chat_kb_ids
+                )
+                agent_kb_doc_ids = sorted(set(list(agent_kb_doc_ids) + list(chat_docs)))
+                if not chat_docs:
+                    logger.warning(
+                        "[RAG] knowledge_base_ids из Tools=%s, но expand не нашёл "
+                        "документов с metadata.knowledge_base_id — поиск по БЗ не "
+                        "запустится, пока файлы не проиндексированы с этим id",
+                        chat_kb_ids,
+                    )
+            # БЗ, прикреплённые к проекту чата.
+            _project_id_early = (
+                data.get("project_id") if isinstance(data, dict) else None
+            ) or None
+            if not _project_id_early and conversation_id:
+                _project_id_early = await get_conversation_project_id(conversation_id)
+            proj_docs: list = []
+            if _project_id_early:
+                try:
+                    from backend.database.init_db import get_project_repository
+
+                    _prepo = get_project_repository()
+                    _proj = (
+                        await _prepo.get_by_id(
+                            str(validated_user.get("user_id") or ""),
+                            str(_project_id_early),
+                        )
+                        if _prepo
+                        else None
+                    )
+                    if (
+                        isinstance(_proj, dict)
+                        and _proj.get("knowledgeBasesEnabled")
+                        and _proj.get("knowledgeBaseIds")
+                    ):
+                        _collect_kb_ids(_proj.get("knowledgeBaseIds"))
+                        proj_docs = await expand_knowledge_base_document_ids(
+                            rag_client, _proj.get("knowledgeBaseIds")
+                        )
+                        agent_kb_doc_ids = sorted(
+                            set(list(agent_kb_doc_ids) + list(proj_docs))
+                        )
+                        if not proj_docs:
+                            logger.warning(
+                                "[RAG] project knowledgeBaseIds=%s не развернулись "
+                                "в document_id (нет metadata.knowledge_base_id)",
+                                _proj.get("knowledgeBaseIds"),
+                            )
+                except Exception:
+                    logger.exception(
+                        "Не удалось подтянуть knowledge_base_ids проекта %s",
+                        _project_id_early,
+                    )
+            legacy_kb_doc_ids = resolve_agent_legacy_kb_document_ids(
+                agent_profile if isinstance(agent_profile, dict) else {}
+            )
+            use_agent_scoped_kb = bool(agent_kb_doc_ids)
+            logger.info(
+                "[RAG] kb_scope chat_kb_ids=%s chat_docs=%s project_docs=%s "
+                "total_doc_ids=%s kb_ids=%s legacy_docs=%s use_agent_scoped_kb=%s "
+                "agent_id=%s",
+                chat_kb_ids if isinstance(chat_kb_ids, list) else None,
+                len(chat_docs),
+                len(proj_docs),
+                len(agent_kb_doc_ids or []),
+                kb_ids_for_settings,
+                len(legacy_kb_doc_ids),
+                use_agent_scoped_kb,
+                (agent_profile or {}).get("agent_id")
+                if isinstance(agent_profile, dict)
+                else None,
             )
             is_regenerate = bool(data.get("regenerate"))
             skip_user_save = is_regenerate
@@ -940,6 +1304,13 @@ def register_handlers(sio):
                     _scopes_snapshot["agent"] = await get_entity_rag_settings(
                         "agent", entity_ids["agent"]
                     )
+                # Per-KB search передаёт settings_override на каждую БЗ;
+                # в runtime кладём снимок первой только как fallback для
+                # legacy-путей (scope kb без явного override).
+                if kb_ids_for_settings:
+                    _scopes_snapshot["kb"] = await get_entity_rag_settings(
+                        "kb", kb_ids_for_settings[0]
+                    )
                 rag_runtime_token = bind_user_rag_runtime(
                     _scopes_snapshot, await get_user_memory_strategy(_uid)
                 )
@@ -961,7 +1332,18 @@ def register_handlers(sio):
                     )
             except Exception:
                 logger.exception("Не удалось загрузить персональные RAG-настройки")
-                rag_runtime_token = bind_user_rag_runtime({})
+                _fallback_scopes: dict = {}
+                if kb_ids_for_settings:
+                    try:
+                        _fallback_scopes["kb"] = await get_entity_rag_settings(
+                            "kb", kb_ids_for_settings[0]
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Не удалось загрузить RAG-настройки БЗ kb_id=%s",
+                            kb_ids_for_settings[0],
+                        )
+                rag_runtime_token = bind_user_rag_runtime(_fallback_scopes)
 
             project_memory = data.get("project_memory") or "default"
             project_instructions = data.get("project_instructions") or ""
@@ -1084,24 +1466,8 @@ def register_handlers(sio):
                 len(inline_context or ""),
             )
 
-            async def async_stream_cb(chunk, acc, stream_role="content"):
-                with logged_suppress(logger):
-                    if stream_role == "reasoning":
-                        await sio.emit(
-                            "chat_thinking",
-                            _stream_ids_payload({"chunk": chunk, "accumulated": acc, "thinking": chunk, "stream_role": "reasoning"}),
-                            room=sid,
-                        )
-                    else:
-                        await sio.emit("chat_chunk", _stream_ids_payload({"chunk": chunk, "accumulated": acc}), room=sid)
-
             loop = asyncio.get_event_loop()
-
-            def sync_stream_cb(chunk, acc, stream_role="content"):
-                if _generation_stopped(sid):
-                    return False
-                asyncio.run_coroutine_threadsafe(async_stream_cb(chunk, acc, stream_role), loop)
-                return True
+            sync_stream_cb, _ = _make_throttled_ui_stream_cb(sio, sid, loop)
 
             generation_t0 = time.perf_counter()
             if use_multi_llm_mode and not bool(data.get("coding_mode")):
@@ -1129,6 +1495,8 @@ def register_handlers(sio):
                     current_user=validated_user,
                     agent_profile=agent_profile,
                     generation_started_at=generation_t0,
+                    knowledge_base_ids=kb_ids_for_settings,
+                    legacy_kb_doc_ids=legacy_kb_doc_ids,
                 )
                 return
             from backend.agents.chain.runner import run_direct_or_chain
@@ -1156,6 +1524,8 @@ def register_handlers(sio):
                 inline_context=inline_context,
                 inline_images=inline_images,
                 generation_started_at=generation_t0,
+                knowledge_base_ids=kb_ids_for_settings,
+                legacy_kb_doc_ids=legacy_kb_doc_ids,
             )
         except Exception as e:
             logger.exception("Ошибка операции")
@@ -1195,6 +1565,8 @@ async def _handle_multi_llm(
     current_user=None,
     agent_profile=None,
     generation_started_at: Optional[float] = None,
+    knowledge_base_ids=None,
+    legacy_kb_doc_ids=None,
 ):
     multi_llm_models = get_model_comparison_models()
     if not multi_llm_models:
@@ -1216,7 +1588,8 @@ async def _handle_multi_llm(
     )
     min_sim, rag_block = rag_guard_env()
     project_min_sim, _ = rag_guard_env("project")
-    agent_min_sim, _ = rag_guard_env("agent")
+    _kb_rag_scope = runtime_kb_search_scope()
+    agent_min_sim, _ = rag_guard_env(_kb_rag_scope)
     sources = resolve_active_rag_sources(
         project_id=project_id,
         use_agent_scoped_kb=use_agent_scoped_kb,
@@ -1270,11 +1643,17 @@ async def _handle_multi_llm(
         prefix = "База Знаний (документы агента)"
         try:
             kb_id_name = build_rag_id_to_filename(list(await rag_client.kb_list_documents() or []))
-            hits = await kb_search_agent_documents(
+            _legacy_ids = list(
+                legacy_kb_doc_ids
+                if legacy_kb_doc_ids is not None
+                else resolve_agent_legacy_kb_document_ids(agent_profile)
+            )
+            hits = await kb_search_scoped_documents(
                 rag_client,
                 user_message,
-                agent_kb_doc_ids or [],
-                k=get_rag_chat_top_k("agent"),
+                knowledge_base_ids=knowledge_base_ids,
+                legacy_doc_ids=_legacy_ids,
+                k=get_rag_chat_top_k(_kb_rag_scope),
                 strategy=rag_strategy,
             )
             hits = filter_rag_hits_by_score(list(hits or []), agent_min_sim)
@@ -1358,6 +1737,7 @@ async def _handle_multi_llm(
 
     skill_append = ""
     lazy_skill_ids: list = []
+    _primed: dict = {}
     try:
         from backend.services.skills import apply_skills_to_chat, strip_skill_mentions
 
@@ -1527,9 +1907,30 @@ async def _handle_multi_llm(
     mcp_temperature = float(
         data.get("temperature") if data.get("temperature") is not None else (_ap.get("temperature") or 0.7)
     )
-    mcp_max_tokens = int(
-        data.get("max_tokens") if data.get("max_tokens") is not None else (_ap.get("max_tokens") or 1024)
+    _multi_presentation_active = _presentation_skill_active(
+        _primed,
+        lazy_skill_ids,
+        (data.get("skill_ids") if isinstance(data, dict) else None) or [],
     )
+    _multi_base_mt = (
+        data.get("max_tokens")
+        if data.get("max_tokens") is not None
+        else (_ap.get("max_tokens") or 1024)
+    )
+    mcp_max_tokens = _effective_max_tokens(
+        _multi_base_mt,
+        presentation=_multi_presentation_active,
+    )
+    if _multi_presentation_active:
+        logger.info(
+            "[presentation][multi-llm] max_tokens: базовый=%s → эффективный=%s "
+            "(floor=4096, презентац.=%s, системный=%s) модели=%s",
+            _multi_base_mt,
+            mcp_max_tokens,
+            _PRESENTATION_MAX_TOKENS_FLOOR,
+            _system_output_tokens_floor(),
+            multi_llm_models,
+        )
 
     async def _gen_one(model_name: str):
         idx = multi_llm_models.index(model_name)
@@ -1774,6 +2175,8 @@ async def _handle_direct(
     suppress_ui_stream: bool = False,
     complete_response: Optional[str] = None,
     extra_save_meta: Optional[dict] = None,
+    knowledge_base_ids=None,
+    legacy_kb_doc_ids=None,
 ):
     chat_timer = StageTimer(
         "CHAT",
@@ -1785,7 +2188,8 @@ async def _handle_direct(
     stream_prefix = stream_prefix or ""
     min_sim, rag_block = rag_guard_env()
     project_min_sim, _ = rag_guard_env("project")
-    agent_min_sim, _ = rag_guard_env("agent")
+    _kb_rag_scope = runtime_kb_search_scope()
+    agent_min_sim, _ = rag_guard_env(_kb_rag_scope)
     sources = resolve_active_rag_sources(
         project_id=project_id,
         use_agent_scoped_kb=use_agent_scoped_kb,
@@ -1917,13 +2321,19 @@ async def _handle_direct(
                 logger.exception("Ошибка операции")
                 mem_rows = []
         if sources.agent_kb:
+            _legacy_ids = list(
+                legacy_kb_doc_ids
+                if legacy_kb_doc_ids is not None
+                else resolve_agent_legacy_kb_document_ids(agent_profile)
+            )
             try:
                 kb_hits = list(
-                    await kb_search_agent_documents(
+                    await kb_search_scoped_documents(
                         rag_client,
                         rag_query,
-                        agent_kb_doc_ids or [],
-                        k=get_rag_chat_top_k("agent"),
+                        knowledge_base_ids=knowledge_base_ids,
+                        legacy_doc_ids=_legacy_ids,
+                        k=get_rag_chat_top_k(_kb_rag_scope),
                         strategy=rag_strategy,
                     )
                     or []
@@ -2136,6 +2546,8 @@ async def _handle_direct(
         eff_system_prompt = merge_strict_rag_system_prompt(
             eff_system_prompt, rag_override=runtime_rag_system_prompt(rag_scopes) or None
         )
+    _primed: dict = {}
+    lazy_skill_ids: list = []
     try:
         from backend.services.skills import apply_skills_to_chat, strip_skill_mentions
 
@@ -2208,6 +2620,22 @@ async def _handle_direct(
         )
     except Exception:
         logger.exception("[direct] artifacts prompt injection failed")
+    _presentation_active = _presentation_skill_active(
+        _primed,
+        lazy_skill_ids,
+        (data.get("skill_ids") if isinstance(data, dict) else None) or [],
+    )
+    if _presentation_active:
+        logger.info(
+            "[presentation][direct] презентационный навык активен "
+            "(manual=%s always=%s lazy=%s skill_ids=%s) chat=%s model=%s",
+            list((_primed or {}).get("manual") or []),
+            list((_primed or {}).get("always_apply") or []),
+            list(lazy_skill_ids or []),
+            (data.get("skill_ids") if isinstance(data, dict) else None) or [],
+            conversation_id,
+            eff_model_path,
+        )
     try:
         from backend.plugins.tools import build_plugins_system_append
         from backend.services.plugins_chat import apply_plugins_to_context
@@ -2504,6 +2932,21 @@ async def _handle_direct(
                 if not suppress_ui_stream:
                     await sio.emit("chat_mcp_event", _stream_ids_payload(payload), room=sid)
 
+            _mcp_base_mt = agent_profile.get("max_tokens") or 1024
+            _mcp_direct_max_tokens = _effective_max_tokens(
+                _mcp_base_mt,
+                presentation=_presentation_active,
+            )
+            if _presentation_active:
+                logger.info(
+                    "[presentation][direct+mcp] max_tokens: базовый=%s → эффективный=%s "
+                    "(floor=4096, презентац.=%s, системный=%s)",
+                    _mcp_base_mt,
+                    _mcp_direct_max_tokens,
+                    _PRESENTATION_MAX_TOKENS_FLOOR,
+                    _system_output_tokens_floor(),
+                )
+
             mcp_result = await run_mcp_for_chat(
                 tool_ids=tool_ids,
                 user_message=final_message,
@@ -2514,7 +2957,7 @@ async def _handle_direct(
                 chat_id=conversation_id,
                 message_id=data.get("message_id"),
                 temperature=agent_profile.get("temperature") or 0.7,
-                max_tokens=max(agent_profile.get("max_tokens") or 1024, 4096),
+                max_tokens=_mcp_direct_max_tokens,
                 enable_thinking=enable_thinking,
                 emit_event=_mcp_event_cb,
                 agent_profile=agent_profile,
@@ -2563,6 +3006,8 @@ async def _handle_direct(
 
     def _direct_stream_cb(chunk, acc, stream_role="content"):
         nonlocal reasoning_trace_accumulated
+        if stream_role == "heartbeat":
+            return not _generation_stopped(sid)
         if stream_role == "reasoning":
             if isinstance(acc, str) and acc:
                 reasoning_trace_accumulated = acc
@@ -2577,10 +3022,26 @@ async def _handle_direct(
         return sync_stream_cb(chunk, visible_acc, stream_role)
 
     def _run_ask(stream, cb):
+        # Как у MCP: длинные ответы (презентации/код) иначе часто рвутся на max_tokens.
+        # Для презентаций потолок крупный (reasoning-модели ещё тратят бюджет на think).
+        _base_mt = agent_profile.get("max_tokens") or 1024
+        ask_max_tokens = _effective_max_tokens(
+            _base_mt,
+            presentation=_presentation_active,
+        )
+        if _presentation_active:
+            logger.info(
+                "[presentation][direct] max_tokens: базовый(профиль)=%s → эффективный=%s "
+                "(floor=4096, презентац.=%s, системный=%s)",
+                _base_mt,
+                ask_max_tokens,
+                _PRESENTATION_MAX_TOKENS_FLOOR,
+                _system_output_tokens_floor(),
+            )
         return ask_agent(
             final_message,
             history=history,
-            max_tokens=agent_profile["max_tokens"],
+            max_tokens=ask_max_tokens,
             streaming=stream,
             stream_callback=cb,
             model_path=eff_model_path,
@@ -2726,6 +3187,8 @@ async def _handle_direct(
     visible_out = complete_response if complete_response is not None else (
         f"{stream_prefix}{response}" if stream_prefix else response
     )
+    # Дожимаем последний throttled chunk до chat_complete.
+    await _flush_ui_stream_cb(sync_stream_cb)
     # Сначала отдаём ответ в UI: зависание Mongo на regenerate не должно
     # блокировать стрим и кнопку «Стоп».
     payload = _stream_ids_payload(

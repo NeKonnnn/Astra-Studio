@@ -26,7 +26,7 @@ export interface EntityRagDraft {
   rag_reranker_model_path: string | null;
 }
 
-export type EntityRagScope = 'agent' | 'project';
+export type EntityRagScope = 'agent' | 'project' | 'kb';
 
 type SaveResult =
   /** reindexed — backend поставил перечанковку: включаем частый опрос. */
@@ -55,6 +55,8 @@ export async function saveEntityRagSettings(opts: {
   };
   if (opts.scope === 'agent') {
     body.agent_id = Number(opts.entityId);
+  } else if (opts.scope === 'kb') {
+    body.knowledge_base_id = Number(opts.entityId);
   } else {
     body.project_id = String(opts.entityId);
   }
@@ -93,7 +95,8 @@ export async function saveEntityRagSettings(opts: {
     // Без этого вызывающий не знает, что пора учащать опрос статуса, и плашка
     // всплывает только на следующем тике.
     const saved = await response.json().catch(() => ({}));
-    const label = opts.scope === 'agent' ? 'агента' : 'проекта';
+    const label =
+      opts.scope === 'agent' ? 'агента' : opts.scope === 'kb' ? 'базы знаний' : 'проекта';
     console.debug(
       `[RAG] Настройки ${label} «${opts.entityName}» (id=${opts.entityId}) сохранены`,
     );

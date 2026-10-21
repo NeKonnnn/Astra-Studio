@@ -29,11 +29,9 @@ _ORDER_LOG = str(os.getenv("RAG_EMBED_ORDER_LOG", "1")).strip().lower() not in (
     "no",
 )
 
-
 def _text_fp(text: str) -> str:
     raw = (text or "").encode("utf-8", errors="replace")
     return hashlib.sha1(raw).hexdigest()[:10]
-
 
 def _emb_fp(vec: Sequence[float]) -> str:
     if not vec:
@@ -42,6 +40,157 @@ def _emb_fp(vec: Sequence[float]) -> str:
     head = ",".join(f"{float(x):.5f}" for x in list(vec)[:4])
     return f"d{len(vec)}:{head}"
 
+class EmbedBatchTimeout(RuntimeError):
+    """Батч не уложился в таймаут — ни в наш, ни в таймаут шлюза.
+
+    Отдельный тип, потому что это единственная ошибка, которую лечит НЕ повтор,
+    а уменьшение батча: тот же батч по тому же таймауту упадёт снова.
+    """
+
+# Коды, которыми «не дождались» отвечают шлюзы: 408 — сам клиент, 504 —
+# openresty/APISIX перед svc-rag-models, 524/598/599 — прокси семейства Cloudflare
+# и nginx-сборок, встречаются в контуре на тех же маршрутах.
+_TIMEOUT_STATUSES = (408, 504, 524, 598, 599)
+
+# Дробление батча при таймауте.
+#
+# Зачем: после перевода svc-rag-models на CPU батч из 24 чанков считается дольше,
+# чем ждёт шлюз, и приходит 504 Gateway Time-out. Повтор тем же батчем даёт ровно
+# тот же 504, после чего падает индексация ВСЕГО документа и загруженный файл 
+# удаляется из PVC. Половина батча считается примерно вдвое быстрее, поэтому 
+# вместо повтора делим батч пополам и уходим вглубь до размера 1. 
+# Документ индексируется медленнее, но индексируется —
+# функциональность не отключается, убирается только заведомо бесполезная работа.
+#
+# K8s: RAG_EMBED_SPLIT_ON_TIMEOUT=0 — вернуть старое поведение (ошибка сразу).
+_SPLIT_ON_TIMEOUT = str(os.getenv("RAG_EMBED_SPLIT_ON_TIMEOUT", "1")).strip().lower() not in (
+    "0",
+    "false",
+    "no",
+)
+
+# Запоминать ли уроки таймаута (меньший батч, последовательные запросы) на
+# следующие документы. Без этого каждый документ начинал бы с конфигурационных
+# значений и снова тратил по таймауту шлюза на каждый первый батч.
+# K8s: RAG_EMBED_ADAPT_ON_TIMEOUT=0 — не запоминать.
+ADAPT_ON_TIMEOUT = str(os.getenv("RAG_EMBED_ADAPT_ON_TIMEOUT", "1")).strip().lower() not in (
+    "0",
+    "false",
+    "no",
+)
+
+# Через сколько прогонов embed подряд БЕЗ таймаутов возвращать прежние батч и
+# параллелизм. Считаются только прогоны, которые и вправду отправили батч
+# текущего размера: запрос поиска из одного текста успевает всегда и ничего не
+# доказывает. Обратный ход нужен, чтобы возврат модели на GPU не требовал ни
+# правки переменных окружения, ни перезапуска пода.
+# K8s: RAG_EMBED_ADAPT_RECOVER_AFTER, 0 — обратного хода нет.
+ADAPT_RECOVER_AFTER = max(
+    0, int(os.getenv("RAG_EMBED_ADAPT_RECOVER_AFTER", "3") or 0)
+)
+
+# До какого размера батча уменьшать, прежде чем трогать параллелизм.
+#
+# Cначала уменьшаем батч, и только когда уменьшать уже нечего, а таймауты
+# продолжаются, делим параллелизм пополам — значит дело и вправду в числе
+# одновременных запросов к одному CPU.
+# K8s: RAG_EMBED_CONC_DROP_BATCH_FLOOR.
+CONC_DROP_BATCH_FLOOR = max(
+    1, int(os.getenv("RAG_EMBED_CONC_DROP_BATCH_FLOOR", "2") or 2)
+)
+
+def is_timeout_error(err: BaseException) -> bool:
+    """Ошибка означает «не дождались ответа», а не «запрос неверный».
+
+    Разбираем три формы, в которых таймаут доезжает сюда: исключение httpx,
+    HTTP-статус шлюза и уже завёрнутый клиентом текст ответа (клиенты
+    оборачивают ошибку в RuntimeError, чтобы тело шлюза дошло до пользователя).
+    """
+    if isinstance(err, EmbedBatchTimeout):
+        return True
+    try:
+        import httpx
+    except Exception:  # pragma: no cover — httpx есть всегда, но падать тут нечем
+        httpx = None  # type: ignore[assignment]
+    if httpx is not None:
+        if isinstance(err, httpx.TimeoutException):
+            return True
+        if isinstance(err, httpx.HTTPStatusError):
+            return err.response.status_code in _TIMEOUT_STATUSES
+    # Последняя линия: клиент отдал RuntimeError с телом шлюза внутри.
+    text = str(err).lower()
+    if "gateway time-out" in text or "gateway timeout" in text:
+        return True
+    return any(f"http {code}" in text for code in _TIMEOUT_STATUSES)
+
+def _with_timeout_split(
+    embed_batch: EmbedBatchFn,
+    log_prefix: str,
+    on_batch_shrink: Optional[Callable[[int], None]],
+    start_cap: int,
+) -> EmbedBatchFn:
+    """Обёртка: таймаут на батче → делим батч пополам и считаем половины подряд.
+
+    Рекурсия идёт внутри слота вызывающего (и внутри его Semaphore), поэтому
+    параллелизм не растёт: дробление не добавляет одновременных POST.
+
+    Выученный размер (cap) общий на весь вызов. Каждый неудачный уровень
+    стоит полного таймаута шлюза, и на разведку ушло больше половины
+    времени. Теперь первый же батч, наткнувшийся на потолок, закрывает
+    вопрос для всех остальных в этом вызове.
+    """
+    if not _SPLIT_ON_TIMEOUT:
+        return embed_batch
+
+    cap = {"size": max(1, int(start_cap or 1))}
+
+    async def _run(start: int, batch: List[str]) -> List[List[float]]:
+        if len(batch) > cap["size"]:
+            # Про такой размер уже известно, что он не проходит: режем сразу,
+            # не оплачивая ещё одно ожидание шлюза.
+            size = cap["size"]
+            logger.debug(
+                "%s: батч %s–%s режу по выученному размеру %s без пробы",
+                log_prefix,
+                start + 1,
+                start + len(batch),
+                size,
+            )
+            out: List[List[float]] = []
+            for off in range(0, len(batch), size):
+                out.extend(await _run(start + off, batch[off : off + size]))
+            return out
+        try:
+            return await embed_batch(start, batch)
+        except Exception as e:
+            if len(batch) <= 1 or not is_timeout_error(e):
+                raise
+            mid = len(batch) // 2
+            if mid < cap["size"]:
+                cap["size"] = mid
+            logger.warning(
+                "%s: батч %s–%s (%s фрагментов, %s символов) не уложился в таймаут "
+                "(%s: %s) — делю на %s+%s и считаю половины по очереди",
+                log_prefix,
+                start + 1,
+                start + len(batch),
+                len(batch),
+                sum(len(t or "") for t in batch),
+                type(e).__name__,
+                " ".join(str(e).split())[:200],
+                mid,
+                len(batch) - mid,
+            )
+            if on_batch_shrink is not None:
+                try:
+                    on_batch_shrink(len(batch))
+                except Exception:
+                    pass
+            left = await _run(start, batch[:mid])
+            right = await _run(start + mid, batch[mid:])
+            return left + right
+
+    return _run
 
 async def embed_texts_in_batches(
     texts: Sequence[str],
@@ -50,16 +199,22 @@ async def embed_texts_in_batches(
     concurrency: int,
     embed_batch: EmbedBatchFn,
     log_prefix: str = "embed",
+    on_batch_shrink: Optional[Callable[[int], None]] = None,
 ) -> List[List[float]]:
     """Разбить texts на батчи и прогнать embed_batch с ограниченным параллелизмом.
 
     embed_batch(start_index, batch_texts) -> embeddings той же длины, что batch.
     Результат склеивается в исходном порядке texts.
+
+    on_batch_shrink(size) вызывается, когда батч размера size пришлось дробить
+    по таймауту: клиент может запомнить меньший размер и не наступать на те же
+    грабли на следующих документах.
     """
     if not texts:
         return []
     bs = max(1, int(batch_size or 1))
     conc = max(1, int(concurrency or 1))
+    embed_batch = _with_timeout_split(embed_batch, log_prefix, on_batch_shrink, bs)
     batches: List[tuple[int, List[str]]] = []
     for start in range(0, len(texts), bs):
         batches.append((start, list(texts[start : start + bs])))
@@ -149,7 +304,9 @@ async def embed_texts_in_batches(
     for i, (start, batch) in enumerate(batches):
         part = results[i]
         if part is None:
-            raise RuntimeError(f"{log_prefix}: внутренний сбой параллельного embed (slot={i})")
+            raise RuntimeError(
+                f"{log_prefix}: внутренний сбой параллельного embed (slot={i})"
+            )
         # Инвариант: часть i должна лечь ровно на texts[start:start+len]
         if len(out) != start:
             order_ok = False
@@ -201,9 +358,11 @@ async def embed_texts_in_batches(
             conc,
             elapsed,
             finish_order,
-            ""
-            if finish_was_sorted
-            else " (out-of-order finish, порядок в out сохранён через slots)",
+            (
+                ""
+                if finish_was_sorted
+                else " (out-of-order finish, порядок в out сохранён через slots)"
+            ),
         )
     else:
         logger.error(

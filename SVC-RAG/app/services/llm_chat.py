@@ -86,6 +86,15 @@ async def chat(
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
+    try:
+        from app.core.cef_logger.cef_audit_context import chat_model_peek
+
+        model_path = chat_model_peek()
+        if model_path:
+            payload["model_path"] = model_path
+            model = model_path
+    except Exception:
+        pass
 
     # Что именно отправляем (без самого текста промпта — он может быть огромным;
     # полный промпт — на DEBUG ниже).
@@ -112,10 +121,12 @@ async def chat(
 
     start = time.monotonic()
     try:
+        from app.core.cef_logger.cef_audit_context import cef_identity_headers
+
         async with httpx.AsyncClient(
             timeout=req_timeout, verify=resolve_httpx_verify()
         ) as client:
-            resp = await client.post(url, json=payload)
+            resp = await client.post(url, headers=cef_identity_headers(), json=payload)
             resp.raise_for_status()
             data = resp.json()
     except httpx.HTTPStatusError as e:

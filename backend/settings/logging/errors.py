@@ -1,7 +1,7 @@
 """
 Централизованная обработка ошибок с логированием.
 
-Единственное место с blind except — здесь.
+Единственное место с blind except — здесь (per-file-ignores в pyproject.toml).
 В прикладном коде используйте run_guarded / logged_suppress вместо try/except.
 """
 
@@ -38,7 +38,7 @@ def run_guarded(
     """Выполняет fn(); при ошибке логирует и возвращает default."""
     try:
         return fn()
-    except Exception:
+    except Exception:  # noqa: BLE001
         _log_handled(logger, message, level)
         if reraise:
             raise
@@ -57,7 +57,7 @@ async def run_guarded_async(
     """Асинхронный аналог run_guarded."""
     try:
         return await fn()
-    except Exception:
+    except Exception:  # noqa: BLE001
         _log_handled(logger, message, level)
         if reraise:
             raise
@@ -67,11 +67,13 @@ async def run_guarded_async(
 class logged_suppress:
     """Контекстный менеджер вместо try/except/pass с логом на DEBUG."""
 
-    def __init__(self, logger: logging.Logger, message: str = "Подавлено исключение") -> None:
+    def __init__(
+        self, logger: logging.Logger, message: str = "Подавлено исключение"
+    ) -> None:
         self.logger = logger
         self.message = message
 
-    def __enter__(self) -> "logged_suppress":
+    def __enter__(self) -> logged_suppress:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> bool:
@@ -101,7 +103,9 @@ def guarded(
             def _call() -> T:
                 return fn(*args, **kwargs)
 
-            return run_guarded(log, _call, message=msg, default=default, reraise=reraise, level=level)
+            return run_guarded(
+                log, _call, message=msg, default=default, reraise=reraise, level=level
+            )
 
         return wrapper
 

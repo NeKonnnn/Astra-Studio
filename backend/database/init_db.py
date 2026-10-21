@@ -53,6 +53,7 @@ try:
     from .postgresql.agent_repository import AgentRepository
     from .postgresql.user_settings_repository import UserSettingsRepository
     from .postgresql.skill_repository import SkillRepository
+    from .postgresql.knowledge_base_repository import KnowledgeBaseRepository
     from .postgresql.project_repository import ProjectRepository
     from .postgresql.entity_settings_repository import EntitySettingsRepository
     postgresql_available = True
@@ -66,6 +67,7 @@ except ImportError as e:
     AgentRepository = None
     UserSettingsRepository = None
     SkillRepository = None
+    KnowledgeBaseRepository = None
     ProjectRepository = None
     EntitySettingsRepository = None
 
@@ -88,6 +90,7 @@ document_repo: Optional[DocumentRepository] = None
 vector_repo: Optional[VectorRepository] = None
 agent_repo: Optional[AgentRepository] = None
 skill_repo: Optional["SkillRepository"] = None
+knowledge_base_repo: Optional["KnowledgeBaseRepository"] = None
 user_settings_repo: Optional["UserSettingsRepository"] = None
 project_repo: Optional["ProjectRepository"] = None
 entity_settings_repo: Optional["EntitySettingsRepository"] = None
@@ -180,7 +183,7 @@ async def init_postgresql(
     После рестарта Postgres часто ещё в recovery mode, хотя healthcheck
     ``pg_isready`` уже green — поэтому здесь несколько попыток с backoff.
     """
-    global postgresql_connection, document_repo, vector_repo, prompt_repo, tag_repo, agent_repo, skill_repo, user_settings_repo, project_repo, entity_settings_repo
+    global postgresql_connection, document_repo, vector_repo, prompt_repo, tag_repo, agent_repo, skill_repo, knowledge_base_repo, user_settings_repo, project_repo, entity_settings_repo
 
     if not postgresql_available:
         logger.warning("PostgreSQL модули недоступны. Пропускаем инициализацию.")
@@ -214,6 +217,7 @@ async def init_postgresql(
             vector_repo = VectorRepository(postgresql_connection, embedding_dim)
             agent_repo = AgentRepository(postgresql_connection)
             skill_repo = SkillRepository(postgresql_connection)
+            knowledge_base_repo = KnowledgeBaseRepository(postgresql_connection)
             user_settings_repo = UserSettingsRepository(postgresql_connection)
             project_repo = ProjectRepository(postgresql_connection)
             entity_settings_repo = EntitySettingsRepository(postgresql_connection)
@@ -224,6 +228,7 @@ async def init_postgresql(
             await agent_repo.create_tables()
             await _migrate_agent_model_settings(agent_repo)
             await skill_repo.create_tables()
+            await knowledge_base_repo.create_tables()
             await user_settings_repo.create_tables()
             await project_repo.create_tables()
             # После agents и user_projects: перенос читает их владельцев, а чистка
@@ -231,6 +236,12 @@ async def init_postgresql(
             await entity_settings_repo.create_tables()
             await _migrate_entity_rag_settings(entity_settings_repo)
             await entity_settings_repo.cleanup_orphans()
+            try:
+                from backend.services.legacy_rag_to_kb import run_legacy_rag_migrations
+
+                await run_legacy_rag_migrations()
+            except Exception:
+                logger.exception("legacy_rag_to_kb migrations failed")
 
             if attempt > 1:
                 logger.info("PostgreSQL успешно инициализирован с попытки %s/%s", attempt, max_attempts)
@@ -241,7 +252,7 @@ async def init_postgresql(
         except Exception as e:
             last_error = e
             postgresql_connection = None
-            document_repo = vector_repo = agent_repo = skill_repo = None
+            document_repo = vector_repo = agent_repo = skill_repo = knowledge_base_repo = None
             user_settings_repo = project_repo = entity_settings_repo = None
             if attempt >= max_attempts:
                 break
@@ -410,6 +421,16 @@ def get_skill_repository():
         raise RuntimeError("PostgreSQL не инициализирован. Вызовите init_postgresql() сначала.")
     return skill_repo
 
+
+
+
+def get_knowledge_base_repository():
+    """Получение репозитория баз знаний"""
+    if not postgresql_available:
+        raise RuntimeError("PostgreSQL модули недоступны. Установите psycopg2.")
+    if knowledge_base_repo is None:
+        raise RuntimeError("PostgreSQL не инициализирован. Вызовите init_postgresql() сначала.")
+    return knowledge_base_repo
 
 def get_user_settings_repository():
     """Получение репозитория персональных LLM-настроек"""

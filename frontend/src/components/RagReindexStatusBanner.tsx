@@ -32,6 +32,8 @@ export default function RagReindexStatusBanner() {
       }}
       ariaLabel="Закрыть уведомление о перечанковке RAG"
       fixed
+      top={12}
+      zIndexOffset={1}
       autoDismissMs={STATUS_TOAST_AUTO_DISMISS_MS}
     />
   );

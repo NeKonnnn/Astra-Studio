@@ -22,6 +22,7 @@ import {
   TextSnippet as TxtIcon,
   Article as ArticleIcon,
   Refresh as RefreshIcon,
+  Image as ImageIcon,
 } from '@mui/icons-material';
 import { getApiUrl, API_ENDPOINTS, getAuthFetchHeaders } from '../config/api';
 import {
@@ -37,10 +38,13 @@ import RagUploadingFileThumb from './RagUploadingFileThumb';
 import {
   commitRagUploadUiUpdate,
   createRagPendingUploads,
+  formatRagApiDetail,
   getRagFileTypeLabel,
   mapWithConcurrency,
   mergeRagDocumentsById,
+  parseRagDuplicateUploadMessage,
   parseRagUploadDocumentId,
+  ragWarningAlertSx,
   removeRagPendingUploads,
   RAG_UPLOAD_CONCURRENCY,
   type RagPendingUpload,
@@ -67,10 +71,11 @@ function getFileIcon(filename: string) {
   if (['xlsx', 'xls', 'csv'].includes(ext)) return <ExcelIcon sx={{ color: '#43a047' }} />;
   if (ext === 'txt' || ext === 'md') return <TxtIcon sx={{ color: '#1e88e5' }} />;
   if (['docx', 'doc'].includes(ext)) return <ArticleIcon sx={{ color: '#1565c0' }} />;
+  if(['jpg', 'jpeg', 'png', 'webp','bmp'].includes(ext)) return <ImageIcon sx={{ color: '#8e24aa' }} />;
   return <DocumentIcon sx={{ color: '#7b1fa2' }} />;
 }
 
-const ALLOWED = ['.pdf', '.docx', '.doc', '.docm', '.xlsx', '.xls', '.xlsm', '.txt', '.csv', '.md', '.log', '.rtf'];
+const ALLOWED = ['.pdf', '.docx', '.doc', '.docm', '.xlsx', '.xls', '.xlsm', '.ppt', '.pptx', '.txt', '.csv', '.md', '.log', '.rtf', '.jpg', '.jpeg', '.png', '.webp', '.bmp'];
 
 export interface ProjectRagLibraryInlineProps {
   /** null — до первого resolve (новый проект) */
@@ -88,7 +93,7 @@ export default function ProjectRagLibraryInline({
   projectId,
   onResolveProjectId,
   autoLoad = true,
-  subtitle = 'Оригиналы в MinIO, чанки и векторы — в PostgreSQL (только этот проект)',
+  subtitle = 'Файлы проекта хранятся в базе знаний проекта и доступны в чате через RAG',
   dense = false,
 }: ProjectRagLibraryInlineProps) {
   const [documents, setDocuments] = useState<ProjectRagDoc[]>([]);
@@ -102,6 +107,7 @@ export default function ProjectRagLibraryInline({
   } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [resolvedId, setResolvedId] = useState<string | null>(projectId);
+  const [libraryKbId, setLibraryKbId] = useState<number | null>(null);
 
   useEffect(() => {
     setResolvedId(projectId);
@@ -129,10 +135,29 @@ export default function ProjectRagLibraryInline({
     setBanner({ message, severity: 'warning' });
   }, []);
 
-  /** Модели из настроек проекта (уже сохранённых в БД). */
+  const ensureLibraryKbId = useCallback(async (pid: string): Promise<number | null> => {
+    if (libraryKbId != null) return libraryKbId;
+    const url = getApiUrl(
+      `${API_ENDPOINTS.KNOWLEDGE_BASES}/ensure-project-library?project_id=${encodeURIComponent(pid)}`,
+    );
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: getAuthFetchHeaders(),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(formatRagApiDetail(err.detail, `HTTP ${resp.status}`));
+    }
+    const data = (await resp.json()) as { id?: number };
+    const id = typeof data.id === 'number' ? data.id : null;
+    if (id != null) setLibraryKbId(id);
+    return id;
+  }, [libraryKbId]);
+
+  /** Модели из настроек БЗ проекта (entity scope=kb). */
   const resolveProjectRagModelPaths = useCallback(
     async (
-      pid: string,
+      kbId: number,
     ): Promise<{
       embeddingPath: string;
       rerankerPath: string;
@@ -140,11 +165,11 @@ export default function ProjectRagLibraryInline({
     }> => {
       try {
         const resp = await fetch(
-          getApiUrl(`/api/rag/settings?scope=project&project_id=${encodeURIComponent(pid)}`),
+          getApiUrl(`/api/rag/settings?scope=kb&knowledge_base_id=${encodeURIComponent(String(kbId))}`),
           { headers: getAuthFetchHeaders() },
         );
         if (!resp.ok) {
-          const envDefaults = await fetchRagEntityDefaults('project');
+          const envDefaults = await fetchRagEntityDefaults('kb');
           return {
             embeddingPath: envDefaults.embeddingPath,
             rerankerPath: envDefaults.rerankerPath,
@@ -152,7 +177,7 @@ export default function ProjectRagLibraryInline({
           };
         }
         const data = (await resp.json()) as Record<string, unknown>;
-        const envDefaults = await fetchRagEntityDefaults('project');
+        const envDefaults = await fetchRagEntityDefaults('kb');
         return {
           embeddingPath: resolveRagEmbeddingModelPath(
             String(data.rag_embedding_model_path || ''),
@@ -168,7 +193,7 @@ export default function ProjectRagLibraryInline({
               : true,
         };
       } catch {
-        const envDefaults = await fetchRagEntityDefaults('project');
+        const envDefaults = await fetchRagEntityDefaults('kb');
         return {
           embeddingPath: envDefaults.embeddingPath,
           rerankerPath: envDefaults.rerankerPath,
@@ -180,12 +205,35 @@ export default function ProjectRagLibraryInline({
   );
 
   const fetchList = useCallback(async (pid: string): Promise<ProjectRagDoc[]> => {
-    const url = getApiUrl((API_ENDPOINTS.PROJECT_RAG_LIST as (id: string) => string)(pid));
-    const resp = await fetch(url);
+    const kbId = await ensureLibraryKbId(pid);
+    if (kbId == null) return [];
+    const url = getApiUrl(API_ENDPOINTS.KB_DOCUMENTS_LIST);
+    const resp = await fetch(url, { headers: getAuthFetchHeaders() });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
-    return data.documents || [];
-  }, []);
+    const rows: unknown[] = Array.isArray(data) ? data : data.documents || [];
+    return rows
+      .map((row) => {
+        const r = row as Record<string, unknown>;
+        const meta = (r.metadata && typeof r.metadata === 'object'
+          ? (r.metadata as Record<string, unknown>)
+          : {}) as Record<string, unknown>;
+        const rowKb = meta.knowledge_base_id ?? r.knowledge_base_id;
+        try {
+          if (Number(rowKb) !== kbId) return null;
+        } catch {
+          return null;
+        }
+        return {
+          id: Number(r.id),
+          filename: String(r.filename || ''),
+          created_at: (r.created_at as string | null) ?? null,
+          size: (r.size as number | null) ?? null,
+          file_type: (r.file_type as string | null) ?? null,
+        } as ProjectRagDoc;
+      })
+      .filter((d): d is ProjectRagDoc => d != null && Number.isFinite(d.id));
+  }, [ensureLibraryKbId]);
 
   const loadDocuments = useCallback(async () => {
     if (!effectiveId) {
@@ -262,7 +310,7 @@ export default function ProjectRagLibraryInline({
     });
     if (!valid.length) {
       setBanner({
-        message: 'Допустимы: PDF, DOC/DOCX/DOCM, XLS/XLSX/XLSM, TXT, MD, LOG, CSV, RTF',
+        message: 'Допустимы: PDF, DOC/DOCX/DOCM, XLS/XLSX/XLSM, PPT/PPTX, TXT, MD, LOG, CSV, RTF, JPG, JPEG, PNG, WEBP, BMP (OCR)',
         severity: 'error',
       });
       return;
@@ -279,19 +327,36 @@ export default function ProjectRagLibraryInline({
       return;
     }
 
+    let kbId: number | null = null;
+    try {
+      kbId = await ensureLibraryKbId(pid);
+    } catch (e) {
+      dropPending(pendingEntries.map((entry) => entry.clientId));
+      setBanner({
+        message: `Не удалось подготовить БЗ проекта: ${e instanceof Error ? e.message : String(e)}`,
+        severity: 'error',
+      });
+      return;
+    }
+    if (kbId == null) {
+      dropPending(pendingEntries.map((entry) => entry.clientId));
+      setBanner({ message: 'Не удалось подготовить БЗ проекта', severity: 'error' });
+      return;
+    }
+
     const { embeddingPath, rerankerPath, rerankingEnabled } =
-      await resolveProjectRagModelPaths(pid);
+      await resolveProjectRagModelPaths(kbId);
     if (!embeddingPath) {
       dropPending(pendingEntries.map((entry) => entry.clientId));
       showModelGuard(
-        'Сначала выберите модель эмбеддингов в настройках РАГ для проекта',
+        'Сначала выберите модель эмбеддингов в настройках РАГ базы знаний проекта',
       );
       return;
     }
     if (rerankingEnabled && !rerankerPath) {
       dropPending(pendingEntries.map((entry) => entry.clientId));
       showModelGuard(
-        'Сначала выберите модель реранкера в настройках РАГ для проекта',
+        'Сначала выберите модель реранкера в настройках РАГ базы знаний проекта',
       );
       return;
     }
@@ -302,6 +367,8 @@ export default function ProjectRagLibraryInline({
 
     let stopRemaining = false;
     let successCount = 0;
+    let duplicateCount = 0;
+    let lastDuplicateMsg: string | null = null;
 
     await mapWithConcurrency(valid, RAG_UPLOAD_CONCURRENCY, async (file, index) => {
       if (stopRemaining) {
@@ -318,23 +385,24 @@ export default function ProjectRagLibraryInline({
       try {
         const fd = new FormData();
         fd.append('file', file);
-        const url = getApiUrl((API_ENDPOINTS.PROJECT_RAG_UPLOAD as (id: string) => string)(pid));
+        fd.append('knowledge_base_id', String(kbId));
+        const url = getApiUrl(API_ENDPOINTS.KB_DOCUMENTS_UPLOAD);
         const resp = await fetch(url, { method: 'POST', headers: getAuthFetchHeaders(), body: fd });
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-          const detail = err.detail;
-          const msg =
-            typeof detail === 'string'
-              ? detail
-              : Array.isArray(detail)
-                ? detail
-                    .map((d: unknown) =>
-                      typeof d === 'object' && d && 'msg' in d
-                        ? String((d as { msg: unknown }).msg)
-                        : String(d),
-                    )
-                    .join('; ')
-                : JSON.stringify(detail);
+          const duplicateMsg = parseRagDuplicateUploadMessage(resp.status, err, file.name);
+          if (duplicateMsg) {
+            duplicateCount += 1;
+            lastDuplicateMsg = duplicateMsg;
+            setBanner({ message: duplicateMsg, severity: 'warning' });
+            if (pendingId) {
+              commitRagUploadUiUpdate(() => {
+                setPendingUploads((prev) => removeRagPendingUploads(prev, [pendingId]));
+              });
+            }
+            return;
+          }
+          const msg = formatRagApiDetail(err.detail, resp.statusText);
           // Сообщения про модели — оранжевая табличка, остальное error.
           if (
             typeof msg === 'string' &&
@@ -409,10 +477,19 @@ export default function ProjectRagLibraryInline({
       });
       return;
     }
-    setBanner({
-      message: `Загружено файлов: ${successCount || valid.length}. Документы проиндексированы для RAG.`,
-      severity: 'success',
-    });
+    if (successCount > 0 && duplicateCount > 0) {
+      setBanner({
+        message: `Загружено: ${successCount}. Пропущено дубликатов: ${duplicateCount}.`,
+        severity: 'warning',
+      });
+    } else if (successCount > 0) {
+      setBanner({
+        message: `Загружено файлов: ${successCount}. Документы проиндексированы для RAG.`,
+        severity: 'success',
+      });
+    } else if (lastDuplicateMsg) {
+      setBanner({ message: lastDuplicateMsg, severity: 'warning' });
+    }
     void fetchList(pid)
       .then((fresh) => {
         setDocuments((prev) => mergeRagDocumentsById(prev, fresh));
@@ -423,10 +500,11 @@ export default function ProjectRagLibraryInline({
   const handleDelete = async (doc: ProjectRagDoc) => {
     if (!effectiveId) return;
     try {
-      const url = getApiUrl(
-        (API_ENDPOINTS.PROJECT_RAG_DELETE_DOC as (pid: string, did: number) => string)(effectiveId, doc.id)
-      );
-      const resp = await fetch(url, { method: 'DELETE' });
+      const url = getApiUrl(`${API_ENDPOINTS.KB_DOCUMENTS_DELETE}/${doc.id}`);
+      const resp = await fetch(url, {
+        method: 'DELETE',
+        headers: getAuthFetchHeaders(),
+      });
       if (!resp.ok) {
         // Текст из detail объясняет причину («хранилище недоступно»),
         // голый код ответа пользователю ничего не говорит.
@@ -463,7 +541,7 @@ export default function ProjectRagLibraryInline({
         type="file"
         multiple
         hidden
-        accept=".pdf,.doc,.docx,.docm,.xls,.xlsx,.xlsm,.txt,.csv,.md,.log,.rtf"
+        accept=".pdf,.doc,.docx,.docm,.xls,.xlsx,.xlsm,.ppt,.pptx,.txt,.csv,.md,.log,.rtf,.jpg,.jpeg,.png,.webp,.bmp"
         onChange={(e) => {
           const list = e.target.files;
           if (!list?.length) return;
@@ -501,18 +579,7 @@ export default function ProjectRagLibraryInline({
         <Alert
           severity={banner.severity}
           onClose={() => setBanner(null)}
-          sx={
-            banner.severity === 'warning'
-              ? {
-                  mb: 2,
-                  bgcolor: 'rgba(255, 152, 0, 0.12)',
-                  color: 'warning.main',
-                  border: '1px solid',
-                  borderColor: 'warning.main',
-                  '& .MuiAlert-icon': { color: 'warning.main' },
-                }
-              : { mb: 2 }
-          }
+          sx={banner.severity === 'warning' ? ragWarningAlertSx : { mb: 2 }}
         >
           {banner.message}
         </Alert>

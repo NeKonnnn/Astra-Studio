@@ -1,6 +1,32 @@
 const STORAGE_PREFIX = 'astrachat:presentation:';
 
 /**
+ * Диагностика презентаций в консоли. Включается флагом в localStorage:
+ *   localStorage.setItem('astra:debug:presentation', '1')
+ * — чтобы на проде можно было включить логи у конкретного пользователя без пересборки.
+ */
+function presentationDebugEnabled(): boolean {
+  try {
+    return (
+      typeof localStorage !== 'undefined' &&
+      localStorage.getItem('astra:debug:presentation') === '1'
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function presentationLog(event: string, details?: Record<string, unknown>): void {
+  if (!presentationDebugEnabled()) return;
+  try {
+    // eslint-disable-next-line no-console
+    console.info(`[presentation] ${event}`, details || {});
+  } catch {
+    /* no-op */
+  }
+}
+
+/**
  * class="…" / class='…' — значение целиком (нежадный, с учётом переносов).
  * Нужен, чтобы отличать токен `slide` от `slide-title` / `slide-title--xl`.
  */
@@ -278,6 +304,27 @@ function cleanSlideFragment(frag: string): string {
   return s.trim();
 }
 
+/**
+ * Чинит HTML, оборванный провайдером на max_tokens (finish_reason="length").
+ * Типичные обрывы: посреди открывающего тега (`...<div class="sl`),
+ * внутри атрибута или текста. Браузер в srcdoc частично это прощает, но
+ * последний `.slide` может «потеряться» и привести к ложному «нет слайдов».
+ * Отрезаем заведомо битый хвост — последний незакрытый `<tag ...` без `>`.
+ */
+export function repairTruncatedPresentationHtml(code: string): string {
+  let s = code || '';
+  if (!s) return s;
+  // Хвост после последнего '<' без закрывающего '>' — оборванный тег.
+  const lastLt = s.lastIndexOf('<');
+  if (lastLt >= 0) {
+    const tail = s.slice(lastLt);
+    if (!tail.includes('>')) {
+      s = s.slice(0, lastLt).replace(/\s+$/, '');
+    }
+  }
+  return s;
+}
+
 /** Срезает markdown-fence и незакрытый хвост <!-- ... без -->. */
 export function sanitizePresentationHtmlSource(code: string): string {
   let s = (code || '').replace(/^\uFEFF/, '').trim();
@@ -425,12 +472,29 @@ export function getStablePresentationSnapshot(
   isStreaming: boolean,
   opts?: { maxReadyCount?: number },
 ): StablePresentationSnapshot {
-  const cleaned = sanitizePresentationHtmlSource(code);
+  const cleaned = isStreaming
+    ? sanitizePresentationHtmlSource(code)
+    : // После complete HTML мог оборваться на max_tokens — чиним битый хвост,
+      // иначе последний слайд теряется и viewer ложно пишет «нет .slide».
+      repairTruncatedPresentationHtml(sanitizePresentationHtmlSource(code));
   const fragments = extractGpbSlideFragments(cleaned);
   const startedCount = Math.max(countGpbSlideOpens(cleaned), fragments.length);
   const maxReady = opts?.maxReadyCount;
+  const truncatedTail = !isStreaming && cleaned.length < sanitizePresentationHtmlSource(code).length;
+
+  if (truncatedTail) {
+    presentationLog('обрезанный хвост HTML починен (вероятен обрыв по max_tokens)', {
+      rawLen: (code || '').length,
+      cleanedLen: cleaned.length,
+      fragments: fragments.length,
+    });
+  }
 
   if (!cleaned.trim()) {
+    presentationLog('снапшот: пустой HTML после очистки', {
+      isStreaming,
+      rawLen: (code || '').length,
+    });
     return { html: null, readyCount: 0, startedCount: 0, pending: isStreaming };
   }
 
@@ -455,6 +519,19 @@ export function getStablePresentationSnapshot(
 
       const doc = new DOMParser().parseFromString(htmlOut, 'text/html');
       const n = doc.querySelectorAll('.slide').length;
+      presentationLog('снапшот (complete): распознаны слайды', {
+        domSlides: n,
+        regexFragments: fragments.length,
+        startedCount,
+        hasStyle: /<style\b/i.test(htmlOut),
+        htmlLen: htmlOut.length,
+      });
+      if (n !== fragments.length) {
+        presentationLog('снапшот: расхождение DOM vs regex (обрезанный/битый HTML)', {
+          domSlides: n,
+          regexFragments: fragments.length,
+        });
+      }
       // DOMParser на кривом хвосте иногда «съедает» последний .slide (title-slide),
       // хотя в исходнике он есть — тогда пересобираем из regex-фрагментов.
       if (fragments.length > n && fragments.length > 0) {
@@ -471,6 +548,13 @@ export function getStablePresentationSnapshot(
       }
       const readyCount = Math.max(n, fragments.length);
       if (readyCount === 0) {
+        presentationLog('снапшот (complete): НЕТ слайдов — viewer покажет ошибку', {
+          startedCount,
+          hasSlideClass: hasGpbSlideClass(code),
+          hasStreamHints: hasPresentationStreamHints(code),
+          rawLen: (code || '').length,
+          sample: (code || '').slice(0, 300),
+        });
         return { html: null, readyCount: 0, startedCount: 0, pending: false };
       }
       if (n === 0 && fragments.length > 0) {

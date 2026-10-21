@@ -10,6 +10,7 @@ import {
 } from '../settings/sessionTimeout';
 import { cacheServerInstanceId, clearServerInstanceId, resolveLoginSessionNoticeReason, setLoginSessionNotice, type LoginSessionNoticeReason } from '../settings/sessionValidity';
 import { getApiUrl, fetchSessionPolicy } from '../config/api';
+import { isMissingRoleLoginError, MISSING_ROLE_LOGIN_MESSAGE } from './missingRoleLoginError';
 
 export type LoginErrorMeta = {
   remainingAttempts?: number;
@@ -28,38 +29,7 @@ export class AuthLoginError extends Error {
   }
 }
 
-const MISSING_ROLE_LOGIN_MESSAGE =
-  'У вас нет необходимой роли для взаимодействия с AstraChat. Обратитесь к администратору проекта';
-
-const ROLE_ERROR_MARKERS = [
-  'роль',
-  'roles',
-  'role',
-  'insufficient',
-  'forbidden',
-  'доступ запрещен',
-  'доступ запрещён',
-];
-
-function containsRoleErrorMarker(value: unknown): boolean {
-  if (typeof value !== 'string') return false;
-  const normalized = value.toLowerCase();
-  return ROLE_ERROR_MARKERS.some((marker) => normalized.includes(marker));
-}
-
-function isMissingRoleLoginError(detail: unknown, parsedMessage?: string): boolean {
-  if (containsRoleErrorMarker(parsedMessage)) return true;
-  if (containsRoleErrorMarker(detail)) return true;
-  if (detail && typeof detail === 'object') {
-    const obj = detail as Record<string, unknown>;
-    return (
-      containsRoleErrorMarker(obj.message) ||
-      containsRoleErrorMarker(obj.detail) ||
-      containsRoleErrorMarker(obj.error)
-    );
-  }
-  return false;
-}
+export { isMissingRoleLoginError };
 
 interface User {
   username: string;
@@ -68,6 +38,18 @@ interface User {
   full_name: string | null;
   is_active: boolean;
   is_admin: boolean;
+  /** owner | editor | viewer | base */
+  platform_role?: string | null;
+  can_use_agents?: boolean;
+  can_use_mcp?: boolean;
+  can_create_agents?: boolean;
+  can_publish_to_library?: boolean;
+  features?: {
+    agents?: boolean;
+    mcp?: boolean;
+    create_agents?: boolean;
+    publish_to_library?: boolean;
+  };
 }
 
 interface AuthContextType {

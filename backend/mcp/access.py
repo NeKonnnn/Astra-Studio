@@ -14,10 +14,8 @@ def _user_groups(context: McpCallContext) -> Set[str]:
         raw = getattr(context, key, None)
         if isinstance(raw, list):
             groups.update(str(g) for g in raw if g)
-    extra = context.extra_headers or {}
-    for header_val in extra.values():
-        if header_val:
-            groups.add(str(header_val))
+    # extra_headers намеренно не учитываются: это произвольные заголовки
+    # (могут прийти из запроса) и не являются доверенным источником групп.
     return groups
 
 
@@ -54,7 +52,10 @@ def filter_tools(
             continue
         if qualified_whitelist and tool.qualified_name not in qualified_whitelist:
             continue
-        if enabled_tool_names is not None and tool.qualified_name not in enabled_tool_names:
+        if (
+            enabled_tool_names is not None
+            and tool.qualified_name not in enabled_tool_names
+        ):
             continue
         result.append(tool)
     return result

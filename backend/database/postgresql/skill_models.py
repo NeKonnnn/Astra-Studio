@@ -158,7 +158,7 @@ class SkillFilters(BaseModel):
     view_option: Optional[str] = Field(None, description="created | shared | public | ''")
     author_id: Optional[str] = None
     category: Optional[str] = None
-    limit: int = Field(30, ge=1, le=100)
+    limit: int = Field(30, ge=1, le=1000)
     offset: int = Field(0, ge=0)
 
 

@@ -19,18 +19,6 @@ export const STATUS_TOAST_ICON_COLORS: Record<StatusToastType, string> = {
   info: '#42A5F5',
 };
 
-/** id общего контейнера, в который встают все `fixed` тосты (чтобы не ложиться друг на друга) */
-export const STATUS_TOAST_STACK_ID = 'astra-toast-stack';
-
-/**
- * Отступ стека сверху (px). 12 перекрывало кнопки шапки (селектор «Агенты / Модели», переключатели
- * панелей), поэтому стек стоит ниже шапки.
- */
-export const STATUS_TOAST_STACK_TOP_PX = 64;
-
-/** z-index стека: выше модальных окон MUI (1300) и snackbar (1400) */
-export const STATUS_TOAST_STACK_Z_INDEX = 1404;
-
 /** Автоскрытие длительных плашек (перечанковка, LLM, ошибки в рабочей зоне) */
 export const STATUS_TOAST_AUTO_DISMISS_MS = 10_000;
 

@@ -11,11 +11,10 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.database.search_filters import DocumentVectorSearchFilters
 from app.database.kb_repository import KbDocumentRepository, KbVectorRepository
-from app.database.models import Document, DocumentVector
+from app.database.models import Document
 from app.database.graph_repository import GraphRepository
 from app.services.bm25_index import InMemoryBm25Index, Bm25IndexCache
 from app.services.chunker import (
-    describe_embed_client,
     normalize_chunking_strategy,
     resolve_chunk_params,
     split_into_chunks_with_meta,
@@ -25,6 +24,7 @@ from app.services.retrieval_pipeline import RetrievalTrace, run_retrieval_pipeli
 from app.services.stage_timer import StageTimer
 
 logger = get_logger(__name__)
+
 
 def _doc_actors(doc):
     """(owner, uploader, filename) из документа. Принимает и объект, и dict."""
@@ -44,6 +44,7 @@ def _doc_actors(doc):
     uploader = str(meta.get("uploaded_by") or "-").strip() or "-"
     return owner, uploader, name
 
+
 def bump_kb_reindex_generation(key: str = "*") -> int:
     """Новое поколение реиндекса KB — сигнал текущему проходу ЭТОГО ключа прерваться.
 
@@ -55,10 +56,12 @@ def bump_kb_reindex_generation(key: str = "*") -> int:
 
     return kb_queue.bump(key)
 
+
 def current_kb_reindex_generation(key: str = "*") -> int:
     from app.services.reindex_queue import kb_queue
 
     return kb_queue.current(key)
+
 
 def kb_generation_is_current(key: str, generation: Optional[int]) -> bool:
     """Актуален ли проход. ``generation=None`` — прерывание не запрашивалось."""
@@ -66,7 +69,9 @@ def kb_generation_is_current(key: str, generation: Optional[int]) -> bool:
 
     return kb_queue.is_current(key, generation)
 
+
 MAX_KB_CONTEXT_CHARS = 12000
+
 
 class KbService:
     def __init__(
@@ -101,7 +106,11 @@ class KbService:
         выдача (см. allowed_doc_ids в retrieval_pipeline)
         """
         dim = int(getattr(repo, "embedding_dim", 0) or 0)
-        scope = frozenset(int(d) for d in document_ids if d is not None) if document_ids else None
+        scope = (
+            frozenset(int(d) for d in document_ids if d is not None)
+            if document_ids
+            else None
+        )
         key = (dim, scope)
 
         def _make() -> InMemoryBm25Index:
@@ -111,6 +120,7 @@ class KbService:
                 return await repo.get_all_contents_for_bm25(document_ids=ids)
 
             if not get_settings().rag.bm25_store_enabled:
+                # Выключатель: ведём себя как до появления хранилища.
                 return InMemoryBm25Index(_fetch)
 
             from app.database.bm25_store import cache_key, documents_entity
@@ -121,13 +131,9 @@ class KbService:
                 return await repo.bm25_store_load(store_key, document_ids=ids)
 
             async def _save(fingerprint, payload, chunk_count):
-                await repo.bm25_store_save(
-                    store_key, fingerprint, payload, chunk_count
-                )
+                await repo.bm25_store_save(store_key, fingerprint, payload, chunk_count)
 
-            return InMemoryBm25Index(
-                _fetch, load_from_store=_load, save_to_store=_save
-            )
+            return InMemoryBm25Index(_fetch, load_from_store=_load, save_to_store=_save)
 
         return self._bm25_by_key.get_or_create(key, _make)
 
@@ -165,11 +171,39 @@ class KbService:
         minio_bucket: Optional[str] = None,
         owner_user_id: Optional[str] = None,
         agent_id: Optional[int] = None,
+        knowledge_base_id: Optional[int] = None,
         uploaded_by: Optional[str] = None,
+        relative_path: Optional[str] = None,
         model: Optional[str] = None,
         provider: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Парсим файл, режем на чанки, получаем эмбеддинги и сохраняем в kb_documents/kb_vectors."""
+        from app.services.document_duplicate import (
+            duplicate_index_result,
+            file_content_hash,
+        )
+        from app.services.text_duplicate import (
+            find_text_duplicate,
+            remember_text,
+            text_duplicate_index_result,
+        )
+
+        content_hash = file_content_hash(file_data)
+        existing = await self.doc_repo.find_duplicate(
+            content_hash=content_hash,
+            filename=filename,
+            size=len(file_data),
+            agent_id=int(agent_id) if agent_id is not None else None,
+            knowledge_base_id=(
+                int(knowledge_base_id) if knowledge_base_id is not None else None
+            ),
+        )
+        if existing:
+            return duplicate_index_result(
+                document_id=existing.get("id"),
+                filename=existing.get("filename") or filename,
+            )
+
         timer = StageTimer("INDEX", store="kb", file=filename)
         with timer.stage("parse"):
             parsed = await parse_document(file_data, filename)
@@ -184,7 +218,45 @@ class KbService:
         text = parsed.get("text", "")
         if not text.strip():
             timer.log(logger)
-            return {"ok": False, "error": empty_document_index_error(parsed, filename), "document_id": None}
+            return {
+                "ok": False,
+                "error": empty_document_index_error(parsed, filename),
+                "document_id": None,
+            }
+
+        # Тот же текст под другим именем или в других байтах - до эмбеддингов.
+        # Область та же, что у побайтной проверки: база знаний / агент / общая.
+        scope_agent = int(agent_id) if agent_id is not None else None
+        scope_kb = int(knowledge_base_id) if knowledge_base_id is not None else None
+
+        async def _kb_doc_text(doc_id: int) -> Optional[str]:
+            doc = await self.doc_repo.get_document(doc_id)
+            return doc.content if doc else None
+
+        async def _same_text(older_than: Optional[int] = None):
+            def _in_scope(meta: dict) -> bool:
+                if scope_kb is not None:
+                    return meta.get("knowledge_base_id") == scope_kb
+                return meta.get("agent_id") == scope_agent
+
+            return await find_text_duplicate(
+                store="kb",
+                text=text,
+                candidates=[
+                    (d["id"], d["filename"])
+                    for d in await self.doc_repo.list_documents_brief()
+                    if _in_scope(d.get("metadata") or {})
+                ],
+                load_text=_kb_doc_text,
+                older_than=older_than,
+                upload_name=filename,
+            )
+
+        with timer.stage("text_duplicate"):
+            same = await _same_text()
+        if same:
+            timer.log(logger)
+            return text_duplicate_index_result("kb", filename, same)
 
         # Модель выбираем ДО создания документа: иначе при ошибке сохранения
         # в БД останется документ без единого вектора.
@@ -209,7 +281,8 @@ class KbService:
             "file_type": parsed.get("file_type", ""),
             "pages": parsed.get("pages", 0),
             "size": len(file_data),
-            "source": "agent",
+            "source": "knowledge_base" if knowledge_base_id is not None else "agent",
+            "content_hash": content_hash,
         }
         if minio_object:
             meta["minio_object"] = minio_object
@@ -224,6 +297,15 @@ class KbService:
                 meta["agent_id"] = int(agent_id)
             except (TypeError, ValueError):
                 pass
+        if knowledge_base_id is not None:
+            try:
+                meta["knowledge_base_id"] = int(knowledge_base_id)
+            except (TypeError, ValueError):
+                pass
+        if relative_path:
+            rel = str(relative_path).replace("\\", "/").strip().lstrip("/")
+            if rel:
+                meta["relative_path"] = rel
 
         doc = Document(
             filename=filename,
@@ -241,6 +323,14 @@ class KbService:
                 "error": "Ошибка сохранения документа в БД",
                 "document_id": None,
             }
+        # Одновременная загрузка того же текста (несколько файлов разом) тоже
+        # прошла проверку выше: после вставки поздний документ уступает раннему.
+        same = await _same_text(older_than=doc_id)
+        if same:
+            await self.doc_repo.delete_document(doc_id)
+            timer.log(logger)
+            return text_duplicate_index_result("kb", filename, same)
+        remember_text("kb", doc_id, text)
         # Пометка для логов гардрейла: клиент видит только список строк, имя
         # файла и id документа до него не доезжают. Ставим до ветвления, чтобы
         # покрыть и иерархическую индексацию, и обычную.
@@ -267,6 +357,17 @@ class KbService:
             except Exception as e:
                 logger.error("KB иерархическая индексация не удалась: %s", e)
                 await self.doc_repo.delete_document(doc_id)
+                # Документа не будет - исходник больше не нужен. Удалить его
+                # может только backend (PVC его), и только если знает об исходе:
+                # по таймауту он ждать уже перестал. См. index_failed_report.
+                from app.services.index_failed_report import report_index_failed
+
+                await report_index_failed(
+                    minio_object=minio_object,
+                    minio_bucket=minio_bucket,
+                    filename=filename,
+                    reason=f"Иерархическая индексация: {e}",
+                )
                 timer.log(logger)
                 return {
                     "ok": False,
@@ -315,39 +416,46 @@ class KbService:
                 "error": "Не удалось нарезать чанки",
                 "document_id": doc_id,
             }
-        chunks = [c for c, _m in chunks_with_meta]
+
+        from app.services.index_batching import embed_and_store
+
+        def _kb_vector_meta(idx: int, cmeta: dict) -> dict:
+            meta = {"start": idx}
+            meta.update(cmeta)
+            return meta
 
         try:
-            with timer.stage("embed"):
-                embeddings = await prof.embed(chunks, kind="document")
+            # Волнами по RAG_INDEX_CHUNKS_PER_BATCH чанков: эмбеддинги,
+            # вставка, пачка отпущена.
+            # vectors возвращаются без эмбеддингов: ниже они нужны только
+            # графу, а ему от чанка требуются chunk_index и content.
+            created, vectors = await embed_and_store(
+                chunks_with_meta,
+                document_id=doc_id,
+                repo=repo,
+                embed=lambda texts: prof.embed(texts, kind="document"),
+                make_metadata=_kb_vector_meta,
+                timer=timer,
+            )
         except Exception as e:
-            logger.error("Ошибка получения эмбеддингов для KB: %s", e)
+            logger.error("Ошибка индексации KB: %s", e)
             await self.doc_repo.delete_document(doc_id)
+            # То же, что в иерархической ветке: документа не будет, и сказать
+            # об этом бэкенду больше некому.
+            from app.services.index_failed_report import report_index_failed
+
+            await report_index_failed(
+                minio_object=minio_object,
+                minio_bucket=minio_bucket,
+                filename=filename,
+                reason=f"Ошибка эмбеддингов: {e}",
+            )
             timer.log(logger)
             return {
                 "ok": False,
                 "error": f"Ошибка эмбеддингов: {e}",
                 "document_id": None,
             }
-
-        vectors = []
-        for idx, ((chunk, cmeta), embedding) in enumerate(
-            zip(chunks_with_meta, embeddings)
-        ):
-            meta = {"start": idx}
-            meta.update(cmeta)
-            vectors.append(
-                DocumentVector(
-                    document_id=doc_id,
-                    chunk_index=idx,
-                    embedding=embedding,
-                    content=chunk,
-                    metadata=meta,
-                )
-            )
-
-        with timer.stage("insert"):
-            created = await repo.create_vectors_batch(vectors)
         with timer.stage("bm25"):
             self._mark_bm25_dirty()
         if self.graph_repo:
@@ -448,23 +556,21 @@ class KbService:
         chunks = [c for c, _m in chunks_with_meta]
         if not chunks:
             return 0
-        embeddings = await prof.embed(chunks, kind="document")
-        vectors = []
-        for idx, ((chunk, cmeta), embedding) in enumerate(
-            zip(chunks_with_meta, embeddings)
-        ):
+        from app.services.index_batching import embed_and_store
+
+        def _kb_vector_meta(idx: int, cmeta: dict) -> dict:
             meta = {"start": idx}
             meta.update(cmeta)
-            vectors.append(
-                DocumentVector(
-                    document_id=document_id,
-                    chunk_index=idx,
-                    embedding=embedding,
-                    content=chunk,
-                    metadata=meta,
-                )
-            )
-        created = await repo.create_vectors_batch(vectors)
+            return meta
+
+        # Волнами, см. index_document.
+        created, vectors = await embed_and_store(
+            chunks_with_meta,
+            document_id=document_id,
+            repo=repo,
+            embed=lambda texts: prof.embed(texts, kind="document"),
+            make_metadata=_kb_vector_meta,
+        )
         self._mark_bm25_dirty()
         if self.graph_repo:
             try:
@@ -547,6 +653,16 @@ class KbService:
                 )
                 n_docs += 1
                 n_chunks += c
+                # Документ переиндексирован - его текст, чанки и векторы
+                # больше не нужны. Отдаём память сразу, а не в конце
+                # прохода: иначе она копится на весь реиндекс.
+                #
+                # Реиндекс идёт фоновой задачей и через middleware не
+                # проходит, поэтому вызов стоит здесь. Импорт локальный -
+                # одна строка на сервис, тащить её в шапку незачем.
+                from app.core import mem_release
+
+                mem_release.release("реиндекс kb")
                 _own, _up, _name = _doc_actors(doc)
                 logger.debug(
                     "[REINDEX kb] '%s' (id=%s, owner=%s, uploader=%s) чанков=%s",
@@ -613,6 +729,7 @@ class KbService:
         from app.services.embed_routing import rerank_client_for
 
         rr_client = rerank_client_for(self.rag_client, rerank_provider, rerank_model)
+
         async def _vectors(emb, lim):
             return await repo.similarity_search(
                 query_embedding=emb,
@@ -633,8 +750,8 @@ class KbService:
 
         async def _substring(tokens, lim):
             return await repo.substring_search(
-                tokens, 
-                limit=lim, 
+                tokens,
+                limit=lim,
                 document_id=document_id,
                 document_ids=document_ids,
             )
@@ -679,19 +796,35 @@ class KbService:
 
     # ─── Управление документами ───────────────────────────────────────────────
 
+    async def check_duplicate(
+        self,
+        *,
+        content_hash: Optional[str] = None,
+        filename: Optional[str] = None,
+        size: Optional[int] = None,
+        agent_id: Optional[int] = None,
+        knowledge_base_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        existing = await self.doc_repo.find_duplicate(
+            content_hash=content_hash,
+            filename=filename,
+            size=size,
+            agent_id=agent_id,
+            knowledge_base_id=knowledge_base_id,
+        )
+        if not existing:
+            return {"duplicate": False}
+        return {
+            "duplicate": True,
+            "document_id": existing.get("id"),
+            "filename": existing.get("filename"),
+        }
+
     async def list_documents(self) -> List[Dict[str, Any]]:
-        docs = await self.doc_repo.get_all_documents()
-        return [
-            {
-                "id": d.id,
-                "filename": d.filename,
-                "metadata": d.metadata,
-                "created_at": d.created_at.isoformat() if d.created_at else None,
-                "size": d.metadata.get("size", 0),
-                "file_type": d.metadata.get("file_type", ""),
-            }
-            for d in docs
-        ]
+        # size и file_type достаются в SQL, метаданные целиком не
+        # разбираются: наверху из них всё равно брали только эти два поля.
+        # См. KbDocumentItem и list_documents_brief.
+        return await self.doc_repo.list_documents_brief()
 
     async def delete_document(self, document_id: int) -> Dict[str, Any]:
         doc = await self.doc_repo.get_document(document_id)
@@ -730,4 +863,85 @@ class KbService:
             "filename": doc.filename,
             "metadata": doc.metadata,
             "created_at": doc.created_at.isoformat() if doc.created_at else None,
+        }
+
+    async def clone_document(
+        self,
+        document_id: int,
+        *,
+        agent_id: Optional[int] = None,
+        knowledge_base_id: Optional[int] = None,
+        owner_user_id: Optional[str] = None,
+        uploaded_by: Optional[str] = None,
+        minio_object: Optional[str] = None,
+        minio_bucket: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Полный клон KB-документа: строка + векторы во всех dim-таблицах.
+
+        Исходник на диске/MinIO не трогаем — пути передаёт вызывающий
+        (обычно уже скопированный файл под нового агента / БЗ).
+        """
+        src = await self.doc_repo.get_document(document_id)
+        if not src:
+            return {"ok": False, "document_id": document_id, "error": "not_found"}
+
+        meta = dict(src.metadata or {})
+        meta["cloned_from"] = int(document_id)
+        if agent_id is not None:
+            meta["agent_id"] = int(agent_id)
+        if knowledge_base_id is not None:
+            meta["knowledge_base_id"] = int(knowledge_base_id)
+            # Клон в сущность БЗ — не оставляем привязку к чужому агенту.
+            if agent_id is None:
+                meta.pop("agent_id", None)
+        if owner_user_id:
+            meta["owner_user_id"] = str(owner_user_id).strip().lower()
+        if uploaded_by:
+            meta["uploaded_by"] = str(uploaded_by).strip().lower()
+        if minio_object is not None:
+            if minio_object:
+                meta["minio_object"] = str(minio_object)
+            else:
+                meta.pop("minio_object", None)
+        if minio_bucket is not None:
+            if minio_bucket:
+                meta["minio_bucket"] = str(minio_bucket)
+            else:
+                meta.pop("minio_bucket", None)
+
+        new_id = await self.doc_repo.clone_document_row(document_id, metadata=meta)
+        if new_id is None:
+            return {"ok": False, "document_id": document_id, "error": "clone_failed"}
+
+        try:
+            n_vec = await self.vector_repo.clone_vectors_to_document(document_id, new_id)
+        except Exception:
+            logger.exception(
+                "KB clone: векторы не скопированы src=%s → %s, откатываем документ",
+                document_id,
+                new_id,
+            )
+            try:
+                await self.doc_repo.delete_document(new_id)
+            except Exception:
+                logger.exception("KB clone: не удалось откатить документ %s", new_id)
+            return {"ok": False, "document_id": document_id, "error": "vectors_failed"}
+
+        self._mark_bm25_dirty()
+        logger.info(
+            "KB: клон документа %s → %s ('%s'), vectors=%s, agent_id=%s",
+            document_id,
+            new_id,
+            src.filename,
+            n_vec,
+            agent_id,
+        )
+        return {
+            "ok": True,
+            "document_id": new_id,
+            "source_document_id": int(document_id),
+            "filename": src.filename,
+            "vectors_copied": n_vec,
+            "source_minio_object": (src.metadata or {}).get("minio_object"),
+            "source_minio_bucket": (src.metadata or {}).get("minio_bucket"),
         }

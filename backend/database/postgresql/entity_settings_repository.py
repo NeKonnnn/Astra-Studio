@@ -24,7 +24,8 @@ logger = get_logger(__name__)
 
 SCOPE_AGENT = "agent"
 SCOPE_PROJECT = "project"
-SCOPES: Tuple[str, ...] = (SCOPE_AGENT, SCOPE_PROJECT)
+SCOPE_KB = "kb"
+SCOPES: Tuple[str, ...] = (SCOPE_AGENT, SCOPE_PROJECT, SCOPE_KB)
 
 # Отметка о разовом переносе настроек из user_llm_settings. Менять только вместе
 # с новой миграцией: по этому имени определяется, что перенос уже был.
@@ -206,6 +207,11 @@ class EntitySettingsRepository:
                            AND NOT EXISTS (SELECT 1 FROM agents a WHERE a.id = s.entity_id::int))
                        OR (s.scope = 'project'
                            AND NOT EXISTS (SELECT 1 FROM user_projects p WHERE p.id = s.entity_id))
+                       OR (s.scope = 'kb'
+                           AND s.entity_id ~ '^[0-9]+$'
+                           AND NOT EXISTS (
+                               SELECT 1 FROM knowledge_bases k WHERE k.id = s.entity_id::int
+                           ))
                     """
                 )
             removed = int(str(result).rsplit(" ", 1)[-1] or 0)

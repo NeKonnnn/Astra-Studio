@@ -46,6 +46,10 @@ import {
   loadFollowUpSettings,
   saveFollowUpAutoGenerate,
 } from '../../chat/followUpSettings';
+import {
+  isKeepChatSettingsEnabled,
+  setKeepChatSettingsEnabled,
+} from '../../utils/newChatSettings';
 
 interface ChatSettingsProps {
   isDarkMode?: boolean;
@@ -78,6 +82,17 @@ export default function ChatSettings({ isDarkMode: isDarkModeProp }: ChatSetting
     window.addEventListener('interfaceSettingsChanged', syncSuggestionsSetting);
     return () => window.removeEventListener('interfaceSettingsChanged', syncSuggestionsSetting);
   }, []);
+
+  const [keepChatSettings, setKeepChatSettings] = useState(() => isKeepChatSettingsEnabled());
+
+  const handleKeepChatSettingsToggle = (enabled: boolean) => {
+    setKeepChatSettings(enabled);
+    setKeepChatSettingsEnabled(enabled);
+    showNotification(
+      'success',
+      enabled ? 'Новый чат получит настройки текущего' : 'Новый чат будет открываться чистым',
+    );
+  };
 
   const handleChatSuggestionsToggle = (enabled: boolean) => {
     setChatSuggestionsEnabled(enabled);
@@ -195,6 +210,36 @@ export default function ChatSettings({ isDarkMode: isDarkModeProp }: ChatSetting
               <Switch
                 checked={chatSuggestionsEnabled}
                 onChange={(e) => handleChatSuggestionsToggle(e.target.checked)}
+              />
+            </ListItem>
+
+            <Divider />
+
+            {/* Что новый чат берёт из текущего */}
+            <ListItem
+              sx={{
+                px: 0,
+                py: 2,
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}
+            >
+              <ListItemText
+                primary="Переносить настройки в новый чат"
+                secondary="Агент, Skills, инструменты MCP, артефакты, общая библиотека, Coding и генерация из текущего чата включатся и в новом. Если выключено, новый чат открывается чистым"
+                primaryTypographyProps={{
+                  variant: 'body1',
+                  fontWeight: 500,
+                }}
+                secondaryTypographyProps={{
+                  variant: 'body2',
+                  sx: { mt: 0.5 },
+                }}
+              />
+              <Switch
+                checked={keepChatSettings}
+                onChange={(e) => handleKeepChatSettingsToggle(e.target.checked)}
               />
             </ListItem>
 

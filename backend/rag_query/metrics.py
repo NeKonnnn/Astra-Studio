@@ -66,9 +66,17 @@ def _extract_json_object(text: str) -> Optional[dict]:
 
 async def _ask_judge(prompt: str, *, system: str, max_tokens: int = 512) -> str:
     """Один вызов текущей UI-модели в отдельном потоке (ask_agent — sync)."""
+    import contextvars
+
     from backend.agent_llm_svc import ask_agent
 
     loop = asyncio.get_running_loop()
+    # Модель этого чата, см. llm_judge.py: читаем до потока.
+    from backend.settings.cef_logger.cef_audit_context import chat_model_peek
+
+    _model_path = chat_model_peek()
+    # ThreadPoolExecutor не копирует ContextVar — переносим явно.
+    _ctx = contextvars.copy_context()
 
     def _call() -> str:
         return (
@@ -77,6 +85,7 @@ async def _ask_judge(prompt: str, *, system: str, max_tokens: int = 512) -> str:
                 history=[],
                 streaming=False,
                 system_prompt=system,
+                model_path=_model_path,
                 max_tokens=max_tokens,
                 temperature=0.0,
             )
@@ -84,10 +93,12 @@ async def _ask_judge(prompt: str, *, system: str, max_tokens: int = 512) -> str:
         )
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-        return await loop.run_in_executor(ex, _call)
+        return await loop.run_in_executor(ex, lambda: _ctx.run(_call))
 
 
-def _threshold_status(value: Optional[float], target: float, warn: float) -> Optional[str]:
+def _threshold_status(
+    value: Optional[float], target: float, warn: float
+) -> Optional[str]:
     if value is None:
         return None
     if value >= target:
@@ -113,7 +124,9 @@ def context_precision(relevance_flags: Sequence[bool]) -> Optional[float]:
     return sum(1 for f in relevance_flags if f) / n
 
 
-async def judge_chunk_relevance(query: str, passages: List[str]) -> Tuple[Optional[List[bool]], Optional[str]]:
+async def judge_chunk_relevance(
+    query: str, passages: List[str]
+) -> Tuple[Optional[List[bool]], Optional[str]]:
     """Бинарная релевантность каждого чанка. Возвращает (flags|None, error|None).
 
     В отличие от фильтрующего судьи, для метрик мы НЕ подменяем провал на
@@ -135,18 +148,28 @@ async def judge_chunk_relevance(query: str, passages: List[str]) -> Tuple[Option
         f"{len(passages)} булевых значений в порядке индексов 0..{len(passages) - 1}."
     )
     try:
-        content = await _ask_judge(user_prompt, system="Отвечай только компактным JSON.")
+        content = await _ask_judge(
+            user_prompt, system="Отвечай только компактным JSON."
+        )
         parsed = _extract_json_object(content)
-        if not parsed or "relevant" not in parsed or not isinstance(parsed["relevant"], list):
+        if (
+            not parsed
+            or "relevant" not in parsed
+            or not isinstance(parsed["relevant"], list)
+        ):
             return None, "parse_error"
         rel = parsed["relevant"]
-        return [bool(rel[i]) if i < len(rel) else False for i in range(len(passages))], None
+        return [
+            bool(rel[i]) if i < len(rel) else False for i in range(len(passages))
+        ], None
     except Exception as e:  # noqa: BLE001
         logger.warning("[metrics] judge_chunk_relevance failed: %s", e)
         return None, str(e)
 
 
-async def faithfulness_score(context_text: str, answer: str) -> Tuple[Optional[float], Dict[str, Any]]:
+async def faithfulness_score(
+    context_text: str, answer: str
+) -> Tuple[Optional[float], Dict[str, Any]]:
     """Доля утверждений ответа, подтверждённых контекстом (RAGAS-подобно).
 
     LLM разбивает ответ на атомарные утверждения и помечает каждое как
@@ -181,7 +204,9 @@ async def faithfulness_score(context_text: str, answer: str) -> Tuple[Optional[f
         if total == 0:
             # Нет фактических утверждений (напр. «Не знаю») — не штрафуем.
             return None, {"reason": "no_factual_claims", "total": 0}
-        supported = sum(1 for c in claims if isinstance(c, dict) and bool(c.get("supported")))
+        supported = sum(
+            1 for c in claims if isinstance(c, dict) and bool(c.get("supported"))
+        )
         score = supported / total
         return score, {"supported": supported, "total": total}
     except Exception as e:  # noqa: BLE001
@@ -238,8 +263,12 @@ async def compute_online_rag_metrics(
             "retrieved_chunks": len(passages),
             "status": {
                 "mrr": _threshold_status(rr, MRR_TARGET, MRR_WARN),
-                "faithfulness": _threshold_status(faith, FAITHFULNESS_TARGET, FAITHFULNESS_WARN),
-                "context_precision": _threshold_status(cp, CONTEXT_PRECISION_TARGET, CONTEXT_PRECISION_WARN),
+                "faithfulness": _threshold_status(
+                    faith, FAITHFULNESS_TARGET, FAITHFULNESS_WARN
+                ),
+                "context_precision": _threshold_status(
+                    cp, CONTEXT_PRECISION_TARGET, CONTEXT_PRECISION_WARN
+                ),
             },
             "faithfulness_details": faith_details,
             "judge_error": rel_err,
@@ -252,7 +281,7 @@ async def compute_online_rag_metrics(
         elif warn:
             logger.info("[RAG-METRICS] WARNING по %s: %s", warn, metrics)
         else:
-            logger.info(
+            logger.debug(
                 "[RAG-METRICS] RR=%s CP=%s Faithfulness=%s (чанков=%s, релевантных=%s)",
                 metrics["reciprocal_rank"],
                 metrics["context_precision"],

@@ -56,8 +56,8 @@ interface RagModelSelectorProps {
   disabled?: boolean;
   triggerMaxWidth?: number | null;
   onModelSelect?: (modelPath: string) => void;
-  /** Для каждого стора выбирается модель: проекты | агенты. У них свои модели. */
-  scope?: 'project' | 'agent';
+  /** Для каждого стора выбирается модель: проекты | агенты | БЗ. У них свои модели. */
+  scope?: 'project' | 'agent' | 'kb';
   /** Конкретный проект/агент — подсветка выбранной модели из его настроек. */
   entityId?: string | number | null;
   onResolveEntityId?: () => string | number | Promise<string | number>;
@@ -160,13 +160,13 @@ export default function RagModelSelector({
         resolvedEntityId = await Promise.resolve(onResolveEntityId());
       }
       const entityQuery =
-        scope === 'project'
-          ? resolvedEntityId != null && resolvedEntityId !== ''
+        resolvedEntityId == null || resolvedEntityId === ''
+          ? ''
+          : scope === 'project'
             ? `&project_id=${encodeURIComponent(String(resolvedEntityId))}`
-            : ''
-          : resolvedEntityId != null && resolvedEntityId !== ''
-            ? `&agent_id=${encodeURIComponent(String(resolvedEntityId))}`
-            : '';
+            : scope === 'kb'
+              ? `&knowledge_base_id=${encodeURIComponent(String(resolvedEntityId))}`
+              : `&agent_id=${encodeURIComponent(String(resolvedEntityId))}`;
       const response = await fetch(
         getApiUrl(`/api/rag/models?type=${kind}&scope=${scope}${entityQuery}`),
         { headers: getAuthFetchHeaders() },

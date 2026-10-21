@@ -34,6 +34,7 @@ import {
   PROJECT_ICON_OPTIONS as iconOptions,
 } from '../constants/projectIcons';
 import ProjectRagLibraryInline from './ProjectRagLibraryInline';
+import ProjectKnowledgeBasesField from './ProjectKnowledgeBasesField';
 import RAGSettings from './settings/RAGSettings';
 import { saveEntityRagSettings, type EntityRagDraft } from '../utils/entityRagSettings';
 import { useRagReindexStatus } from '../contexts/RagReindexStatusContext';
@@ -72,6 +73,8 @@ export default function EditProjectModal({ open, onClose, project, onSave }: Edi
   const [instructions, setInstructions] = useState('');
   /** Черновик настроек РАГ: записывается по «Сохранить» проекта, не раньше. */
   const [ragDraft, setRagDraft] = useState<EntityRagDraft | null>(null);
+  const [knowledgeBasesEnabled, setKnowledgeBasesEnabled] = useState(false);
+  const [knowledgeBaseIds, setKnowledgeBaseIds] = useState<number[]>([]);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showRagSettingsPanel, setShowRagSettingsPanel] = useState(false);
   const [showIconPicker, setShowIconPicker] = useState(false);
@@ -87,6 +90,12 @@ export default function EditProjectModal({ open, onClose, project, onSave }: Edi
       setSelectedColor(project.iconColor || '#ffffff');
       setMemory(project.memory || 'default');
       setInstructions(project.instructions || '');
+      setKnowledgeBasesEnabled(Boolean(project.knowledgeBasesEnabled));
+      setKnowledgeBaseIds(
+        Array.isArray(project.knowledgeBaseIds)
+          ? project.knowledgeBaseIds.map(Number).filter((x) => Number.isFinite(x) && x > 0)
+          : [],
+      );
       setShowAdvanced(false);
       setShowRagSettingsPanel(false);
       // Черновик принадлежит тому проекту, у которого его набрали: открыли
@@ -125,6 +134,8 @@ export default function EditProjectModal({ open, onClose, project, onSave }: Edi
       iconColor: selectedColor,
       memory,
       instructions: trimmedInstructions,
+      knowledgeBasesEnabled,
+      knowledgeBaseIds: knowledgeBasesEnabled ? knowledgeBaseIds : [],
     });
 
     // Настройки РАГ пишутся здесь, по «Сохранить» проекта: панель их только
@@ -384,6 +395,13 @@ export default function EditProjectModal({ open, onClose, project, onSave }: Edi
             <ProjectRagLibraryInline projectId={project.id} dense />
           </Box>
         )}
+
+        <ProjectKnowledgeBasesField
+          enabled={knowledgeBasesEnabled}
+          selectedIds={knowledgeBaseIds}
+          onEnabledChange={setKnowledgeBasesEnabled}
+          onSelectedIdsChange={setKnowledgeBaseIds}
+        />
 
         {/* RAG-настройки проекта (scope=project) */}
         <Box sx={{ mb: 2 }}>

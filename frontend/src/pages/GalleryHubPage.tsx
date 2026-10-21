@@ -8,6 +8,7 @@ import GalleryHubTabs, {
 import { AgentGalleryContent } from './AgentGalleryPage';
 import { PluginGalleryContent } from './PluginGalleryPage';
 import { SkillsGalleryContent } from './SkillsPage';
+import { KnowledgeBasesGalleryContent } from './KnowledgeBasesGalleryPage';
 import { getWorkZoneBackgroundColor } from '../constants/workZoneBackground';
 import { useWorkZoneBgMode } from '../hooks/useWorkZoneBgMode';
 
@@ -80,6 +81,7 @@ export default function GalleryHubPage() {
           {tab === 'agents' && <AgentGalleryContent embedded />}
           {tab === 'skills' && <SkillsGalleryContent embedded />}
           {tab === 'plugins' && <PluginGalleryContent embedded />}
+          {tab === 'knowledge-bases' && <KnowledgeBasesGalleryContent embedded />}
         </Box>
       </Box>
     </Box>

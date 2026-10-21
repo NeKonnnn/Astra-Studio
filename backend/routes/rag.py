@@ -7,7 +7,7 @@ import time
 from typing import Annotated, Optional
 import asyncio
 import httpx
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 
 import backend.app_state as state
 from backend.app_state import (
@@ -49,6 +49,7 @@ from backend.storage.rag_pvc import (
     save_rag_bytes_to_pvc,
     use_rag_pvc,
 )
+from backend.utils.http_errors import UPSTREAM_ERROR_DETAIL, public_error_detail
 
 logger = get_logger(__name__)
 
@@ -121,6 +122,69 @@ def _rag_upload_username(current_user: dict) -> str:
     return current_user.get("username") or current_user.get("user_id") or "anonymous"
 
 
+async def _raise_if_kb_duplicate(
+    content: bytes,
+    filename: str,
+    *,
+    agent_id: Optional[int] = None,
+    knowledge_base_id: Optional[int] = None,
+) -> None:
+    """Блок до PVC/MinIO: одинаковый файл в KB агента / базы знаний."""
+    from backend.rag_query.document_duplicate import (
+        DUPLICATE_MESSAGE,
+        file_content_hash,
+        raise_duplicate_http,
+    )
+
+    if not rag_client:
+        return
+    digest = file_content_hash(content)
+    try:
+        out = await rag_client.kb_check_duplicate(
+            content_hash=digest,
+            filename=filename,
+            size=len(content),
+            agent_id=agent_id,
+            knowledge_base_id=knowledge_base_id,
+        )
+    except Exception:
+        logger.exception("KB duplicate-check failed; продолжаем загрузку")
+        return
+    if isinstance(out, dict) and out.get("duplicate"):
+        raise_duplicate_http(
+            document_id=out.get("document_id"),
+            filename=out.get("filename") or filename,
+            message=DUPLICATE_MESSAGE,
+        )
+
+
+async def _raise_if_memory_duplicate(content: bytes, filename: str) -> None:
+    from backend.rag_query.document_duplicate import (
+        DUPLICATE_MESSAGE,
+        file_content_hash,
+        raise_duplicate_http,
+    )
+
+    if not rag_client:
+        return
+    digest = file_content_hash(content)
+    try:
+        out = await rag_client.memory_rag_check_duplicate(
+            content_hash=digest,
+            filename=filename,
+            size=len(content),
+        )
+    except Exception:
+        logger.exception("Memory RAG duplicate-check failed; продолжаем загрузку")
+        return
+    if isinstance(out, dict) and out.get("duplicate"):
+        raise_duplicate_http(
+            document_id=out.get("document_id"),
+            filename=out.get("filename") or filename,
+            message=DUPLICATE_MESSAGE,
+        )
+
+
 def _require_storage_for_delete() -> None:
     """503, если исходники в PVC, а том недоступен.
 
@@ -185,7 +249,7 @@ def _reindex_key(scope: Optional[str], entity_id: Optional[str]) -> str:
 
 
 async def _entity_display_name(scope: str, entity_id: str) -> Optional[str]:
-    """Имя агента или проекта для плашки. Не нашли — покажем id."""
+    """Имя агента, проекта или базы знаний для плашки. Не нашли — покажем id."""
     sc = normalize_scope(scope)
     eid = str(entity_id or "").strip()
     if not eid:
@@ -197,13 +261,21 @@ async def _entity_display_name(scope: str, entity_id: str) -> Optional[str]:
             repo = get_agent_repository()
             agent = await repo.get_agent(int(eid)) if repo else None
             return (getattr(agent, "name", None) or "").strip() or None
+        if sc == "kb":
+            from backend.database.init_db import get_knowledge_base_repository
+
+            repo = get_knowledge_base_repository()
+            kb = await repo.get_by_id(int(eid), is_admin=True) if repo else None
+            return (getattr(kb, "name", None) or "").strip() or None
         from backend.database.init_db import get_project_repository
 
         repo = get_project_repository()
         if repo is None:
             return None
         async with await repo.db_connection.acquire() as conn:
-            row = await conn.fetchrow("SELECT name FROM user_projects WHERE id = $1", eid)
+            row = await conn.fetchrow(
+                "SELECT name FROM user_projects WHERE id = $1", eid
+            )
         return (row["name"] or "").strip() if row else None
     except Exception:
         logger.debug("Имя сущности %s:%s недоступно", sc, eid, exc_info=True)
@@ -244,6 +316,45 @@ def _is_upstream_httpx_timeout(exc: BaseException) -> bool:
     return False
 
 
+# Текст для пользователя, когда SVC-RAG не ответил за отведённое время.
+# Важное слово здесь - «продолжается»: индексация не отменяется оттого, что мы
+# перестали ждать, и документ обычно появляется в списке через минуту-другую.
+_INDEX_TIMEOUT_DETAIL = (
+    "SVC-RAG не ответил за отведённое время, но индексация продолжается. "
+    "Файл сохранён; документ обычно появляется в списке в течение нескольких "
+    "минут — обновите список. Если не появился, загрузите файл заново. "
+    "Порог ожидания: SVC_RAG_INDEX_READ_TIMEOUT (секунды), по умолчанию 900."
+)
+
+def _cleanup_rag_source_after_failure(
+    exc: BaseException, object_name: Optional[str], bucket: Optional[str]
+) -> bool:
+    """Убрать исходник после неудачной индексации. Возвращает True, если это таймаут.
+
+    На таймауте исходник НЕ удаляем. Мы перестали ждать - это не значит, что
+    SVC-RAG перестал работать: 23.09 ответ пришёл на 49 секунд позже нашего
+    порога, и к тому моменту документ с 61 вектором уже лежал в базе. Удалив
+    файл, мы получили бы проиндексированный документ без исходника - его не
+    открыть и не перечанковать, а в списке он есть.
+
+    Цена решения: если SVC-RAG всё-таки упадёт после нашего таймаута, в
+    хранилище останется файл без документа. Это лечится повторной загрузкой и
+    видно снаружи, в отличие от документа без файла.
+    """
+    if _is_upstream_httpx_timeout(exc):
+        logger.warning(
+            "SVC-RAG не ответил за таймаут индексации: исходник %s оставлен в "
+            "хранилище - индексация могла дойти до конца уже после того, как мы "
+            "перестали ждать",
+            object_name or "(не сохранялся)",
+        )
+        return True
+    if object_name and bucket:
+        with logged_suppress(logger):
+            _delete_rag_source_file(object_name, bucket)
+    return False
+
+
 def _rag_settings_response_dict() -> dict:
     """Дефолты кластера (settings.json / env) — seed для новых пользователей."""
     return settings_response_dict(default_rag_settings_snapshot())
@@ -253,6 +364,7 @@ def _entity_id_from_params(
     scope: Optional[str],
     project_id: Optional[str] = None,
     agent_id: Optional[int] = None,
+    knowledge_base_id: Optional[int] = None,
 ) -> Optional[str]:
     sc = normalize_scope(scope)
     if sc == "project":
@@ -264,6 +376,12 @@ def _entity_id_from_params(
         except (TypeError, ValueError):
             return None
         return str(aid) if aid > 0 else None
+    if sc == "kb" and knowledge_base_id is not None:
+        try:
+            kid = int(knowledge_base_id)
+        except (TypeError, ValueError):
+            return None
+        return str(kid) if kid > 0 else None
     return None
 
 
@@ -275,10 +393,16 @@ def _entity_label(scope: str, entity_name: Optional[str], entity_id: Optional[st
     return eid or "?"
 
 
-async def _entity_permission(scope: str, entity_id: str, user_id: str) -> Optional[str]:
+async def _entity_permission(
+    scope: str,
+    entity_id: str,
+    user_id: str,
+    *,
+    is_admin: bool = False,
+) -> Optional[str]:
     """Роль пользователя для сущности: owner | editor | viewer | None.
 
-    Агент: владелец, получатель шаринга или (для публичного) читатель.
+    Агент: владелец, получатель шаринга, LDAP/Keycloak admin или (для публичного) читатель.
     Проект: своими проектами владеет один человек, чужих он не видит.
     """
     sc = normalize_scope(scope)
@@ -293,11 +417,24 @@ async def _entity_permission(scope: str, entity_id: str, user_id: str) -> Option
             repo = get_agent_repository()
             if repo is None:
                 return None
-            return await repo.get_user_permission(int(ek), uid)
+            return await repo.get_user_permission(int(ek), uid, is_admin=is_admin)
         except (TypeError, ValueError):
             return None
         except Exception:
             logger.exception("Не удалось определить роль для агента %s", ek)
+            return None
+    if sc == "kb":
+        try:
+            from backend.database.init_db import get_knowledge_base_repository
+
+            repo = get_knowledge_base_repository()
+            if repo is None:
+                return None
+            return await repo.get_user_permission(int(ek), uid, is_admin=is_admin)
+        except (TypeError, ValueError):
+            return None
+        except Exception:
+            logger.exception("Не удалось определить роль для базы знаний %s", ek)
             return None
     try:
         from backend.database.init_db import get_project_repository
@@ -317,9 +454,17 @@ def _can_edit(permission: Optional[str]) -> bool:
     return (permission or "").strip().lower() in ("owner", "editor")
 
 
-async def _require_entity_editor(scope: str, entity_id: str, user_id: str) -> str:
+async def _require_entity_editor(
+    scope: str,
+    entity_id: str,
+    user_id: str,
+    *,
+    is_admin: bool = False,
+) -> str:
     """403, если у пользователя нет права менять настройки этой сущности."""
-    permission = await _entity_permission(scope, entity_id, user_id)
+    permission = await _entity_permission(
+        scope, entity_id, user_id, is_admin=is_admin
+    )
     if not _can_edit(permission):
         kind = "агента" if normalize_scope(scope) == "agent" else "проекта"
         raise HTTPException(
@@ -335,12 +480,14 @@ async def get_rag_settings(
     scope: Optional[str] = None,
     project_id: Optional[str] = None,
     agent_id: Optional[int] = None,
+    knowledge_base_id: Optional[int] = None,
 ):
-    """RAG-настройки конкретного агента или проекта.
+    """RAG-настройки конкретного агента, проекта или базы знаний.
 
-    ```scope``` — project (по умолчанию) или agent.
-    ```project_id``` / ```agent_id``` — чьи именно настройки. Без них отдаём
-    дефолты кластера: настройки принадлежат сущности, «настроек вообще» больше нет.
+    ```scope``` — project (по умолчанию), agent или kb.
+    ```project_id``` / ```agent_id``` / ```knowledge_base_id``` — чьи именно настройки.
+    Без них отдаём дефолты кластера: настройки принадлежат сущности,
+    «настроек вообще» больше нет.
 
     ```can_edit``` — может ли текущий пользователь их менять. Читателю
     расшаренного агента настройки показываем (иначе непонятно, почему поиск ведёт
@@ -349,11 +496,16 @@ async def get_rag_settings(
     Memory RAG (кроме стратегии поиска) — только ConfigMap/env SVC-RAG / SVC-RAG-MODELS.
     """
     user_id = str(current_user.get("user_id") or "").strip()
+    admin = bool(current_user.get("is_admin"))
     sc = normalize_scope(scope)
-    entity_id = _entity_id_from_params(sc, project_id, agent_id)
+    entity_id = _entity_id_from_params(
+        sc, project_id, agent_id, knowledge_base_id
+    )
     if entity_id:
         settings_data = await get_entity_rag_settings(sc, entity_id)
-        permission = await _entity_permission(sc, entity_id, user_id)
+        permission = await _entity_permission(
+            sc, entity_id, user_id, is_admin=admin
+        )
     else:
         settings_data = default_rag_settings_snapshot()
         # Новая сущность ещё не создана: показываем дефолты и даём их править —
@@ -364,6 +516,7 @@ async def get_rag_settings(
         "scope": sc,
         "project_id": project_id if sc == "project" else None,
         "agent_id": agent_id if sc == "agent" else None,
+        "knowledge_base_id": knowledge_base_id if sc == "kb" else None,
         "rag_memory_strategy": await get_user_memory_strategy(user_id),
         "permission": permission,
         "can_edit": _can_edit(permission),
@@ -511,25 +664,33 @@ async def reset_rag_settings(
     scope: Optional[str] = None,
     project_id: Optional[str] = None,
     agent_id: Optional[int] = None,
+    knowledge_base_id: Optional[int] = None,
 ):
-    """Сброс настроек агента или проекта к дефолтам кластера.
+    """Сброс настроек агента, проекта или базы знаний к дефолтам кластера.
 
     Сбрасывает не «мои настройки», а настройки СУЩНОСТИ — то есть у всех, кому
     её расшарили. Поэтому нужны права редактора и обязателен
-    ```project_id``` / ```agent_id```.
+    ```project_id``` / ```agent_id``` / ```knowledge_base_id```.
     """
     try:
         user_id = str(current_user.get("user_id") or "").strip()
         if not user_id:
             raise HTTPException(status_code=401, detail="Требуется авторизация")
         sc = normalize_scope(scope)
-        entity_id = _entity_id_from_params(sc, project_id, agent_id)
+        entity_id = _entity_id_from_params(
+            sc, project_id, agent_id, knowledge_base_id
+        )
         if not entity_id:
             raise HTTPException(
                 status_code=400,
-                detail="Укажите project_id или agent_id: настройки принадлежат сущности",
+                detail=(
+                    "Укажите project_id, agent_id или knowledge_base_id: "
+                    "настройки принадлежат сущности"
+                ),
             )
-        await _require_entity_editor(sc, entity_id, user_id)
+        await _require_entity_editor(
+            sc, entity_id, user_id, is_admin=bool(current_user.get("is_admin"))
+        )
         logger.info(
             "[RAG-CFG] сброс настроек %s %s пользователем %s",
             "агента" if sc == "agent" else "проекта",
@@ -644,6 +805,42 @@ async def _collect_agent_kb_document_ids(agent_id: int) -> list:
         return []
 
 
+async def _collect_knowledge_base_document_ids(knowledge_base_id: int) -> list:
+    """Документы user KB по metadata.knowledge_base_id."""
+    if not rag_client:
+        return []
+    try:
+        kid = int(knowledge_base_id)
+    except (TypeError, ValueError):
+        return []
+    if kid <= 0:
+        return []
+    try:
+        rows = list(await rag_client.kb_list_documents() or [])
+    except Exception:
+        logger.exception(
+            "Не удалось собрать документы базы знаний %s", knowledge_base_id
+        )
+        return []
+    out: list = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        meta = row.get("metadata") or {}
+        if not isinstance(meta, dict):
+            continue
+        try:
+            if int(meta.get("knowledge_base_id")) != kid:
+                continue
+        except (TypeError, ValueError):
+            continue
+        try:
+            out.append(int(row["id"]))
+        except (TypeError, ValueError, KeyError):
+            continue
+    return out
+
+
 async def _run_background_rechunk_for_user(
     user_id: str,
     chunk_params: dict,
@@ -651,15 +848,18 @@ async def _run_background_rechunk_for_user(
     *,
     project_id: Optional[str] = None,
     agent_id: Optional[int] = None,
+    knowledge_base_id: Optional[int] = None,
 ) -> None:
     """Перечанковка документов в пределах ОДНОГО стора.
 
     ```scope="agent"``` — только agent KB (документы, где owner_user_id = пользователь),
-    ```scope="project"``` — только документы проектов. Без scope трогает оба, как было
-    до разделения настроек.
+    ```scope="project"``` — только документы проектов.
+    ```scope="kb"``` — документы пользовательской базы знаний.
+    Без scope трогает agent+project, как было до разделения настроек.
 
     С ```agent_id``` — только KB выбранного агента.
     С ```project_id``` — только документы указанного проекта.
+    С ```knowledge_base_id``` — только документы указанной базы знаний.
 
     Memory RAG не трогаем — нарезка Memory только из env SVC-RAG.
     """
@@ -677,31 +877,41 @@ async def _run_background_rechunk_for_user(
             aid = 0
         if aid > 0:
             agent_doc_ids = await _collect_agent_kb_document_ids(aid)
+    kb_doc_ids: list = []
+    if knowledge_base_id is not None:
+        kb_doc_ids = await _collect_knowledge_base_document_ids(knowledge_base_id)
     # Фон живёт вне запроса — ContextVar пуст, модель берём у самой сущности.
     # Взять её у пользователя нельзя: перечанковку мог запустить редактор, а
     # корпус должен лечь моделью агента, той же, которой по нему потом ищут.
     from backend.services.user_rag_settings import embedding_fields_for_entity
 
     emb = await embedding_fields_for_entity(
-        scope, _entity_id_from_params(scope or "", project_id, agent_id)
+        scope,
+        _entity_id_from_params(
+            scope or "", project_id, agent_id, knowledge_base_id
+        ),
     )
     logger.info(
-        "[RECHUNK-USER] старт user=%s scope=%s project=%s agent=%s provider=%s model=%s strategy=%s chunk_size=%s "
-        "overlap=%s agent_docs=%s",
+        "[RECHUNK-USER] старт user=%s scope=%s project=%s agent=%s kb=%s "
+        "provider=%s model=%s strategy=%s chunk_size=%s "
+        "overlap=%s agent_docs=%s kb_docs=%s",
         oid,
         scope or "both",
         project_id or "*",
         agent_id or "*",
+        knowledge_base_id or "*",
         emb.get("embedding_provider") or "cluster",
         emb.get("embedding_model"),
         strat,
         cs,
         co,
         len(agent_doc_ids),
+        len(kb_doc_ids),
     )
     sc = (scope or "").strip().lower()
     do_agent = sc in ("", "agent")
     do_project = sc in ("", "project")
+    do_user_kb = sc == "kb"
     pid = str(project_id or "").strip() or None
 
     # Пустой список ≠ «все документы»: раньше `[] or None` уводил в полный
@@ -714,6 +924,15 @@ async def _run_background_rechunk_for_user(
             agent_id or "*",
         )
         do_agent = False
+
+    if do_user_kb and not kb_doc_ids:
+        logger.info(
+            "[RECHUNK-USER] knowledge_base пропуск: нет документов "
+            "(user=%s kb=%s) — плашку не поднимаем",
+            oid,
+            knowledge_base_id or "*",
+        )
+        do_user_kb = False
 
     # Новый проект без файлов: смена эмбеддера/нарезки не должна стартовать
     # перечанковку и оранжевую плашку — пересобирать нечего.
@@ -728,7 +947,7 @@ async def _run_background_rechunk_for_user(
             )
             do_project = False
 
-    if not do_agent and not do_project:
+    if not do_agent and not do_project and not do_user_kb:
         logger.info(
             "[RECHUNK-USER] нечего пересобирать user=%s scope=%s — выход",
             oid,
@@ -736,7 +955,12 @@ async def _run_background_rechunk_for_user(
         )
         return
 
-    marked_entity_id = str(agent_id) if sc == "agent" and agent_id is not None else pid
+    if sc == "agent" and agent_id is not None:
+        marked_entity_id = str(agent_id)
+    elif sc == "kb" and knowledge_base_id is not None:
+        marked_entity_id = str(knowledge_base_id)
+    else:
+        marked_entity_id = pid
     _mark_entity_reindex(
         scope,
         marked_entity_id,
@@ -765,6 +989,24 @@ async def _run_background_rechunk_for_user(
                 logger.info("[RECHUNK-USER] kb готово: %s", kb_res)
             except Exception:
                 logger.exception("[RECHUNK-USER] kb ошибка")
+        if do_user_kb:
+            try:
+                kb_res = await rag_client.kb_reindex(
+                    chunk_size=cs,
+                    chunk_overlap=co,
+                    chunking_strategy=strat,
+                    owner_user_id=None,
+                    knowledge_base_id=(
+                        int(knowledge_base_id)
+                        if knowledge_base_id is not None
+                        else None
+                    ),
+                    document_ids=list(kb_doc_ids),
+                    **emb,
+                )
+                logger.info("[RECHUNK-USER] knowledge_base готово: %s", kb_res)
+            except Exception:
+                logger.exception("[RECHUNK-USER] knowledge_base ошибка")
         if do_project:
             try:
                 proj_res = await rag_client.project_rag_reindex_all(
@@ -852,14 +1094,21 @@ async def _run_background_reindex_for_user(
     *,
     project_id: Optional[str] = None,
     agent_id: Optional[int] = None,
+    knowledge_base_id: Optional[int] = None,
 ) -> None:
     """Переиндексация документов пользователя в пределах стора (без Memory).
 
-    ```project_id``` / ```agent_id``` сужают до одной сущности — без них смена
-    модели у одного агента перетряхнула бы KB всех агентов пользователя.
+    ```project_id``` / ```agent_id``` / ```knowledge_base_id``` сужают до одной
+    сущности — без них смена модели у одного агента перетряхнула бы KB всех
+    агентов пользователя.
     """
     await _run_background_rechunk_for_user(
-        user_id, chunk_params, scope, project_id=project_id, agent_id=agent_id
+        user_id,
+        chunk_params,
+        scope,
+        project_id=project_id,
+        agent_id=agent_id,
+        knowledge_base_id=knowledge_base_id,
     )
 
 
@@ -889,7 +1138,10 @@ async def update_rag_settings(
     if strat is not None and strat == "lexical":
         strat = "lexical"
     if strat is not None and strat not in _VALID_STRATEGIES:
-        raise HTTPException(status_code=400, detail=f"Недопустимая стратегия. Допустимые: {_VALID_STRATEGIES}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Недопустимая стратегия. Допустимые: {_VALID_STRATEGIES}",
+        )
     chunking = settings_data.rag_chunking_strategy
     if chunking is not None:
         chunking = str(chunking).strip().lower()
@@ -945,15 +1197,23 @@ async def update_rag_settings(
         raise HTTPException(status_code=400, detail="Нет полей для обновления")
     scope = normalize_scope(settings_data.scope)
     entity_id = _entity_id_from_params(
-        scope, settings_data.project_id, settings_data.agent_id
+        scope,
+        settings_data.project_id,
+        settings_data.agent_id,
+        settings_data.knowledge_base_id,
     )
     entity_label = _entity_label(scope, settings_data.entity_name, entity_id)
     if not entity_id:
         raise HTTPException(
             status_code=400,
-            detail="Укажите project_id или agent_id: настройки принадлежат сущности",
+            detail=(
+                "Укажите project_id, agent_id или knowledge_base_id: "
+                "настройки принадлежат сущности"
+            ),
         )
-    permission = await _require_entity_editor(scope, entity_id, user_id)
+    permission = await _require_entity_editor(
+        scope, entity_id, user_id, is_admin=bool(current_user.get("is_admin"))
+    )
     try:
         before = await get_entity_rag_settings(scope, entity_id)
         updates: dict = {}
@@ -967,7 +1227,9 @@ async def update_rag_settings(
         if settings_data.rag_query_fix_typos is not None:
             updates["rag_query_fix_typos"] = bool(settings_data.rag_query_fix_typos)
         if settings_data.rag_multi_query_enabled is not None:
-            updates["rag_multi_query_enabled"] = bool(settings_data.rag_multi_query_enabled)
+            updates["rag_multi_query_enabled"] = bool(
+                settings_data.rag_multi_query_enabled
+            )
         if settings_data.rag_hyde_enabled is not None:
             updates["rag_hyde_enabled"] = bool(settings_data.rag_hyde_enabled)
         if settings_data.rag_chat_top_k is not None:
@@ -975,7 +1237,9 @@ async def update_rag_settings(
                 rk = int(settings_data.rag_chat_top_k)
                 updates["rag_chat_top_k"] = max(1, min(rk, 64))
             except (TypeError, ValueError) as e:
-                raise HTTPException(status_code=400, detail="rag_chat_top_k: ожидается целое число 1–64") from e
+                raise HTTPException(
+                    status_code=400, detail="rag_chat_top_k: ожидается целое число 1–64"
+                ) from e
         if chunking is not None:
             updates["rag_chunking_strategy"] = chunking
         if settings_data.rag_chunk_size is not None:
@@ -983,19 +1247,28 @@ async def update_rag_settings(
                 size = int(settings_data.rag_chunk_size)
                 updates["rag_chunk_size"] = max(200, min(size, 8000))
             except (TypeError, ValueError) as e:
-                raise HTTPException(status_code=400, detail="rag_chunk_size: ожидается целое число 200–8000") from e
+                raise HTTPException(
+                    status_code=400,
+                    detail="rag_chunk_size: ожидается целое число 200–8000",
+                ) from e
         if settings_data.rag_chunk_overlap is not None:
             try:
                 overlap = int(settings_data.rag_chunk_overlap)
                 updates["rag_chunk_overlap"] = max(0, min(overlap, 2000))
             except (TypeError, ValueError) as e:
-                raise HTTPException(status_code=400, detail="rag_chunk_overlap: ожидается целое число 0–2000") from e
+                raise HTTPException(
+                    status_code=400,
+                    detail="rag_chunk_overlap: ожидается целое число 0–2000",
+                ) from e
         if settings_data.rag_similarity_threshold is not None:
             try:
                 threshold = float(settings_data.rag_similarity_threshold)
                 updates["rag_similarity_threshold"] = max(0.0, min(threshold, 1.0))
             except (TypeError, ValueError) as e:
-                raise HTTPException(status_code=400, detail="rag_similarity_threshold: ожидается число 0..1") from e
+                raise HTTPException(
+                    status_code=400,
+                    detail="rag_similarity_threshold: ожидается число 0..1",
+                ) from e
         if settings_data.rag_reranking_enabled is not None:
             updates["rag_reranking_enabled"] = bool(settings_data.rag_reranking_enabled)
         if settings_data.rag_rerank_top_n is not None:
@@ -1003,19 +1276,34 @@ async def update_rag_settings(
                 top_n = int(settings_data.rag_rerank_top_n)
                 updates["rag_rerank_top_n"] = max(1, min(top_n, 64))
             except (TypeError, ValueError) as e:
-                raise HTTPException(status_code=400, detail="rag_rerank_top_n: ожидается целое число 1–64") from e
+                raise HTTPException(
+                    status_code=400,
+                    detail="rag_rerank_top_n: ожидается целое число 1–64",
+                ) from e
         if settings_data.rag_system_prompt is not None:
             # Пустая строка допустима: тогда soft-rules; иначе — текст из UI как есть.
-            updates["rag_system_prompt"] = str(settings_data.rag_system_prompt or "").strip()
+            updates["rag_system_prompt"] = str(
+                settings_data.rag_system_prompt or ""
+            ).strip()
         if settings_data.rag_embedding_model_path is not None:
-            updates["rag_embedding_model_path"] = str(settings_data.rag_embedding_model_path or "").strip()
+            updates["rag_embedding_model_path"] = str(
+                settings_data.rag_embedding_model_path or ""
+            ).strip()
         if settings_data.rag_reranker_model_path is not None:
-            updates["rag_reranker_model_path"] = str(settings_data.rag_reranker_model_path or "").strip()
+            updates["rag_reranker_model_path"] = str(
+                settings_data.rag_reranker_model_path or ""
+            ).strip()
 
         if not updates:
             raise HTTPException(status_code=400, detail="Нет полей для обновления")
 
-        kind = "проекта" if scope == "project" else "агента"
+        kind = (
+            "проекта"
+            if scope == "project"
+            else "базы знаний"
+            if scope == "kb"
+            else "агента"
+        )
         logger.debug(
             "[RAG-CFG] настройки %s %s (user=%s): %s", kind, entity_id, user_id, updates
         )
@@ -1054,6 +1342,7 @@ async def update_rag_settings(
                     scope,
                     project_id=settings_data.project_id,
                     agent_id=settings_data.agent_id,
+                    knowledge_base_id=settings_data.knowledge_base_id,
                 )
             )
         return {
@@ -1068,6 +1357,9 @@ async def update_rag_settings(
             "scope": scope,
             "project_id": settings_data.project_id if scope == "project" else None,
             "agent_id": settings_data.agent_id if scope == "agent" else None,
+            "knowledge_base_id": (
+                settings_data.knowledge_base_id if scope == "kb" else None
+            ),
             "permission": permission,
             "can_edit": True,
         }
@@ -1778,7 +2070,7 @@ async def list_rag_models(
         return _overlay_user_model_current(data, entity_rag)
     except Exception as e:
         logger.exception("list_rag_models error")
-        raise HTTPException(status_code=502, detail=str(e)) from e
+        raise HTTPException(status_code=502, detail=public_error_detail(e))
 
 
 @router.get("/api/rag/models/current")
@@ -1809,7 +2101,7 @@ async def get_rag_models_current(
         return _overlay_user_model_current(data, entity_rag)
     except Exception as e:
         logger.exception("get_rag_models_current error")
-        raise HTTPException(status_code=502, detail=str(e)) from e
+        raise HTTPException(status_code=502, detail=public_error_detail(e))
 
 
 async def _current_cluster_embedding_dim() -> Optional[int]:
@@ -1856,7 +2148,7 @@ async def _select_external_rag_model(
         catalog = await _external_rag_models(model_type)
     except Exception as e:
         logger.exception("%s catalog error", source_label)
-        raise HTTPException(status_code=502, detail=str(e)) from e
+        raise HTTPException(status_code=502, detail=public_error_detail(e))
     paths = {
         str((r or {}).get("path") or "").strip()
         for r in (catalog or [])
@@ -2046,7 +2338,7 @@ async def select_rag_model(
         raise
     except Exception as e:
         logger.exception("select_rag_model error")
-        raise HTTPException(status_code=502, detail=str(e)) from e
+        raise HTTPException(status_code=502, detail=public_error_detail(e))
 
 
 @router.post("/api/kb/documents")
@@ -2055,13 +2347,14 @@ async def kb_upload_document(
     current_user: Annotated[dict, Depends(get_current_user)],
     chunking_strategy: Annotated[Optional[str], Form()] = None,
     agent_id: Annotated[Optional[int], Form()] = None,
+    knowledge_base_id: Annotated[Optional[int], Form()] = None,
+    relative_path: Annotated[Optional[str], Form()] = None,
 ):
-    """Загрузка в KB (агентный RAG).
+    """Загрузка в KB: база знаний (knowledge_base_id) или legacy agent KB.
 
-    owner_user_id = автор агента (не uploader): файлы редактора принадлежат владельцу,
-    и только владелец может запускать их перечанковку через свои RAG-настройки.
-    Параметры чанкинга — из персональных настроек владельца (если agent_id задан)
-    или текущего пользователя.
+    owner_user_id = автор сущности (не uploader): файлы редактора принадлежат
+    владельцу. Параметры чанкинга — из entity RAG settings сущности.
+    ```relative_path``` — путь внутри каталога (webkitRelativePath) для UI-папок.
     """
     require_service("rag")
     if not rag_client:
@@ -2075,10 +2368,43 @@ async def kb_upload_document(
         if not content:
             raise HTTPException(status_code=400, detail="Файл пустой")
         fn = file.filename or "unknown"
+        rel_path = (relative_path or "").replace("\\", "/").strip().lstrip("/") or None
 
         owner_user_id = uploader_id
         resolved_agent_id: Optional[int] = None
-        if agent_id is not None:
+        resolved_kb_id: Optional[int] = None
+        entity_rag: dict = {}
+        entity_scope_label = "агента"
+        pvc_scope = "agent"
+
+        if knowledge_base_id is not None:
+            from backend.database.init_db import get_knowledge_base_repository
+            from backend.database.postgresql.knowledge_base_models import (
+                KB_PERMISSION_EDITOR,
+                KB_PERMISSION_OWNER,
+            )
+
+            kb_repo = get_knowledge_base_repository()
+            admin = bool(current_user.get("is_admin"))
+            permission = await kb_repo.get_user_permission(
+                int(knowledge_base_id), uploader_id, is_admin=admin
+            )
+            if permission not in (KB_PERMISSION_OWNER, KB_PERMISSION_EDITOR):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Недостаточно прав для загрузки файлов в базу знаний",
+                )
+            kb = await kb_repo.get_by_id(
+                int(knowledge_base_id), uploader_id, is_admin=admin
+            )
+            if not kb:
+                raise HTTPException(status_code=404, detail="База знаний не найдена")
+            owner_user_id = str(kb.author_id or uploader_id).strip().lower()
+            resolved_kb_id = int(knowledge_base_id)
+            entity_rag = await get_entity_rag_settings("kb", resolved_kb_id)
+            entity_scope_label = "базы знаний"
+            pvc_scope = "kb"
+        elif agent_id is not None:
             from backend.database.init_db import get_agent_repository
             from backend.database.postgresql.agent_models import (
                 AGENT_PERMISSION_EDITOR,
@@ -2086,70 +2412,73 @@ async def kb_upload_document(
             )
 
             agent_repo = get_agent_repository()
-            permission = await agent_repo.get_user_permission(int(agent_id), uploader_id)
+            admin = bool(current_user.get("is_admin"))
+            permission = await agent_repo.get_user_permission(
+                int(agent_id), uploader_id, is_admin=admin
+            )
             if permission not in (AGENT_PERMISSION_OWNER, AGENT_PERMISSION_EDITOR):
                 raise HTTPException(
                     status_code=403,
                     detail="Недостаточно прав для загрузки файлов в KB агента",
                 )
-            agent = await agent_repo.get_agent(int(agent_id), uploader_id)
+            agent = await agent_repo.get_agent(
+                int(agent_id), uploader_id, is_admin=admin
+            )
             if not agent:
                 raise HTTPException(status_code=404, detail="Агент не найден")
             owner_user_id = str(agent.author_id or uploader_id).strip().lower()
             resolved_agent_id = int(agent_id)
+            entity_rag = await get_entity_rag_settings("agent", resolved_agent_id)
 
-        # Нарезка и модель — из настроек САМОГО агента: файл должен лечь теми же
-        # параметрами, которыми по нему потом будут искать. Чей это агент и кто
-        # заливает — уже неважно, вопрос «настройки владельца или редактора» снят.
-        agent_rag = (
-            await get_entity_rag_settings("agent", resolved_agent_id)
-            if resolved_agent_id
-            else {}
+        # До PVC/индексации: не пишем исходник и не чанкуем повторно.
+        await _raise_if_kb_duplicate(
+            content,
+            fn,
+            agent_id=resolved_agent_id,
+            knowledge_base_id=resolved_kb_id,
         )
+
         from backend.services.user_rag_settings import (
             embedding_fields_from_rag_settings,
             reranker_fields_from_rag_settings,
         )
 
-        emb_fields = embedding_fields_from_rag_settings(agent_rag)
-        # Без явной модели агент уезжал бы в кластерный дефолт без имени модели.
-        if resolved_agent_id is not None and not emb_fields.get("embedding_model"):
+        emb_fields = embedding_fields_from_rag_settings(entity_rag)
+        has_entity = resolved_agent_id is not None or resolved_kb_id is not None
+        if has_entity and not emb_fields.get("embedding_model"):
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "Сначала выберите модель эмбеддингов в настройках РАГ для агента"
+                    f"Сначала выберите модель эмбеддингов в настройках РАГ для {entity_scope_label}"
                 ),
             )
-        if resolved_agent_id is not None and bool(
-            agent_rag.get("rag_reranking_enabled", True)
-        ):
-            rer_fields = reranker_fields_from_rag_settings(agent_rag)
+        if has_entity and bool(entity_rag.get("rag_reranking_enabled", True)):
+            rer_fields = reranker_fields_from_rag_settings(entity_rag)
             if not rer_fields.get("reranker_model"):
                 raise HTTPException(
                     status_code=400,
                     detail=(
-                        "Сначала выберите модель реранкера в настройках РАГ для агента"
+                        f"Сначала выберите модель реранкера в настройках РАГ для {entity_scope_label}"
                     ),
                 )
 
         chunk_params = (
-            chunk_params_from_rag_settings(agent_rag)
-            if agent_rag
+            chunk_params_from_rag_settings(entity_rag)
+            if entity_rag
             else get_rag_chunk_index_params()
         )
         strategy = (chunking_strategy or "").strip().lower()
         if strategy and strategy in _VALID_CHUNKING_STRATEGIES | {"universal"}:
             chunk_params["chunking_strategy"] = strategy
         elif not strategy:
-            # Без явной strategy из конструктора — библиотечный universal
-            if resolved_agent_id is None:
+            if not has_entity:
                 chunk_params = get_library_chunk_index_params()
 
         if use_rag_pvc():
             file_object_name = save_rag_bytes_to_pvc(
                 content,
                 fn,
-                scope="agent",
+                scope=pvc_scope,  # type: ignore[arg-type]
                 username=username,
                 prefix="kb_",
                 content_type=file.content_type or "application/octet-stream",
@@ -2161,8 +2490,6 @@ async def kb_upload_document(
                 )
             file_bucket = RAG_PVC_BUCKET_MARKER
         try:
-            # Модель агента, а не заливающего: перечанковку может запустить любой
-            # редактор, и она пойдёт из настроек агента — модель должна совпасть.
             out = await rag_client.kb_upload_document(
                 file_bytes=content,
                 filename=fn,
@@ -2170,26 +2497,55 @@ async def kb_upload_document(
                 minio_bucket=file_bucket,
                 owner_user_id=owner_user_id or None,
                 agent_id=resolved_agent_id,
+                knowledge_base_id=resolved_kb_id,
                 uploaded_by=username or None,
+                relative_path=rel_path,
                 **chunk_params,
                 **emb_fields,
             )
-        except Exception:
-            if file_object_name and file_bucket:
-                with logged_suppress(logger):
-                    _delete_rag_source_file(file_object_name, file_bucket)
+        except Exception as e:
+            is_index_timeout = _cleanup_rag_source_after_failure(
+                e, file_object_name, file_bucket
+            )
+            if is_index_timeout:
+                raise HTTPException(
+                    status_code=504, detail=_INDEX_TIMEOUT_DETAIL
+                ) from e
             raise
+        if resolved_kb_id is not None and isinstance(out, dict) and out.get("ok"):
+            try:
+                from backend.database.init_db import get_knowledge_base_repository
+
+                await get_knowledge_base_repository().bump_document_count(
+                    resolved_kb_id, 1
+                )
+            except Exception:
+                logger.exception(
+                    "Не удалось обновить document_count для kb=%s", resolved_kb_id
+                )
         bump_rag_semantic_cache()
         return out
     except HTTPException:
         raise
     except Exception as e:
+        from backend.settings.rag_client import RagDuplicateDocument
+
+        if isinstance(e, RagDuplicateDocument):
+            from backend.rag_query.document_duplicate import raise_duplicate_http
+
+            raise_duplicate_http(
+                document_id=e.document_id,
+                filename=e.filename or (file.filename if file else None),
+                message=str(e) or None,
+            )
         logger.exception("Ошибка операции")
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/api/kb/documents")
-async def kb_list_documents():
+async def kb_list_documents(
+    current_user: Annotated[dict, Depends(get_current_user)],
+):
     require_service("rag")
     if not rag_client:
         raise HTTPException(status_code=503, detail="RAG service недоступен")
@@ -2198,16 +2554,52 @@ async def kb_list_documents():
         return {"documents": docs}
     except Exception as e:
         logger.exception("Ошибка операции")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail=public_error_detail(e)) from e
 
 
 @router.delete("/api/kb/documents/{document_id}")
-async def kb_delete_document(document_id: int):
+async def kb_delete_document(
+    document_id: int,
+    current_user: Annotated[dict, Depends(get_current_user)],
+    agent_id: Annotated[Optional[int], Query()] = None,
+):
+    """Удалить KB-документ.
+
+    ``agent_id`` — агент, из карточки которого удаляют. Если файл ещё числится
+    за ДРУГИМ агентом (типичный случай старого clone с общими id), физически
+    не удаляем — иначе пропадёт у исходника.
+    """
     require_service("rag")  # FEATURE-FLAG
     if not rag_client:
         raise HTTPException(status_code=503, detail="RAG service недоступен")
     _require_storage_for_delete()
     try:
+        try:
+            from backend.database.init_db import get_agent_repository
+
+            agent_repo = get_agent_repository()
+            if agent_repo is not None:
+                foreign = await agent_repo.find_documents_claimed_by_other_agents(
+                    int(agent_id) if agent_id is not None else None,
+                    [int(document_id)],
+                )
+                if foreign:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "Документ ещё привязан к другому агенту и не может "
+                            "быть удалён из хранилища. Отвяжите его только в "
+                            "своей карточке — файл у другого агента сохранится."
+                        ),
+                    )
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception(
+                "Не удалось проверить ссылки на KB-документ %s перед удалением",
+                document_id,
+            )
+
         out = await rag_client.kb_delete_document(document_id)
         if isinstance(out, dict) and out.get("ok") is False:
             raise HTTPException(status_code=404, detail="Документ не найден")
@@ -2219,7 +2611,7 @@ async def kb_delete_document(document_id: int):
         raise
     except Exception as e:
         logger.exception("Ошибка операции")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail=public_error_detail(e)) from e
 
 
 @router.post("/api/memory-rag/documents")
@@ -2240,6 +2632,7 @@ async def memory_rag_upload(
         if not content:
             raise HTTPException(status_code=400, detail="Файл пустой")
         fn = file.filename or "unknown"
+        await _raise_if_memory_duplicate(content, fn)
         ext = os.path.splitext(fn)[1] or ".bin"
         file_object_name = None
         memory_bucket = None
@@ -2284,27 +2677,41 @@ async def memory_rag_upload(
                 **chunk_params,
             )
         except Exception as e:
+            from backend.settings.rag_client import RagDuplicateDocument
+
             logger.exception("Ошибка операции")
-            if file_object_name and memory_bucket:
-                with logged_suppress(logger):
-                    _delete_rag_source_file(file_object_name, memory_bucket)
-            if _is_upstream_httpx_timeout(e):
+            is_index_timeout = _cleanup_rag_source_after_failure(
+                e, file_object_name, memory_bucket
+            )
+            if isinstance(e, RagDuplicateDocument):
+                from backend.rag_query.document_duplicate import raise_duplicate_http
+
+                raise_duplicate_http(
+                    document_id=e.document_id,
+                    filename=e.filename or fn,
+                    message=str(e) or None,
+                )
+            if is_index_timeout:
                 raise HTTPException(
                     status_code=504,
-                    detail="Таймаут ответа SVC-RAG при индексации (большой файл или медленный embed). Увеличьте SVC_RAG_INDEX_READ_TIMEOUT (секунды) для backend, по умолчанию 900.",
+                    detail=_INDEX_TIMEOUT_DETAIL,
                 ) from e
-            raise HTTPException(status_code=502, detail=str(e)) from e
+            raise HTTPException(
+                status_code=502, detail=public_error_detail(e, UPSTREAM_ERROR_DETAIL)
+            ) from e
         bump_rag_semantic_cache()
         return result
     except HTTPException:
         raise
     except Exception as e:
         logger.exception("Ошибка операции")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail=public_error_detail(e)) from e
 
 
 @router.get("/api/memory-rag/documents")
-async def memory_rag_list():
+async def memory_rag_list(
+    current_user: Annotated[dict, Depends(get_current_user)],
+):
     require_service("rag")
     if not rag_client:
         raise HTTPException(status_code=503, detail="RAG service недоступен")
@@ -2313,11 +2720,14 @@ async def memory_rag_list():
         return {"documents": docs}
     except Exception as e:
         logger.exception("Ошибка операции")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail=public_error_detail(e)) from e
 
 
 @router.delete("/api/memory-rag/documents/{document_id}")
-async def memory_rag_delete(document_id: int):
+async def memory_rag_delete(
+    document_id: int,
+    current_user: Annotated[dict, Depends(get_current_user)],
+):
     require_service("rag")
     if not rag_client:
         raise HTTPException(status_code=503, detail="RAG service недоступен")
@@ -2333,4 +2743,4 @@ async def memory_rag_delete(document_id: int):
         raise
     except Exception as e:
         logger.exception("Ошибка операции")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail=public_error_detail(e)) from e

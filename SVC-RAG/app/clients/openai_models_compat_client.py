@@ -5,8 +5,8 @@ import contextlib
 import contextvars
 import hashlib
 import json
-import logging
 import os
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
@@ -29,6 +29,23 @@ _RETRY_BASE_DELAY = float(os.getenv("RAG_EMBED_RETRY_BASE_DELAY", "1.0") or 1.0)
 # 4xx не повторяем: это «запрос неверный» — повтор даст тот же ответ.
 # 429 исключение: это «слишком часто», ровно то, что лечится ожиданием.
 _RETRIABLE_STATUS = (429, 500, 502, 503, 504)
+# Таймаут — особый случай среди повторяемых. Шлюз не «мигнул», он не дождался
+# ответа модели: тот же батч на том же CPU не успеет и в следующий раз, а каждая
+# попытка стоит полного таймаута шлюза. Поэтому по таймауту делаем ОДНУ попытку и
+# отдаём управление дроблению батча (см. embed_parallel._with_timeout_split).
+# K8s: RAG_EMBED_TIMEOUT_RETRY_ATTEMPTS — сколько попыток тратить на таймаут.
+_TIMEOUT_RETRY_ATTEMPTS = max(
+    1, int(os.getenv("RAG_EMBED_TIMEOUT_RETRY_ATTEMPTS", "1") or 1)
+)
+
+# Реранкер, не успевший за таймаут шлюза, не успеет и на следующем поиске:
+# Поэтому после таймаута реранк  пропускается RAG_RERANK_PAUSE_SEC
+# секунд: поиск идёт сразу в векторном порядке
+# тем же путём, что и при сбое реранкера. Первый поиск после паузы
+# снова пробует реранкер; ответил - пауза снята. 0 - без паузы.
+_RERANK_PAUSE_SEC = max(0.0, float(os.getenv("RAG_RERANK_PAUSE_SEC", "600") or 0))
+# Модель реранка → monotonic-время, до которого она на паузе.
+_RERANK_PAUSED_UNTIL: Dict[str, float] = {}
 _RETRIABLE_EXC = (
     httpx.TimeoutException,
     httpx.ConnectError,
@@ -49,9 +66,11 @@ _NON_RETRIABLE_BODY_MARKERS = (
     "content_filter",
 )
 
+
 def _is_permanent_refusal(resp: httpx.Response) -> bool:
     body = (resp.text or "").lower()
     return any(marker in body for marker in _NON_RETRIABLE_BODY_MARKERS)
+
 
 # ---- 1б: разбор заблокированного батча ----
 
@@ -80,6 +99,7 @@ try:
     _BLOCKED_PREVIEW_CHARS = int(os.getenv("RAG_EMBED_BLOCKED_PREVIEW_CHARS", "-1"))
 except ValueError:
     _BLOCKED_PREVIEW_CHARS = -1
+
 
 def _preview(text: str) -> str:
     if _BLOCKED_PREVIEW_CHARS == 0:
@@ -118,13 +138,36 @@ _DIAG_HEADERS = (
 # лежит в error.message, у части сборок litellm — во вложенном объекте гардрейла.
 _REASON_KEYS = frozenset(
     (
-        "message", "code", "type", "param", "reason", "detail", "details",
-        "guardrail", "guardrail_name", "guardrails", "policy", "policy_name",
-        "rule", "rule_name", "violation", "violations", "category", "categories",
-        "flagged", "matched", "entities", "score", "scores", "blocked_by",
-        "status", "error_code", "failure_reason",
+        "message",
+        "code",
+        "type",
+        "param",
+        "reason",
+        "detail",
+        "details",
+        "guardrail",
+        "guardrail_name",
+        "guardrails",
+        "policy",
+        "policy_name",
+        "rule",
+        "rule_name",
+        "violation",
+        "violations",
+        "category",
+        "categories",
+        "flagged",
+        "matched",
+        "entities",
+        "score",
+        "scores",
+        "blocked_by",
+        "status",
+        "error_code",
+        "failure_reason",
     )
 )
+
 
 def _walk_reason_fields(
     node: Any,
@@ -157,6 +200,7 @@ def _walk_reason_fields(
             _walk_reason_fields(v, f"{prefix}[{i}]", out, depth + 1)
     return out
 
+
 def _guardrail_report(resp: httpx.Response) -> str:
     """Код, сработавший маркер, разобранные поля, заголовки и тело целиком."""
     lines = [f"HTTP {resp.status_code} {resp.reason_phrase or ''}".strip()]
@@ -183,6 +227,7 @@ def _guardrail_report(resp: httpx.Response) -> str:
     lines.append(f"тело ответа целиком: {json.dumps(body, ensure_ascii=False)}")
     return "\n    ".join(lines)
 
+
 def _text_report(text: str) -> str:
     """Сам отклонённый текст плюс всё, чем его можно опознать в базе."""
     s = str(text or "")
@@ -192,10 +237,14 @@ def _text_report(text: str) -> str:
         f"    текст: {_preview(s)}"
     )
 
+
 # Кто индексируется прямо сейчас. Клиент про документы ничего не знает — он
 # видит только список строк, — поэтому идентификацию передаёт вызывающий.
 # Без неё в логе виден отклонённый чанк, но не видно, из какого он файла.
-_embed_ctx: contextvars.ContextVar = contextvars.ContextVar("embed_log_ctx", default=None)
+_embed_ctx: contextvars.ContextVar = contextvars.ContextVar(
+    "embed_log_ctx", default=None
+)
+
 
 def set_embed_log_context(**fields: Any) -> None:
     """Пометить текущую операцию (стор, документ, файл) для логов гардрейла.
@@ -215,9 +264,10 @@ def get_embed_log_context() -> Optional[Dict[str, Any]]:
     ctx = _embed_ctx.get()
     return dict(ctx) if ctx else None
 
+
 def _ctx_line() -> str:
     ctx = _embed_ctx.get()
-    return json.dumps(ctx, ensure_ascii=False) if ctx else "— (не задан вызывающим)"    
+    return json.dumps(ctx, ensure_ascii=False) if ctx else "— (не задан вызывающим)"
 
 
 class OpenAICompatModelsClient:
@@ -249,16 +299,34 @@ class OpenAICompatModelsClient:
         self.api_key_env = api_key_env
         self.embedding_model = embedding_model
         self.reranker_model = reranker_model
-        self.embed_path = embed_path if str(embed_path or "").startswith("/") else f"/{embed_path}"
-        self.rerank_path = rerank_path if str(rerank_path or "").startswith("/") else f"/{rerank_path}"
+        self.embed_path = (
+            embed_path if str(embed_path or "").startswith("/") else f"/{embed_path}"
+        )
+        self.rerank_path = (
+            rerank_path if str(rerank_path or "").startswith("/") else f"/{rerank_path}"
+        )
         self.timeout = float(timeout)
         self.embed_batch_size = max(1, int(embed_batch_size or 24))
         self.embed_concurrency = max(1, int(embed_concurrency or 1))
         self.embed_payload_style = str(embed_payload_style or "openai").strip().lower()
-        self.rerank_payload_style = str(rerank_payload_style or "openai").strip().lower()
+        self.rerank_payload_style = (
+            str(rerank_payload_style or "openai").strip().lower()
+        )
         self.extra_headers = dict(extra_headers or {})
         self._logged_dim = False
         self._logged_dim_note = False
+        # Потолки, которые клиент ставит себе сам, когда шлюз не дожидается
+        # модели (см. _note_batch_shrink). None = потолка нет, работаем на
+        # значениях из конфига. Живут на экземпляре клиента: при смене модели в
+        # UI клиент пересоздаётся и потолки сбрасываются.
+        self._batch_cap: Optional[int] = None
+        self._conc_cap: Optional[int] = None
+        # Сколько вызовов embed подряд прошло без единого таймаута — счётчик
+        # обратного хода (см. _note_embed_ok). _shrink_events — сколько батчей
+        # пришлось дробить с последнего восстановления.
+        self._clean_runs = 0
+        self._shrink_events = 0
+        self._shrunk_this_run = False
 
     # ---------- инфраструктура ----------
 
@@ -277,11 +345,17 @@ class OpenAICompatModelsClient:
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
             headers["X-API-Key"] = api_key
+        # X-User-ID
+        from app.core.cef_logger.cef_audit_context import model_identity_headers
+
+        headers.update(model_identity_headers())
         # Заголовки провайдера из конфига (для Bifrost — x-bf-passthrough-extra-params).
         headers.update(self.extra_headers)
         return headers
 
-    def _embed_payload(self, batch: List[str], model: str, kind: Optional[str]) -> Dict[str, Any]:
+    def _embed_payload(
+        self, batch: List[str], model: str, kind: Optional[str]
+    ) -> Dict[str, Any]:
         """Тело запроса эмбеддингов в стиле, который понимает провайдер.
 
         ```openai``` — стандартное {"model", "input"}.
@@ -351,13 +425,25 @@ class OpenAICompatModelsClient:
         url: str,
         payload: Dict[str, Any],
         what: str,
+        splittable: bool = False,
     ) -> httpx.Response:
         """POST с повтором на мигающих отказах шлюза.
 
         Возвращает успешный ответ либо поднимает последнюю ошибку — контракт
         вызывающего кода не меняется, он по-прежнему ловит исключение.
+
+        splittable — у вызывающего есть чем ответить на таймаут кроме повтора
+        (батч из нескольких фрагментов, который он раздробит). Только тогда имеет
+        смысл экономить на повторах: они всё равно упрутся в тот же таймаут.
+        Для батча из одного текста — запрос поиска — дробить нечего, и повтор
+        остаётся единственным лекарством от мигнувшего шлюза: там прежние три.
         """
+        from app.clients.embed_parallel import is_timeout_error
+
         last_exc: Optional[Exception] = None
+        # Лимит попыток плавающий: таймаут снижает его до _TIMEOUT_RETRY_ATTEMPTS,
+        # чтобы не ждать шлюз по кругу, а поскорее уйти на дробление батча.
+        limit = _RETRY_ATTEMPTS
         for attempt in range(1, _RETRY_ATTEMPTS + 1):
             try:
                 resp = await client.post(url, headers=self._headers(), json=payload)
@@ -368,7 +454,7 @@ class OpenAICompatModelsClient:
                         self.provider_id,
                         what,
                         attempt,
-                        _RETRY_ATTEMPTS,
+                        limit,
                     )
                 return resp
             except httpx.HTTPStatusError as e:
@@ -383,10 +469,14 @@ class OpenAICompatModelsClient:
                         (e.response.text or "")[:200],
                     )
                     raise
+                if splittable and is_timeout_error(e):
+                    limit = min(limit, _TIMEOUT_RETRY_ATTEMPTS)
             except _RETRIABLE_EXC as e:
                 last_exc = e
+                if splittable and is_timeout_error(e):
+                    limit = min(limit, _TIMEOUT_RETRY_ATTEMPTS)
 
-            if attempt >= _RETRY_ATTEMPTS:
+            if attempt >= limit:
                 break
             delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
             logger.warning(
@@ -394,7 +484,7 @@ class OpenAICompatModelsClient:
                 self.provider_id,
                 what,
                 attempt,
-                _RETRY_ATTEMPTS,
+                limit,
                 self._retry_reason(last_exc),
                 delay,
             )
@@ -402,6 +492,19 @@ class OpenAICompatModelsClient:
 
         assert last_exc is not None
         raise last_exc
+
+    @staticmethod
+    def _timeout_reason(err: Exception) -> str:
+        """Короткая причина таймаута для пользователя.
+
+        Тело ответа сюда не кладём: у openresty это HTML-страница «504 Gateway
+        Time-out» на несколько строк, и раньше она целиком доезжала до UI, ничего
+        не объясняя. Полный ответ уже записан _log_http_error, а исходное
+        исключение остаётся в цепочке (raise ... from e).
+        """
+        if isinstance(err, httpx.HTTPStatusError):
+            return f"HTTP {err.response.status_code} от шлюза"
+        return f"{type(err).__name__} на нашей стороне"
 
     @staticmethod
     def _retry_reason(err: Optional[Exception]) -> str:
@@ -475,7 +578,10 @@ class OpenAICompatModelsClient:
         return (
             isinstance(value, list)
             and len(value) >= 8
-            and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in value[:8])
+            and all(
+                isinstance(x, (int, float)) and not isinstance(x, bool)
+                for x in value[:8]
+            )
         )
 
     @classmethod
@@ -511,6 +617,7 @@ class OpenAICompatModelsClient:
             # .embedding) — собираем все, иначе вернули бы один и потеряли батч.
             if len(per_item) > 1 and all(len(v) == 1 for v in per_item):
                 if len(dicts) == len(value) and any("index" in d for d in dicts):
+
                     def _pos(i: int) -> int:
                         # Именно "is None", а не "or": index=0 ложен для or,
                         # и нулевой элемент уехал бы в конец.
@@ -542,19 +649,135 @@ class OpenAICompatModelsClient:
         if depth > 4:
             return "..."
         if isinstance(value, dict):
-            return {k: OpenAICompatModelsClient._describe(v, depth + 1) for k, v in value.items()}
+            return {
+                k: OpenAICompatModelsClient._describe(v, depth + 1)
+                for k, v in value.items()
+            }
         if isinstance(value, list):
             if not value:
                 return "список[0]"
             if OpenAICompatModelsClient._is_vector(value):
                 return f"ВЕКТОР[{len(value)}]"
-            return [f"список[{len(value)}]", OpenAICompatModelsClient._describe(value[0], depth + 1)]
+            return [
+                f"список[{len(value)}]",
+                OpenAICompatModelsClient._describe(value[0], depth + 1),
+            ]
         if isinstance(value, str):
             return f"строка({len(value)})"
         return type(value).__name__
 
+    # ---------- адаптация к медленной модели ----------
+
+    def _effective_batch_size(self) -> int:
+        """Размер батча с учётом потолка, выставленного после таймаутов."""
+        if self._batch_cap is None:
+            return self.embed_batch_size
+        return max(1, min(self.embed_batch_size, self._batch_cap))
+
+    def _effective_concurrency(self) -> int:
+        """Параллелизм с учётом потолка, выставленного после таймаутов."""
+        if self._conc_cap is None:
+            return self.embed_concurrency
+        return max(1, min(self.embed_concurrency, self._conc_cap))
+
+    def _note_embed_ok(self, used_full_batch: bool) -> None:
+        """Вызов embed завершился без таймаутов — понемногу возвращаем прежний режим.
+
+        Сначала растёт батч, и только когда он дорос до конфигурационного —
+        возвращается параллелизм. Порядок такой, потому что параллелизм влияет
+        на время одного запроса сильнее: поднимать его нужно последним.
+
+        used_full_batch — прогон и вправду отправил батч текущего размера.
+        Запрос поиска (один текст) успевает всегда, и считать его
+        доказательством того, что шлюз переварит батч из 24, нельзя: иначе
+        поисковый трафик вернул бы прежний режим, не проверив его ничем.
+        """
+        from app.clients.embed_parallel import ADAPT_RECOVER_AFTER
+
+        if self._batch_cap is None and self._conc_cap is None:
+            return
+        if not ADAPT_RECOVER_AFTER or not used_full_batch:
+            return
+        self._clean_runs += 1
+        if self._clean_runs < ADAPT_RECOVER_AFTER:
+            return
+        self._clean_runs = 0
+        if self._batch_cap is not None and self._batch_cap < self.embed_batch_size:
+            self._batch_cap = min(self.embed_batch_size, self._batch_cap * 2)
+            if self._batch_cap >= self.embed_batch_size:
+                self._batch_cap = None
+            logger.info(
+                "[%s] embed: %s прогонов подряд без таймаутов — поднимаю батч до %s",
+                self.provider_id,
+                ADAPT_RECOVER_AFTER,
+                self._effective_batch_size(),
+            )
+            return
+        self._batch_cap = None
+        self._shrink_events = 0
+        if self._conc_cap is not None:
+            self._conc_cap = None
+            logger.info(
+                "[%s] embed: %s прогонов подряд без таймаутов — возвращаю "
+                "параллельные запросы (%s)",
+                self.provider_id,
+                ADAPT_RECOVER_AFTER,
+                self.embed_concurrency,
+            )
+
+    def _note_batch_shrink(self, failed_size: int) -> None:
+        """Батч размера failed_size не уложился в таймаут — запоминаем это.
+
+        Два вывода из одного факта, оба снижают время ОДНОГО POST, не отключая
+        ничего: батч вдвое меньше и не более одного запроса за раз. Второе важнее
+        первого — N одновременных запросов к модели на CPU делят одни ядра, и
+        каждый идёт примерно в N раз дольше, то есть параллелизм сам и загоняет
+        запросы за таймаут шлюза. Общая пропускная способность при этом не
+        падает: работа та же, просто выстроена в очередь.
+        """
+        from app.clients.embed_parallel import (
+            ADAPT_ON_TIMEOUT,
+            CONC_DROP_BATCH_FLOOR,
+        )
+
+        self._shrunk_this_run = True
+        self._clean_runs = 0
+        if not ADAPT_ON_TIMEOUT:
+            return
+        self._shrink_events += 1
+        new_batch = max(1, int(failed_size) // 2)
+        if self._batch_cap is None or new_batch < self._batch_cap:
+            self._batch_cap = new_batch
+            logger.warning(
+                "[%s] embed: после таймаута снижаю размер батча до %s "
+                "(из конфига %s). K8s: RAG_MODELS_CLIENT_EMBED_BATCH_SIZE",
+                self.provider_id,
+                self._effective_batch_size(),
+                self.embed_batch_size,
+            )
+        # Параллелизм — последнее, что трогаем, и только когда уменьшать уже нечего
+        if (
+            self._batch_cap is not None
+            and self._batch_cap <= CONC_DROP_BATCH_FLOOR
+            and self._effective_concurrency() > 1
+        ):
+            self._conc_cap = max(1, self._effective_concurrency() // 2)
+            logger.warning(
+                "[%s] embed: батч уже %s, а таймауты продолжаются (%s дроблений) — "
+                "снижаю параллелизм до %s (из конфига %s): столько запросов к одному "
+                "CPU не укладываются в таймаут шлюза. "
+                "K8s: RAG_MODELS_CLIENT_EMBED_CONCURRENCY",
+                self.provider_id,
+                self._effective_batch_size(),
+                self._shrink_events,
+                self._conc_cap,
+                self.embed_concurrency,
+            )
+
     @classmethod
-    def _parse_embeddings(cls, data: Dict[str, Any], expected: int) -> List[List[float]]:
+    def _parse_embeddings(
+        cls, data: Dict[str, Any], expected: int
+    ) -> List[List[float]]:
         """Разбор ответа /v1/embeddings.
 
         Порядок data[] по спеке НЕ гарантирован — сортируем по index, иначе
@@ -594,7 +817,8 @@ class OpenAICompatModelsClient:
             )
             return vectors
 
-        raise ValueError("В ответе нет вектора. Структура: "
+        raise ValueError(
+            "В ответе нет вектора. Структура: "
             f"{json.dumps(cls._describe(data), ensure_ascii=False)[:400]}"
         )
 
@@ -622,7 +846,11 @@ class OpenAICompatModelsClient:
                 f"[{self.provider_id}] embedding_model не задан — выберите модель в UI"
             )
         url = f"{self.base_url}{self.embed_path}"
-        from app.clients.embed_parallel import embed_texts_in_batches
+        from app.clients.embed_parallel import (
+            EmbedBatchTimeout,
+            embed_texts_in_batches,
+            is_timeout_error,
+        )
 
         try:
             from app.core.cef_logger import log_cef_int003_model_request
@@ -645,6 +873,7 @@ class OpenAICompatModelsClient:
                         url,
                         self._embed_payload(batch, use_model, kind),
                         f"POST {self.embed_path}",
+                        splittable=len(batch) > 1,
                     )
                     data = resp.json()
                 except Exception as e:
@@ -653,7 +882,11 @@ class OpenAICompatModelsClient:
                         from app.core.cef_logger import log_cef_int006_outbound_failure
                         import httpx as _httpx
 
-                        sc = e.response.status_code if isinstance(e, _httpx.HTTPStatusError) else None
+                        sc = (
+                            e.response.status_code
+                            if isinstance(e, _httpx.HTTPStatusError)
+                            else None
+                        )
                         log_cef_int006_outbound_failure(
                             base_url=self.base_url,
                             model=use_model,
@@ -687,19 +920,35 @@ class OpenAICompatModelsClient:
                         await self._report_blocked_texts(
                             client, url, batch, use_model, kind, start
                         )
+                    if is_timeout_error(e):
+                        # Отдельный тип, чтобы верхний уровень раздробил батч, а не
+                        # повторял его целиком. Текст короткий: HTML-страница 504 от
+                        # openresty доезжала до пользователя целиком и ничего не
+                        # объясняла.
+                        raise EmbedBatchTimeout(
+                            f"[{self.provider_id}] POST {self.embed_path}: "
+                            f"шлюз не дождался модели эмбеддингов "
+                            f"({self._timeout_reason(e)}, фрагментов={len(batch)}, "
+                            f"символов={sum(len(t or '') for t in batch)})"
+                        ) from e
                     raise self._readable(f"POST {self.embed_path}", e) from e
                 part = self._parse_embeddings(data, len(batch))
                 if part and part[0]:
                     self._check_dim(len(part[0]))
                 return part
-
+            
+            self._shrink_this_run = False
+            planned_batch = self._effective_batch_size()
             all_embeddings = await embed_texts_in_batches(
                 texts,
-                batch_size=self.embed_batch_size,
-                concurrency=self.embed_concurrency,
+                batch_size=planned_batch,
+                concurrency=self._effective_concurrency(),
                 embed_batch=_one_batch,
                 log_prefix=f"[{self.provider_id}] embed",
+                on_batch_shrink=self._note_batch_shrink,
             )
+            if not self._shrink_this_run:
+                self._note_embed_ok(len(texts) >= planned_batch)
 
         if all_embeddings and not self._logged_dim:
             logger.debug(
@@ -707,8 +956,8 @@ class OpenAICompatModelsClient:
                 self.provider_id,
                 len(all_embeddings[0]),
                 use_model,
-                self.embed_concurrency,
-                self.embed_batch_size,
+                self._effective_concurrency(),
+                self._effective_batch_size(),
             )
             self._logged_dim = True
         return all_embeddings
@@ -869,8 +1118,16 @@ class OpenAICompatModelsClient:
                 f"[{self.provider_id}] reranker_model не задан — выберите модель в UI "
                 "(вызывающий код продолжит без реранка)"
             )
+        paused_for = _RERANK_PAUSED_UNTIL.get(use_model, 0.0) - time.monotonic()
+        if paused_for > 0:
+            # Исключение, а не []: вызывающий код откатится на векторный порядок
+            # и пометит реранк как неприменённый (см. докстринг выше).
+            raise RuntimeError(
+                f"[{self.provider_id}] реранкер {use_model} на паузе после таймаута "
+                f"шлюза, ещё {paused_for:.0f} с - поиск без реранка"
+            )
         url = f"{self.base_url}{self.rerank_path}"
-        payload = self._rerank_payload(query, passages, use_model,top_k)
+        payload = self._rerank_payload(query, passages, use_model, top_k)
         try:
             from app.core.cef_logger import log_cef_int003_model_request
 
@@ -884,20 +1141,41 @@ class OpenAICompatModelsClient:
             pass
         try:
             async with self._client() as client:
+                # splittable=True: на таймаут у вызывающего есть ответ кроме
+                # повтора - векторный порядок. Две лишние попытки стоили ~120 с
+                # и упирались в тот же таймаут шлюза.
                 resp = await self._post_with_retry(
                     client,
                     url,
                     payload,
                     f"POST {self.rerank_path}",
+                    splittable=True,
                 )
                 data = resp.json()
+            if _RERANK_PAUSED_UNTIL.pop(use_model, None) is not None:
+                logger.info("[%s] реранкер %s снова отвечает - пауза снята", self.provider_id, use_model)
         except Exception as e:
             self._log_http_error(f"POST {self.rerank_path}", e)
+            from app.clients.embed_parallel import is_timeout_error
+
+            if _RERANK_PAUSE_SEC > 0 and is_timeout_error(e):
+                _RERANK_PAUSED_UNTIL[use_model] = time.monotonic() + _RERANK_PAUSE_SEC
+                logger.warning(
+                    "[%s] реранкер %s не ответил за таймаут шлюза - поиск идёт без "
+                    "реранка %.0f с (RAG_RERANK_PAUSE_SEC), потом попробуем снова",
+                    self.provider_id,
+                    use_model,
+                    _RERANK_PAUSE_SEC,
+                )
             try:
                 from app.core.cef_logger import log_cef_int006_outbound_failure
                 import httpx as _httpx
 
-                sc = e.response.status_code if isinstance(e, _httpx.HTTPStatusError) else None
+                sc = (
+                    e.response.status_code
+                    if isinstance(e, _httpx.HTTPStatusError)
+                    else None
+                )
                 log_cef_int006_outbound_failure(
                     base_url=self.base_url,
                     model=use_model,
@@ -993,14 +1271,19 @@ class OpenAICompatModelsClient:
         return []
 
     @classmethod
-    def _rerank_from_obj(cls, value: Any, expected: int, depth: int = 0) -> List[Tuple[int, float]]:
+    def _rerank_from_obj(
+        cls, value: Any, expected: int, depth: int = 0
+    ) -> List[Tuple[int, float]]:
         if depth > 6 or not isinstance(value, (dict, list)):
             return []
         if isinstance(value, dict):
             items = value.get("results")
             if isinstance(items, list) and items:
                 pairs = [
-                    (int(it["index"]), float(it.get("relevance_score") or it.get("score") or 0.0))
+                    (
+                        int(it["index"]),
+                        float(it.get("relevance_score") or it.get("score") or 0.0),
+                    )
                     for it in items
                     if isinstance(it, dict) and it.get("index") is not None
                 ]
@@ -1009,7 +1292,10 @@ class OpenAICompatModelsClient:
             for key in ("scores", "relevance_scores", "rerank_scores"):
                 scores = value.get(key)
                 if isinstance(scores, list) and len(scores) == expected:
-                    if all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in scores):
+                    if all(
+                        isinstance(x, (int, float)) and not isinstance(x, bool)
+                        for x in scores
+                    ):
                         ordered = sorted(
                             enumerate(float(x) for x in scores),
                             key=lambda p: p[1],

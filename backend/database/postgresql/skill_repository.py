@@ -86,6 +86,10 @@ def _row_common(row) -> Dict[str, Any]:
     }
 
 
+def escape_like(value: str) -> str:
+    """Экранирует служебные символы LIKE/ILIKE (``\\``, ``%``, ``_``) для поиска подстроки."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
 class SkillRepository:
     """CRUD + shares для skills."""
 
@@ -476,21 +480,18 @@ class SkillRepository:
                     params.append(uid)
                     idx += 1
                 elif view == "shared":
-                    where.append(
-                        f"""EXISTS (
+                    where.append(f"""EXISTS (
                             SELECT 1 FROM skill_shares ss
                             WHERE ss.skill_id = s.id
                               AND LOWER(TRIM(ss.shared_with_user_id)) = LOWER(TRIM(${idx}))
-                        )"""
-                    )
+                        )""")
                     params.append(uid)
                     idx += 1
                 elif view == "public":
                     # Как галерея агентов: только опубликованные
                     where.append("s.is_public = true")
                 else:
-                    where.append(
-                        f"""(
+                    where.append(f"""(
                             LOWER(TRIM(s.author_id)) = LOWER(TRIM(${idx}))
                             OR s.is_public = true
                             OR EXISTS (
@@ -498,16 +499,17 @@ class SkillRepository:
                                 WHERE ss.skill_id = s.id
                                   AND LOWER(TRIM(ss.shared_with_user_id)) = LOWER(TRIM(${idx}))
                             )
-                        )"""
-                    )
+                        )""")
                     params.append(uid)
                     idx += 1
 
                 if query:
                     where.append(
-                        f"(s.name ILIKE ${idx} OR s.description ILIKE ${idx} OR s.slug ILIKE ${idx})"
+                        f"(s.name ILIKE ${idx} ESCAPE '\\' "
+                        f"OR s.description ILIKE ${idx} ESCAPE '\\' "
+                        f"OR s.slug ILIKE ${idx} ESCAPE '\\')"
                     )
-                    params.append(f"%{query}%")
+                    params.append(f"%{escape_like(query)}%")
                     idx += 1
 
                 where_sql = ("WHERE " + " AND ".join(where)) if where else ""
@@ -529,13 +531,16 @@ class SkillRepository:
 
             items: List[SkillListItem] = []
             for row in rows:
-                item = await self._enrich_skill(row, user_id=uid, is_admin=is_admin, include_content=False)
+                item = await self._enrich_skill(
+                    row, user_id=uid, is_admin=is_admin, include_content=False
+                )
                 if item:
                     items.append(item)  # type: ignore[arg-type]
             return items, int(total or 0)
         except Exception:
             logger.exception("Ошибка list_skills")
             return [], 0
+
 
     async def get_accessible_skills(self, user_id: str, is_admin: bool = False) -> List[SkillOut]:
         """Все доступные skills с content (для export / inject)."""
@@ -685,12 +690,18 @@ class SkillRepository:
             return False
 
     async def share_skill(
-        self, skill_id: int, owner_id: str, usernames: List[str], permission: str = SKILL_PERMISSION_VIEWER
+        self,
+        skill_id: int,
+        owner_id: str,
+        usernames: List[str],
+        permission: str = SKILL_PERMISSION_VIEWER,
+        recipient_permissions: Optional[Dict[str, str]] = None,
     ) -> Tuple[List[str], List[str]]:
         owner_id = (owner_id or "").strip().lower()
-        permission = normalize_skill_permission(permission)
-        if permission not in SKILL_SHARE_PERMISSIONS:
-            permission = SKILL_PERMISSION_VIEWER
+        default_permission = normalize_skill_permission(permission)
+        if default_permission not in SKILL_SHARE_PERMISSIONS:
+            default_permission = SKILL_PERMISSION_VIEWER
+        per_user = recipient_permissions or {}
         added: List[str] = []
         skipped: List[str] = []
         try:
@@ -705,6 +716,11 @@ class SkillRepository:
                     if not recipient or recipient == owner_id:
                         skipped.append(raw or "")
                         continue
+                    perm = normalize_skill_permission(
+                        per_user.get(recipient, default_permission)
+                    )
+                    if perm not in SKILL_SHARE_PERMISSIONS:
+                        perm = SKILL_PERMISSION_VIEWER
                     await conn.execute(
                         """
                         INSERT INTO skill_shares (skill_id, owner_id, shared_with_user_id, permission)
@@ -715,7 +731,7 @@ class SkillRepository:
                         skill_id,
                         owner_id,
                         recipient,
-                        permission,
+                        perm,
                     )
                     added.append(recipient)
                 return (added, skipped)
@@ -788,6 +804,7 @@ class SkillRepository:
         """Resolve by numeric id or slug; only active + accessible."""
         result: List[SkillOut] = []
         seen = set()
+        seen_ids = set()
         for raw in identifiers:
             key = (raw or "").strip()
             if not key or key in seen:
@@ -795,12 +812,20 @@ class SkillRepository:
             seen.add(key)
             skill: Optional[SkillOut] = None
             if key.isdigit():
-                skill = await self.get_skill_by_id(int(key), user_id=user_id, is_admin=is_admin)
+                skill = await self.get_skill_by_id(
+                    int(key), user_id=user_id, is_admin=is_admin
+                )
             if not skill:
-                skill = await self.get_skill_by_slug(key, user_id=user_id, is_admin=is_admin)
-            if skill and skill.is_active:
+                skill = await self.get_skill_by_slug(
+                    key, user_id=user_id, is_admin=is_admin
+                )
+            # Один и тот же навык мог прийти как id, slug и slug в другом регистре:
+            # дедуплицируем по id, иначе его тело дважды попадёт в системный промпт.
+            if skill and skill.is_active and skill.id not in seen_ids:
+                seen_ids.add(skill.id)
                 result.append(skill)
         return result
+
 
     async def list_always_apply_skills(
         self, user_id: str, is_admin: bool = False, limit: int = 20
@@ -877,8 +902,11 @@ class SkillRepository:
         minio_bucket: Optional[str] = None,
         minio_object: Optional[str] = None,
     ) -> Optional[SkillFileOut]:
-        path = (relative_path or "").replace("\\", "/").lstrip("/")
+        path = (relative_path or "").replace("\\", "/").strip().lstrip("/")
         if not path or path.lower() == "skill.md":
+            return None
+        # Сегменты ".." недопустимы (path traversal).
+        if any(part.strip() == ".." for part in path.split("/")):
             return None
         category = infer_skill_file_category(path)
         data = content or ""
@@ -927,6 +955,7 @@ class SkillRepository:
         except Exception:
             logger.exception("Ошибка upsert_skill_file_text")
             return None
+
 
     async def get_skill_file_content(self, skill_id: int, relative_path: str) -> Optional[str]:
         path = (relative_path or "").replace("\\", "/").lstrip("/")

@@ -20,21 +20,30 @@ ATLASSIAN_CREDENTIAL_FIELD_NAMES: tuple[str, ...] = (
 # Backward-compatible alias (routes/mcp_atlassian.py)
 ATLASSIAN_CREDENTIAL_FIELDS = ATLASSIAN_CREDENTIAL_FIELD_NAMES
 
+
 def validate_atlassian_payload(payload: Dict[str, Any]) -> List[str]:
     """Возвращает список ошибок валидации (пустой = OK)."""
     errors: List[str] = []
     if not isinstance(payload, dict):
         return ["payload must be an object"]
     has_jira = bool(payload.get("jira_url") and payload.get("jira_pat"))
-    has_confluence = bool(payload.get("confluence_url") and payload.get("confluence_pat"))
+    has_confluence = bool(
+        payload.get("confluence_url") and payload.get("confluence_pat")
+    )
     if not has_jira and not has_confluence:
-        errors.append("At least one of (jira_url+jira_pat) or (confluence_url+confluence_pat) required")
+        errors.append(
+            "At least one of (jira_url+jira_pat) or (confluence_url+confluence_pat) required"
+        )
     return errors
 
 
 class AtlassianCredentialProvider(AbstractCredentialProvider):
     provider_id = "atlassian"
-    credential_field_names: tuple[str, ...] = ATLASSIAN_CREDENTIAL_FIELD_NAMES    async def build_headers(self, server: McpServerConfig, context: McpCallContext) -> Dict[str, str]:
+    credential_field_names: tuple[str, ...] = ATLASSIAN_CREDENTIAL_FIELD_NAMES
+
+    async def build_headers(
+        self, server: McpServerConfig, context: McpCallContext
+    ) -> Dict[str, str]:
         mode = str(server.auth_mode or "service_account").strip().lower()
         if mode == "service_account":
             # Secrets живут в Pod mcp-atlassian; backend не передаёт PAT.
@@ -67,7 +76,9 @@ class AtlassianCredentialProvider(AbstractCredentialProvider):
 
         return headers
 
-    async def health_metadata(self, server: McpServerConfig, context: McpCallContext) -> Dict[str, Any]:
+    async def health_metadata(
+        self, server: McpServerConfig, context: McpCallContext
+    ) -> Dict[str, Any]:
         mode = str(server.auth_mode or "service_account").strip().lower()
         if mode == "service_account":
             return {
@@ -79,10 +90,16 @@ class AtlassianCredentialProvider(AbstractCredentialProvider):
         return {
             "auth_mode": mode,
             "jira_configured": bool(creds.get("jira_url") and creds.get("jira_pat")),
-            "confluence_configured": bool(creds.get("confluence_url") and creds.get("confluence_pat")),
+            "confluence_configured": bool(
+                creds.get("confluence_url") and creds.get("confluence_pat")
+            ),
         }
 
-    def sanitize_payload_for_response(self, payload: Optional[Dict[str, Any]]) -> Dict[str, bool]:
+    def sanitize_payload_for_response(
+        self, payload: Optional[Dict[str, Any]]
+    ) -> Dict[str, bool]:
         if not payload:
             return {}
-        return {field: bool(payload.get(field)) for field in ATLASSIAN_CREDENTIAL_FIELDS}
+        return {
+            field: bool(payload.get(field)) for field in ATLASSIAN_CREDENTIAL_FIELDS
+        }

@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Deque, Dict, Optional
 
 from backend.mcp.connection import McpServerSession
 from backend.settings.config import McpPoolConfig
 from backend.settings.logging import get_logger
+from backend.settings.logging.errors import logged_suppress
 
 log = get_logger(__name__)
 
@@ -25,8 +26,10 @@ class McpPoolMetrics:
     idle_sessions: int = 0
 
     def to_dict(self) -> dict:
-        hit_rate = (self.hit_total / self.acquire_total) if self.acquire_total else 0.0
-        avg_acquire_ms = (self.acquire_ms_total / self.acquire_total) if self.acquire_total else 0.0
+        hit_rate = self.hit_total / self.acquire_total if self.acquire_total else 0.0
+        avg_acquire_ms = (
+            self.acquire_ms_total / self.acquire_total if self.acquire_total else 0.0
+        )
         return {
             "acquire_total": self.acquire_total,
             "hit_total": self.hit_total,
@@ -45,10 +48,9 @@ class _PooledEntry:
 
 
 class McpSessionPool:
+
     def __init__(
-        self,
-        pool_config: McpPoolConfig,
-        connect_factory: Callable[..., asyncio.Future],
+        self, pool_config: McpPoolConfig, connect_factory: Callable[..., asyncio.Future]
     ):
         self._config = pool_config
         self._connect_factory = connect_factory
@@ -76,8 +78,8 @@ class McpSessionPool:
                 entry = entries.popleft()
                 try:
                     await entry.session.close()
-                except Exception as exc:
-                    log.debug("pool shutdown close error: %s", exc)
+                except Exception:
+                    log.exception("pool shutdown close error")
         self._pools.clear()
         self._update_idle_metric()
 
@@ -91,7 +93,7 @@ class McpSessionPool:
         return base
 
     def _update_idle_metric(self) -> None:
-        self.metrics.idle_sessions = sum(len(q) for q in self._pools.values())
+        self.metrics.idle_sessions = sum((len(q) for q in self._pools.values()))
 
     def _lock_for(self, server_id: str) -> asyncio.Lock:
         if server_id not in self._locks:
@@ -107,6 +109,7 @@ class McpSessionPool:
             self.metrics.acquire_ms_total += (time.perf_counter() - started) * 1000.0
             return session
         lock = self._lock_for(server_id)
+        from_pool = False
         async with lock:
             pool = self._pools.setdefault(server_id, deque())
             while pool:
@@ -114,24 +117,42 @@ class McpSessionPool:
                 if time.monotonic() - entry.idle_since <= self._config.idle_ttl_seconds:
                     entry.session.from_pool = True
                     self.metrics.hit_total += 1
-                    self.metrics.acquire_ms_total += (time.perf_counter() - started) * 1000.0
+                    self.metrics.acquire_ms_total += (
+                        time.perf_counter() - started
+                    ) * 1000.0
                     self._update_idle_metric()
+                    from_pool = True
+                    log.debug(
+                        "MCP pool acquire ok server=%s from_pool=%s elapsed_ms=%.1f",
+                        server_id,
+                        True,
+                        (time.perf_counter() - started) * 1000.0,
+                    )
                     return entry.session
-                try:
+                with logged_suppress(log):
                     await entry.session.close()
-                except Exception:
-                    pass
         try:
             session = await asyncio.wait_for(
                 self._connect_factory(server_id, **connect_kwargs),
                 timeout=self._config.acquire_timeout_seconds,
             )
         except asyncio.TimeoutError:
-            log.warning("MCP pool acquire timeout for server=%s", server_id)
+            log.debug(
+                "MCP pool acquire timeout server=%s acquire_timeout=%ss",
+                server_id,
+                float(self._config.acquire_timeout_seconds),
+            )
             session = await self._connect_factory(server_id, **connect_kwargs)
         self.metrics.miss_total += 1
         self.metrics.acquire_ms_total += (time.perf_counter() - started) * 1000.0
         self._update_idle_metric()
+        if not from_pool:
+            log.debug(
+                "MCP pool acquire ok server=%s from_pool=%s elapsed_ms=%.1f",
+                server_id,
+                False,
+                (time.perf_counter() - started) * 1000.0,
+            )
         return session
 
     async def release(self, session: McpServerSession) -> None:
@@ -153,8 +174,8 @@ class McpSessionPool:
         self.metrics.discard_total += 1
         try:
             await session.close()
-        except Exception as exc:
-            log.debug("pool discard error: %s", exc)
+        except Exception:
+            log.exception("pool discard error")
         self._update_idle_metric()
 
     async def _evict_loop(self) -> None:
@@ -165,6 +186,7 @@ class McpSessionPool:
             except asyncio.CancelledError:
                 break
             except Exception as exc:
+                log.exception("Ошибка операции")
                 log.debug("pool evict loop error: %s", exc)
 
     async def _evict_idle(self) -> None:
@@ -178,10 +200,8 @@ class McpSessionPool:
                     if now - entry.idle_since <= self._config.idle_ttl_seconds:
                         kept.append(entry)
                     else:
-                        try:
+                        with logged_suppress(log):
                             await entry.session.close()
-                        except Exception:
-                            pass
                 if kept:
                     self._pools[server_id] = kept
                 else:

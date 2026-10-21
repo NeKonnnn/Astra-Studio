@@ -40,6 +40,7 @@ from backend.services.follow_up_suggestions import generate_follow_up_suggestion
 from backend.settings.cef_logger.cef_logger import log_cef_event
 from backend.settings.logging import get_logger
 from backend.settings.logging.errors import logged_suppress
+from backend.utils.http_errors import public_error_detail
 
 logger = get_logger(__name__)
 
@@ -106,7 +107,7 @@ async def chat_context_breakdown(
         return payload
     except Exception as e:
         logger.exception("context-breakdown error")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail=public_error_detail(e))
 
 
 @router.post("/api/chat/follow-up-suggestions")
@@ -218,10 +219,13 @@ async def chat_with_ai(
         await save_dialog_entry("user", message.message, conversation_id=conv_id, user_id=current_user["user_id"])
         await save_dialog_entry("assistant", response, conversation_id=conv_id, user_id=current_user["user_id"])
         return {"response": response, "timestamp": datetime.now().isoformat(), "success": True}
+    except HTTPException:
+        # 403/503 и т.п. — осознанные ответы, их нельзя превращать в 500.
+        raise
     except Exception as e:
         logger.exception("Ошибка операции")
         logger.error(f"/api/chat error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail=public_error_detail(e)) from e
     finally:
         with logged_suppress(logger):
             cef_audit_reset(_audit_tok)
@@ -610,13 +614,23 @@ async def branch_conversation(
 
 
 @router.put("/api/messages/{conversation_id}/{message_id}")
-async def update_message(conversation_id: str, message_id: str, request: dict):
+async def update_message(
+    conversation_id: str,
+    message_id: str,
+    request: dict,
+    current_user: Annotated[dict, Depends(get_current_user)],
+):
     try:
         from backend.app_state import get_conversation_repository
 
         repo = get_conversation_repository()
         if repo is None:
             raise HTTPException(status_code=503, detail="MongoDB repository не доступен")
+        conversation = await repo.get_conversation(conversation_id)
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Диалог не найден")
+        if getattr(conversation, "user_id", None) and conversation.user_id != current_user.get("user_id"):
+            raise HTTPException(status_code=403, detail="Нет доступа к этому диалогу")
         content = request.get("content", "")
         if not content:
             raise HTTPException(status_code=400, detail="Поле 'content' обязательно")
@@ -628,7 +642,7 @@ async def update_message(conversation_id: str, message_id: str, request: dict):
         raise
     except Exception as e:
         logger.exception("Ошибка операции")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail=public_error_detail(e)) from e
 
 
 @router.put("/api/messages/{conversation_id}/{message_id}/feedback")
@@ -710,7 +724,7 @@ async def upsert_message_feedback(
         raise
     except Exception as e:
         logger.exception("Ошибка сохранения feedback")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail=public_error_detail(e))
 
 
 @router.websocket("/ws/chat")
@@ -868,7 +882,7 @@ async def websocket_chat(websocket: WebSocket):
                 )
             except Exception as e:
                 logger.exception("Ошибка операции")
-                await websocket.send_text(json.dumps({"type": "error", "error": str(e)}))
+                await websocket.send_text(json.dumps({"type": "error", "error": public_error_detail(e)}))
     except WebSocketDisconnect:
         logger.info("WebSocket /ws/chat отключен")
         with logged_suppress(logger):
@@ -917,7 +931,7 @@ async def websocket_voice(websocket: WebSocket):
                 except Exception as e:
                     logger.exception("Ошибка операции")
                     with logged_suppress(logger):
-                        await websocket.send_text(json.dumps({"type": "error", "error": str(e)}))
+                        await websocket.send_text(json.dumps({"type": "error", "error": public_error_detail(e)}))
     except WebSocketDisconnect:
         pass
     except Exception as e:
@@ -1013,7 +1027,7 @@ async def websocket_dictation(websocket: WebSocket):
                 except Exception as e:
                     logger.exception("Ошибка операции")
                     with logged_suppress(logger):
-                        await websocket.send_text(json.dumps({"type": "error", "error": str(e)}))
+                        await websocket.send_text(json.dumps({"type": "error", "error": public_error_detail(e)}))
     except WebSocketDisconnect:
         pass
     except Exception as e:
@@ -1100,7 +1114,7 @@ async def _process_audio(
                 await websocket.send_text(json.dumps({"type": "tts_error", "error": "Ошибка TTS"}))
         except Exception as e:
             logger.exception("Ошибка операции")
-            await websocket.send_text(json.dumps({"type": "tts_error", "error": str(e)}))
+            await websocket.send_text(json.dumps({"type": "tts_error", "error": public_error_detail(e)}))
     finally:
         with logged_suppress(logger):
             if os.path.exists(audio_file):

@@ -114,8 +114,9 @@ async function renderMermaidToSvg(source: string): Promise<string> {
   const mermaid = (await import('mermaid')).default;
   mermaid.initialize({
     startOnLoad: false,
-    securityLevel: 'loose',
-    // Как в ArtifactMermaidPreview: base — чтобы themeVariables/цвета пользователя работали.
+    // strict: нет HTML-инъекций из LLM-диаграмм и click-callbacks в SVG, который попадёт в новую вкладку.
+    securityLevel: 'strict',
+    // theme base — чтобы themeVariables/цвета пользователя работали.
     theme: 'base',
     suppressErrorRendering: true,
   });
@@ -196,6 +197,8 @@ export async function buildArtifactViewerDocument(opts: {
   );
 }
 
+const ORPHAN_CLEANUP_MS = 60_000;
+
 /** Открывает новую вкладку с готовым preview (localStorage + artifact-viewer.html). */
 export async function openArtifactViewer(opts: {
   type: string;
@@ -227,17 +230,21 @@ export async function openArtifactViewer(opts: {
   }
 
   const base = (process.env.PUBLIC_URL || '').replace(/\/$/, '');
-  // Без noopener — иначе в части браузеров localStorage не успевает подхватиться новой вкладкой.
-  const win = window.open(
+  // noopener,noreferrer: новая вкладка не получает window.opener. Данные передаются через
+  // localStorage (same-origin), поэтому ссылка на окно не нужна; при noopener window.open
+  // всегда возвращает null, так что блокировку popup по результату определить нельзя.
+  // artifact-viewer.html сам удаляет ключ после чтения.
+  window.open(
     `${base}/artifact-viewer.html?key=${encodeURIComponent(key)}`,
     '_blank',
+    'noopener,noreferrer',
   );
-  if (!win) {
+  // Страховка: если вкладка не открылась (popup заблокирован), не оставляем артефакт в localStorage.
+  setTimeout(() => {
     try {
       localStorage.removeItem(STORAGE_PREFIX + key);
     } catch {
       /* ignore */
     }
-    throw new Error('Всплывающее окно заблокировано браузером');
-  }
+  }, ORPHAN_CLEANUP_MS);
 }

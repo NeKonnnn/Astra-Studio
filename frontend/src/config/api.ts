@@ -21,6 +21,7 @@ export const API_ENDPOINTS = {
   VOICE_SYNTHESIZE: '/api/voice/synthesize',
   VOICE_SETTINGS: '/api/voice/settings',
   VOICE_WS: '/ws/voice',
+  VOICE_DICTATION_WS: '/ws/dictation',
   
   // Транскрибация
   TRANSCRIBE_UPLOAD: '/api/transcribe/upload',
@@ -45,16 +46,19 @@ export const API_ENDPOINTS = {
   MEMORY_RAG_DELETE: '/api/memory-rag/documents',
 
   // RAG проектов (файлы, привязанные к конкретному проекту)
-  PROJECT_RAG_UPLOAD: (projectId: string) => `/api/project-rag/projects/${projectId}/documents`,
-  PROJECT_RAG_LIST: (projectId: string) => `/api/project-rag/projects/${projectId}/documents`,
+  PROJECT_RAG_UPLOAD: (projectId: string) =>
+    `/api/project-rag/projects/${encodeURIComponent(projectId)}/documents`,
+  PROJECT_RAG_LIST: (projectId: string) =>
+    `/api/project-rag/projects/${encodeURIComponent(projectId)}/documents`,
   PROJECT_RAG_DELETE_DOC: (projectId: string, documentId: number) =>
-    `/api/project-rag/projects/${projectId}/documents/${documentId}`,
-  PROJECT_RAG_SEARCH: (projectId: string) => `/api/project-rag/projects/${projectId}/search`,
+    `/api/project-rag/projects/${encodeURIComponent(projectId)}/documents/${encodeURIComponent(String(documentId))}`,
+  PROJECT_RAG_SEARCH: (projectId: string) =>
+    `/api/project-rag/projects/${encodeURIComponent(projectId)}/search`,
 
   // Управление проектами
   PROJECTS: '/api/projects',
   PROJECT_ITEM: (projectId: string) => `/api/projects/${encodeURIComponent(projectId)}`,
-  PROJECT_DELETE: (projectId: string) => `/api/projects/${projectId}`,
+  PROJECT_DELETE: (projectId: string) => `/api/projects/${encodeURIComponent(projectId)}`,
   
   // Модели
   MODELS: '/api/models',
@@ -76,6 +80,7 @@ export const API_ENDPOINTS = {
   AUTH_SSO_PROVIDERS: '/api/auth/sso/providers',
   AUTH_SSO_KEYCLOAK_LOGIN: '/api/auth/sso/keycloak/login',
   AUTH_SSO_KEYCLOAK_EXCHANGE: '/api/auth/sso/keycloak/exchange',
+  AUTH_ME_AVATAR: '/api/auth/me/avatar',
 
   // MCP (Model Context Protocol)
   MCP_SERVERS: '/api/mcp/servers',
@@ -92,6 +97,9 @@ export const API_ENDPOINTS = {
 
   // Skills (markdown instructions)
   SKILLS: '/api/skills',
+
+  // Knowledge Bases (named RAG collections)
+  KNOWLEDGE_BASES: '/api/knowledge-bases',
 
   // Plugins (HTTP microservices gallery)
   PLUGINS: '/api/plugins',
@@ -122,7 +130,7 @@ export const getApiUrl = (endpoint: string): string => {
 export function getAuthFetchHeaders(extra?: Record<string, string>): Record<string, string> {
   const token =
     typeof window !== 'undefined'
-      ? localStorage.getItem('auth_token') || localStorage.getItem('token')
+      ? localStorage.getItem('auth_token')
       : null;
   return {
     ...(extra || {}),
@@ -144,7 +152,7 @@ export const getAuthWsUrl = (endpoint: string): string => {
   const base = getWsUrl(endpoint);
   const token =
     typeof window !== 'undefined'
-      ? localStorage.getItem('auth_token') || localStorage.getItem('token')
+      ? localStorage.getItem('auth_token')
       : null;
   if (!token) return base;
   const sep = base.includes('?') ? '&' : '?';

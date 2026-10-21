@@ -14,13 +14,14 @@ vLLM — OpenAI-совместимый inference-сервер, но одна и�
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List
 
 import httpx
 
-from .base import LLMProviderConfig, ModelInfo, ProviderCapabilities, ProviderHealth
-from .openai_compat import OpenAICompatProvider
 from backend.settings.logging import get_logger
+
+from .base import ProviderCapabilities, ProviderHealth
+from .openai_compat import OpenAICompatProvider
 
 logger = get_logger(__name__)
 
@@ -30,7 +31,6 @@ class VLLMProvider(OpenAICompatProvider):
 
     HEALTH_PATH: str = "/health"
     HEALTH_FALLBACK_TO_MODELS: bool = True
-
     _capabilities = ProviderCapabilities(
         hot_swap=False,
         multi_loaded=False,
@@ -44,37 +44,44 @@ class VLLMProvider(OpenAICompatProvider):
         try:
             async with httpx.AsyncClient(timeout=self._short_timeout()) as client:
                 response = await client.get(
-                    f"{self.base_url}{self.HEALTH_PATH}",
-                    headers=self._headers(),
+                    f"{self.base_url}{self.HEALTH_PATH}", headers=self._headers()
                 )
                 if response.status_code == 200:
-                    # vLLM не кладёт loaded_models в health, берём их из /v1/models.
                     loaded = await self._loaded_model_ids(client)
                     return ProviderHealth(healthy=True, loaded_models=loaded)
-                if response.status_code in (404, 405) and self.HEALTH_FALLBACK_TO_MODELS:
+                if (
+                    response.status_code in (404, 405)
+                    and self.HEALTH_FALLBACK_TO_MODELS
+                ):
                     return await self._health_via_models(client)
                 return ProviderHealth(
                     healthy=False,
                     error=f"HTTP {response.status_code}: {response.text[:200]}",
                 )
         except Exception as e:
+            logger.exception("Ошибка операции")
             return ProviderHealth(healthy=False, error=str(e))
 
     async def _loaded_model_ids(self, client: httpx.AsyncClient) -> List[str]:
         """Список моделей, реально обслуживаемых этой vLLM-инстанцией."""
         try:
-            response = await client.get(f"{self.base_url}/v1/models", headers=self._headers())
+            response = await client.get(
+                f"{self.base_url}/v1/models", headers=self._headers()
+            )
             if response.status_code != 200:
                 return self._static_fallback()
             data = response.json()
-            ids = [str(row.get("id") or "").strip()
-                   for row in (data.get("data") or [])
-                   if isinstance(row, dict) and row.get("id")]
+            ids = [
+                str(row.get("id") or "").strip()
+                for row in data.get("data") or []
+                if isinstance(row, dict) and row.get("id")
+            ]
             ids = [i for i in ids if i]
             if not ids and self._config.static_model:
                 return [self._config.static_model]
             return ids
         except Exception:
+            logger.exception("Ошибка операции")
             return self._static_fallback()
 
     def _static_fallback(self) -> List[str]:
@@ -85,27 +92,22 @@ class VLLMProvider(OpenAICompatProvider):
         mid = (model_id or "").strip()
         if not mid:
             return False
-
         static = (self._config.static_model or "").strip()
         if static and mid == static:
             return True
-
         try:
             models = await self.list_models()
-        except Exception as e:
-            logger.warning(
-                "[%s:vLLM] list_models error: %s; падаем на static_model=%r",
-                self.id, e, static,
-            )
+        except Exception:
+            logger.exception("[:vLLM] list_models error: ; падаем на static_model=%r")
             return bool(static and mid == static)
-
         for m in models:
             if m.model_id == mid:
                 return True
-
         logger.warning(
-            "[%s:vLLM] модель %r не обслуживается этой инстанцией (static_model=%r). "
-            "vLLM не умеет hot-swap — перезапустите процесс с --model %s.",
-            self.id, mid, static, mid,
+            "[%s:vLLM] модель %r не обслуживается этой инстанцией (static_model=%r). vLLM не умеет hot-swap — перезапустите процесс с --model %s.",
+            self.id,
+            mid,
+            static,
+            mid,
         )
         return False

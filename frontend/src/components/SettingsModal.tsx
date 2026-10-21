@@ -161,9 +161,6 @@ export default function SettingsModal({ open, onClose, isDarkMode, onToggleTheme
           maxHeight: isMobile ? '100vh' : '80vh',
           borderRadius: isMobile ? 0 : 2,
           backgroundColor: theme.palette.mode === 'dark' ? '#1a1a1a' : '#ffffff',
-          // Контейнер диалога получает фокус программно: без этого вокруг окна рисовалась
-          // толстая синяя рамка focus-outline. Фокус на кнопках внутри по-прежнему виден.
-          outline: 'none',
         }
       }}
     >

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
@@ -62,8 +63,29 @@ def normalize_skill_id_list(raw: Any) -> List[str]:
     return out
 
 
+_STRUCTURAL_TAG_RE = re.compile(
+    r"<(/?)(skill|available_skills|id|name|description)(?=[\s/>]|$)",
+    re.IGNORECASE,
+)
+
+
+def _escape_attr(value: Any) -> str:
+    """Экранирование значения для атрибута/текстового поля XML-подобного промпта."""
+    return html.escape(str(value if value is not None else ""), quote=True)
+
+
+def _escape_content(content: Any) -> str:
+    """Нейтрализует структурные теги (``</skill>`` и т.п.), не ломая остальной текст."""
+    return _STRUCTURAL_TAG_RE.sub(
+        lambda m: f"&lt;{m.group(1)}{m.group(2)}", str(content or "")
+    )
+
+
 def build_full_skill_block(name: str, content: str, *, trigger: str = "manual") -> str:
-    return f'<skill name="{name}" trigger="{trigger}">\n{content or ""}\n</skill>'
+    return (
+        f'<skill name="{_escape_attr(name)}" trigger="{_escape_attr(trigger)}">\n'
+        f"{_escape_content(content)}\n</skill>"
+    )
 
 
 def build_available_skills_manifest(skills: Sequence[Any]) -> str:
@@ -75,14 +97,13 @@ def build_available_skills_manifest(skills: Sequence[Any]) -> str:
         name = getattr(s, "name", "") or ""
         desc = getattr(s, "description", None) or ""
         parts.append(
-            f"<skill>\n<id>{sid}</id>\n<name>{name}</name>\n<description>{desc}</description>\n</skill>"
+            f"<skill>\n<id>{_escape_attr(sid)}</id>\n<name>{_escape_attr(name)}</name>\n"
+            f"<description>{_escape_attr(desc)}</description>\n</skill>"
         )
     if not parts:
         return ""
     return (
-        "<available_skills>\n"
-        + "\n".join(parts)
-        + "\n</available_skills>\n"
+        "<available_skills>\n" + "\n".join(parts) + "\n</available_skills>\n"
         "Use the view_skill tool with a skill id from this manifest when you need the full instructions."
     )
 
@@ -144,8 +165,13 @@ async def resolve_and_build_skill_injection(
     if not user_id:
         return "", [], [], {"manual": [], "always_apply": []}
 
+    # set не имеет порядка: сортируем, иначе обрезка до MAX_MANUAL_SKILLS недетерминирована
+    if isinstance(user_skill_ids, (set, frozenset)):
+        user_skill_ids = sorted(user_skill_ids)
     user_ids = set(normalize_skill_id_list(list(user_skill_ids))[:MAX_MANUAL_SKILLS])
-    agent_ids = set(normalize_skill_id_list(list(agent_skill_ids))) if skills_enabled else set()
+    agent_ids = (
+        set(normalize_skill_id_list(list(agent_skill_ids))) if skills_enabled else set()
+    )
 
     try:
         from backend.database.init_db import get_skill_repository
@@ -155,20 +181,24 @@ async def resolve_and_build_skill_injection(
         logger.exception("skill repository unavailable")
         return "", [], [], {"manual": [], "always_apply": []}
 
-    always_skills = await repo.list_always_apply_skills(user_id, is_admin=is_admin, limit=MAX_ALWAYS_APPLY)
+    always_skills = await repo.list_always_apply_skills(
+        user_id, is_admin=is_admin, limit=MAX_ALWAYS_APPLY
+    )
     # If agent allowlist is non-empty, restrict always-apply to intersection
     if agent_ids:
         always_skills = [
-            s
-            for s in always_skills
-            if s.slug in agent_ids or str(s.id) in agent_ids
+            s for s in always_skills if s.slug in agent_ids or str(s.id) in agent_ids
         ]
     elif not skills_enabled and not user_ids:
         always_skills = []
 
     always_ids = {s.slug for s in always_skills}
-    all_ids = list(user_ids | agent_ids | always_ids)
-    skills = await repo.resolve_skills_for_user(all_ids, user_id, is_admin=is_admin) if all_ids else []
+    all_ids = sorted(user_ids | agent_ids | always_ids)
+    skills = (
+        await repo.resolve_skills_for_user(all_ids, user_id, is_admin=is_admin)
+        if all_ids
+        else []
+    )
     # Merge always_skills that might not be in resolve list yet
     by_slug = {s.slug: s for s in skills}
     for s in always_skills:
@@ -189,15 +219,24 @@ async def resolve_and_build_skill_injection(
     for skill in skills:
         key_ids = {str(skill.id), skill.slug}
         is_manual = bool(key_ids & user_ids) and getattr(skill, "user_invocable", True)
-        is_always = skill.slug in always_ids or bool(getattr(skill, "always_apply", False) and (not agent_ids or skill.slug in agent_ids or str(skill.id) in agent_ids))
+        is_always = skill.slug in always_ids or bool(
+            getattr(skill, "always_apply", False)
+            and (not agent_ids or skill.slug in agent_ids or str(skill.id) in agent_ids)
+        )
         is_agent = bool(key_ids & agent_ids) and skills_enabled
 
         if is_manual:
-            blocks.append(build_full_skill_block(skill.name, skill.content, trigger="manual"))
+            blocks.append(
+                build_full_skill_block(skill.name, skill.content, trigger="manual")
+            )
             primed_manual.append(skill.slug)
             primed_for_tools.append(skill)
         elif is_always:
-            blocks.append(build_full_skill_block(skill.name, skill.content, trigger="always-apply"))
+            blocks.append(
+                build_full_skill_block(
+                    skill.name, skill.content, trigger="always-apply"
+                )
+            )
             primed_always.append(skill.slug)
             primed_for_tools.append(skill)
         elif is_agent:
@@ -205,7 +244,11 @@ async def resolve_and_build_skill_injection(
                 catalog_skills.append(skill)
                 lazy_ids.append(skill.slug)
                 if eager_agent_fallback:
-                    blocks.append(build_full_skill_block(skill.name, skill.content, trigger="model"))
+                    blocks.append(
+                        build_full_skill_block(
+                            skill.name, skill.content, trigger="model"
+                        )
+                    )
                     primed_for_tools.append(skill)
 
     # Catalog from agent scope when allowlist empty but enabled: top accessible
@@ -253,12 +296,33 @@ async def apply_skills_to_chat(
     user_id = user.get("user_id")
     is_admin = bool(user.get("is_admin"))
 
-    payload_ids = normalize_skill_id_list(data.get("skill_ids") or data.get("manual_skills"))
-    from_msg = extract_skill_ids_from_text(user_message or "")
-    from_hist = extract_skill_ids_from_messages(history or [])
-    user_skill_ids = set(payload_ids) | from_msg | from_hist
+    # Mentions из сырого data.message надёжнее: rag_query/final уже могли быть очищены.
+    raw_message = ""
+    if isinstance(data, dict) and isinstance(data.get("message"), str):
+        raw_message = data.get("message") or ""
+    extract_from = raw_message or (user_message or "")
+
+    payload_ids = normalize_skill_id_list(
+        data.get("skill_ids") or data.get("manual_skills")
+    )
+    from_msg = extract_skill_ids_from_text(extract_from)
+    # history намеренно не используется: иначе выключенный в UI навык
+    # снова инжектится из старых <$slug|> в прошлых сообщениях.
+    # Источник правды — skill_ids с клиента + mentions в текущем сообщении.
+    # Детерминированный порядок: сначала payload (как пришёл), затем mentions по алфавиту
+    user_skill_ids = normalize_skill_id_list([*payload_ids, *sorted(from_msg)])
 
     skills_enabled, agent_skill_ids = resolve_agent_skill_scope(agent_profile)
+
+    logger.info(
+        "[chat-$skill] extract: payload=%s from_msg=%s "
+        "agent_skills_enabled=%s agent_allowlist=%s → user_skill_ids=%s",
+        list(payload_ids),
+        sorted(from_msg),
+        skills_enabled,
+        list(agent_skill_ids)[:20],
+        sorted(user_skill_ids),
+    )
 
     block, lazy_ids, allowed_extra, primed = await resolve_and_build_skill_injection(
         user_skill_ids=user_skill_ids,
@@ -268,6 +332,23 @@ async def apply_skills_to_chat(
         skills_enabled=skills_enabled,
         eager_agent_fallback=True,
     )
-    new_prompt = append_to_system_prompt(system_prompt, block) if block else system_prompt
+    logger.info(
+        "[chat-$skill] inject: manual=%s always=%s lazy=%s tools=%s block_chars=%s",
+        list((primed or {}).get("manual") or []),
+        list((primed or {}).get("always_apply") or []),
+        list(lazy_ids or []),
+        list(allowed_extra or []),
+        len(block or ""),
+    )
+    if not block and user_skill_ids:
+        logger.warning(
+            "[chat-$skill] навыки запрошены (%s), но в промпт ничего не попало "
+            "(нет доступа / неактивны / не найдены)",
+            sorted(user_skill_ids),
+        )
+    new_prompt = (
+        append_to_system_prompt(system_prompt, block) if block else system_prompt
+    )
     stripped = strip_skill_mentions(user_message or "")
     return new_prompt, stripped, lazy_ids, allowed_extra, primed
+

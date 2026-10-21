@@ -7,7 +7,10 @@ from app.services.rag_search_helpers import resolve_auto_pipeline_strategy
 
 class TestAutoStrategy(unittest.TestCase):
     def _resolve(self, query: str, *, graph: bool = True, hybrid: bool = True) -> str:
-        with patch.dict(os.environ, {"RAG_AUTO_MODE": "heuristic"}):
+        with patch.dict(
+            os.environ,
+            {"RAG_AUTO_MODE": "heuristic", "RAG_AUTO_PREFER_HYBRID": "0"},
+        ):
             return resolve_auto_pipeline_strategy(
                 query,
                 store="kb",
@@ -24,11 +27,15 @@ class TestAutoStrategy(unittest.TestCase):
         self.assertEqual(self._resolve("Найди код ZXQ-917"), "lexical")
 
     def test_selects_lexical_for_quoted_phrase(self):
-        self.assertEqual(self._resolve("Найди точную фразу «аварийный режим»"), "lexical")
+        self.assertEqual(
+            self._resolve("Найди точную фразу «аварийный режим»"), "lexical"
+        )
 
     def test_selects_vector_for_semantic_question(self):
         self.assertEqual(
-            self._resolve("Объясни другими словами, о чем говорится в политике отпусков"),
+            self._resolve(
+                "Объясни другими словами, о чем говорится в политике отпусков"
+            ),
             "vector",
         )
 

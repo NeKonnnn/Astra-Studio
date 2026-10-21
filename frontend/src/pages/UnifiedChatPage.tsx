@@ -99,6 +99,8 @@ import {
   isVideoGenerationModeEnabled,
 } from '../imageGeneration/selectionStorage';
 import ChatGearSkillsPanel from '../components/ChatGearSkillsPanel';
+import ChatGearKnowledgeBasesPanel from '../components/ChatGearKnowledgeBasesPanel';
+import { default as KnowledgeBaseIcon } from '../icons/KnowledgeBaseIcon';
 import VoiceChatDialog from '../components/VoiceChatDialog';
 import AgentSelector from '../components/AgentSelector';
 import ChatInputStatusCluster from '../components/ChatInputStatusCluster';
@@ -116,8 +118,10 @@ import {
 } from '../utils/ragReindexBlock';
 import { clearActiveAgent } from '../utils/clearActiveAgent';
 import { clearActiveSkills } from '../utils/skillSelectionStorage';
+import { clearActiveKnowledgeBases } from '../utils/knowledgeBaseSelectionStorage';
 import { disableChatArtifactsToolsForChat } from '../utils/artifactsSelectionStorage';
 import { useActiveSkillIndicators } from '../hooks/useActiveSkillIndicators';
+import { useActiveKnowledgeBaseIndicators } from '../hooks/useActiveKnowledgeBaseIndicators';
 import { useChatInputArtifactsIndicator } from '../hooks/useChatInputArtifactsIndicator';
 import { useChatContextUsage } from '../hooks/useChatContextUsage';
 import { useChatInputMcpIndicators } from '../mcp/hooks/useChatInputMcpIndicators';
@@ -1666,12 +1670,13 @@ export default function UnifiedChatPage({
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   /** Раскрытый подпункт меню «Инструменты» (колонка справа, как в LeChat). */
   const [gearToolsPanel, setGearToolsPanel] = useState<
-    'main' | 'agents' | 'artifacts' | 'skills' | 'mcp' | 'coding' | 'generation' | 'model-mode'
+    'main' | 'agents' | 'artifacts' | 'skills' | 'knowledge-bases' | 'mcp' | 'coding' | 'generation' | 'model-mode'
   >('main');
   const gearSubPanelOpen =
     gearToolsPanel === 'agents'
     || gearToolsPanel === 'artifacts'
     || gearToolsPanel === 'skills'
+    || gearToolsPanel === 'knowledge-bases'
     || gearToolsPanel === 'model-mode'
     || gearToolsPanel === 'mcp'
     || gearToolsPanel === 'coding'
@@ -2309,6 +2314,7 @@ export default function UnifiedChatPage({
   const activeMcpServers = useChatInputMcpIndicators(currentChat?.id);
   const artifactsIndicator = useChatInputArtifactsIndicator(currentChat?.id);
   const activeSkills = useActiveSkillIndicators(currentChat?.id);
+  const activeKnowledgeBases = useActiveKnowledgeBaseIndicators(currentChat?.id);
   const { activeMcpTools } = useMcpStreamingTools();
 
   const mcpInputSuggestions = useMemo(() => {
@@ -2512,6 +2518,11 @@ export default function UnifiedChatPage({
     showNotification('info', 'Skills отключены');
   }, [showNotification, currentChat?.id]);
 
+  const handleClearKnowledgeBases = useCallback(() => {
+    clearActiveKnowledgeBases(currentChat?.id);
+    showNotification('info', 'Базы знаний отключены');
+  }, [showNotification, currentChat?.id]);
+
   const handleClearArtifactsTools = useCallback(() => {
     if (!currentChat?.id) return;
     disableChatArtifactsToolsForChat(currentChat.id);
@@ -2531,6 +2542,10 @@ export default function UnifiedChatPage({
         onAgentToggle={myAgentSelection?.name ? handleClearMyAgent : undefined}
         activeSkills={activeSkills}
         onSkillsToggle={activeSkills.length ? handleClearSkills : undefined}
+        activeKnowledgeBases={activeKnowledgeBases}
+        onKnowledgeBasesToggle={
+          activeKnowledgeBases.length ? handleClearKnowledgeBases : undefined
+        }
         activeMcpServers={activeMcpServers}
         onMcpClick={handleOpenMcpGearPanel}
         artifactsActive={artifactsIndicator.active}
@@ -2549,6 +2564,8 @@ export default function UnifiedChatPage({
       handleClearMyAgent,
       activeSkills,
       handleClearSkills,
+      activeKnowledgeBases,
+      handleClearKnowledgeBases,
       activeMcpServers,
       handleOpenMcpGearPanel,
       artifactsIndicator.active,
@@ -2585,7 +2602,6 @@ export default function UnifiedChatPage({
                 currentChatLoading ||
                 hasActiveChatStreaming
               }
-              aria-label="Сравнение моделей"
               sx={multiLlmModeToggleIconButtonSx}
             >
               <MultiLlmModeToggleIcon isDarkMode={isDarkMode} />
@@ -4623,8 +4639,7 @@ export default function UnifiedChatPage({
                     currentChatLoading ||
                     hasActiveChatStreaming
                   }
-                  aria-label="Сравнение моделей"
-              sx={multiLlmModeToggleIconButtonSx}
+                  sx={multiLlmModeToggleIconButtonSx}
                 >
                   <MultiLlmModeToggleIcon isDarkMode={isDarkMode} />
                 </IconButton>
@@ -4673,8 +4688,7 @@ export default function UnifiedChatPage({
                     currentChatLoading ||
                     hasActiveChatStreaming
                   }
-                  aria-label="Сравнение моделей"
-              sx={multiLlmModeToggleIconButtonSx}
+                  sx={multiLlmModeToggleIconButtonSx}
                 >
                   <MultiLlmModeToggleIcon isDarkMode={isDarkMode} />
                 </IconButton>
@@ -5120,7 +5134,7 @@ export default function UnifiedChatPage({
                        gearToolsPaperHeightPx < CHAT_GEAR_MENU_PAPER_MAX_HEIGHT_PX ? 'auto' : 'hidden',
                    }
                  : { maxHeight: CHAT_GEAR_MENU_PAPER_MAX_HEIGHT, overflowY: 'auto' }),
-                ...((gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation')
+                ...((gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'knowledge-bases' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation')
                 ? CHAT_GEAR_SCROLL_AREA_NO_VISIBLE_SCROLLBAR_SX
                 : {}),
              },
@@ -5132,15 +5146,15 @@ export default function UnifiedChatPage({
              display: 'flex',
              flexDirection: 'row',
              alignItems: 'stretch',
-            gap: gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation' ? `${CHAT_GEAR_MENU_PANELS_GAP_PX}px` : 0,
+            gap: gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'knowledge-bases' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation' ? `${CHAT_GEAR_MENU_PANELS_GAP_PX}px` : 0,
              width:
-             (gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation') && gearToolsMenuWidthPx != null
+             (gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'knowledge-bases' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation') && gearToolsMenuWidthPx != null
                  ? `${gearToolsMenuWidthPx}px`
-                : gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation'
+                : gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'knowledge-bases' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation'
                    ? CHAT_GEAR_MENU_EXPANDED_WIDTH_PX
                    : CHAT_GEAR_MENU_PANEL_WIDTH_PX,
              maxWidth:
-             (gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation') && gearToolsMenuWidthPx != null
+             (gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'knowledge-bases' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation') && gearToolsMenuWidthPx != null
                  ? `${gearToolsMenuWidthPx}px`
                  : 'min(96vw, 580px)',
              minHeight: gearToolsPaperHeightPx != null ? `${gearToolsPaperHeightPx}px` : undefined,
@@ -5154,7 +5168,7 @@ export default function UnifiedChatPage({
              sx={{
                ...dropdownPanelSx,
                width:
-               gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation'
+               gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'knowledge-bases' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation'
                   ? CHAT_GEAR_MENU_LEFT_RAIL_WIDTH_PX
                   : '100%',
                flexShrink: 0,
@@ -5259,7 +5273,39 @@ export default function UnifiedChatPage({
                 }}
               />
             </Box>
-<Box
+            <Box
+              onClick={() =>
+                setGearToolsPanel((p) => (p === 'knowledge-bases' ? 'main' : 'knowledge-bases'))
+              }
+              sx={{
+                ...dropdownItemSx,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1,
+                color: isDarkMode ? 'white' : '#333',
+                bgcolor:
+                  gearToolsPanel === 'knowledge-bases'
+                    ? isDarkMode
+                      ? DROPDOWN_ITEM_HOVER_BG_DARK
+                      : DROPDOWN_ITEM_HOVER_BG_LIGHT
+                    : 'transparent',
+              }}
+            >
+              <KnowledgeBaseIcon
+                sx={{ fontSize: 18, color: isDarkMode ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.6)', flexShrink: 0 }}
+              />
+              <Typography sx={{ flex: 1, minWidth: 0, fontSize: MENU_ACTION_TEXT_SIZE, whiteSpace: 'nowrap' }}>
+                Базы знаний
+              </Typography>
+              <ChevronRightIcon
+                sx={{
+                  ...DROPDOWN_CHEVRON_SX,
+                  flexShrink: 0,
+                  transform: gearToolsPanel === 'knowledge-bases' ? 'rotate(90deg)' : 'none',
+                }}
+              />
+            </Box>
+            <Box
               onClick={() => setGearToolsPanel((p) => (p === 'mcp' ? 'main' : 'mcp'))}
               sx={{
                 ...dropdownItemSx,
@@ -5413,7 +5459,7 @@ export default function UnifiedChatPage({
                </span>
              </Tooltip>
            </Box>
-          {gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation' ? (
+          {gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'knowledge-bases' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation' ? (
              <Box
                sx={{
                  ...dropdownPanelSx,
@@ -5432,6 +5478,8 @@ export default function UnifiedChatPage({
                 <ChatGearArtifactsPanel isDarkMode={isDarkMode} chatId={currentChat?.id} />
               ) : gearToolsPanel === 'skills' ? (
                 <ChatGearSkillsPanel isDarkMode={isDarkMode} chatId={currentChat?.id} />
+              ) : gearToolsPanel === 'knowledge-bases' ? (
+                <ChatGearKnowledgeBasesPanel isDarkMode={isDarkMode} chatId={currentChat?.id} />
               ) : gearToolsPanel === 'mcp' ? (
                 <ChatGearMcpPanel isDarkMode={isDarkMode} chatId={currentChat?.id} />
               ) : gearToolsPanel === 'coding' ? (

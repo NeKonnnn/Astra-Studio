@@ -1,0 +1,79 @@
+# Конфиг только для автотестов: все внешние сервисы выключены, адреса — заглушки.
+app:
+  name: astrachat-test
+  version: "0.0.0-test"
+  debug: false
+  description: test
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  workers: 1
+  log_level: warning
+
+cors:
+  allowed_origins: ["http://localhost:3000"]
+  allow_credentials: true
+  allow_methods: ["*"]
+  allow_headers: ["*"]
+
+mongodb:
+  host: localhost
+  port: 27017
+  database: astrachat_test
+
+postgresql:
+  host: localhost
+  port: 5432
+  database: astrachat_test
+  user: test
+  password: test
+  embedding_dim: 8
+
+minio:
+  endpoint: localhost
+  port: 9000
+  access_key: test
+  secret_key: test-secret-key
+  use_ssl: false
+  bucket_name: test-bucket
+
+llm_service:
+  enabled: false
+  timeout: 5
+  retry_attempts: 1
+  retry_delay: 0
+  default_model: test-model
+  fallback_model: test-fallback
+  auto_select: false
+
+default_llm_provider: ""
+llm_providers: []
+
+mcp:
+  enabled: false
+
+plugins:
+  enabled: false
+
+microservices_enabled:
+  stt: false
+  tts: false
+  diarization: false
+  rag: false
+  rag_models: false
+  agents: false
+  minio: false
+  postgresql: false
+
+urls:
+  frontend_port: "http://localhost:3000"
+  backend_port: "http://localhost:8000"
+  ingress_port: "http://localhost:8080"
+  llm_service_port: "http://llm.test:8001"
+  rag_service_port: "http://rag.test:8011"
+  rag_models_service_port: "http://rag-models.test:8010"
+  ocr_service_port: "http://ocr.test:8002"
+  stt_service_port: "http://stt.test:8003"
+  tts_service_port: "http://tts.test:8004"
+  diarization_service_port: "http://diar.test:8005"

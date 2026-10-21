@@ -48,7 +48,11 @@ from backend.settings.logging import get_logger
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/api/image-generation", tags=["image-generation"])
+router = APIRouter(
+    prefix="/api/image-generation",
+    tags=["image-generation"],
+    dependencies=[Depends(get_current_user)],
+)
 
 
 class ImageGenStatusResponse(BaseModel):

@@ -319,6 +319,13 @@ export const AGENT_CONSTRUCTOR_FIELD_FONT_SIZE = '0.82rem';
 /** Межстрочный интервал текста в поле/триггере. */
 export const AGENT_CONSTRUCTOR_FIELD_LINE_HEIGHT = 1.43;
 
+/** Скрытый скроллбар для multiline-полей конструктора / сайдбаров. */
+export const AGENT_CONSTRUCTOR_MULTILINE_HIDE_SCROLLBAR_SX = {
+  scrollbarWidth: 'none',
+  msOverflowStyle: 'none',
+  '&::-webkit-scrollbar': { display: 'none' },
+} as const;
+
 /** Кнопка «Сохранить» в конструкторе агента. */
 export const AGENT_CONSTRUCTOR_SAVE_BUTTON_SX: SxProps<Theme> = {
   bgcolor: '#2e7d32',

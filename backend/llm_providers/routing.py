@@ -250,18 +250,12 @@ def apply_no_think_tag(
 def thinking_request_extra(enable_thinking: bool) -> Dict[str, Any]:
     """Поля запроса для включения/выключения мышления у reasoning-моделей.
 
-    UI «Быстрый» → False, «Мышление» → True.
-
-    Адаптация под memo_new_api:
-    - ``enable_thinking`` (top-level) — читает наш llm-svc / llama.cpp schemas;
-    - ``chat_template_kwargs.enable_thinking`` — vLLM/Qwen3 и внешние шлюзы
-      (как в GPB_ASTRA). Оба поля шлём сразу, чтобы работало и локально, и через registry.
+    UI «Быстрый» → False, «Мышление» → True. Способ через
+    ``chat_template_kwargs`` документирован vLLM для Qwen3.
+    Верхнеуровневый ``enable_thinking`` НЕ шлём: нестандартное поле некоторые
+    шлюзы отвергают с 422.
     """
-    flag = bool(enable_thinking)
-    return {
-        "enable_thinking": flag,
-        "chat_template_kwargs": {"enable_thinking": flag},
-    }
+    return {"chat_template_kwargs": {"enable_thinking": bool(enable_thinking)}}
 
 
 def is_thinking_requested(request_extra: Optional[Dict[str, Any]]) -> bool:

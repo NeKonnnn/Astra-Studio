@@ -50,5 +50,6 @@ class McpRegistry:
         if not srv:
             from backend.mcp.exceptions import McpServerNotFoundError
 
-            raise McpServerNotFoundError(f"MCP server '{server_id}' not found")
+            msg = f"MCP server '{server_id}' not found"
+            raise McpServerNotFoundError(msg)
         return srv

@@ -17,6 +17,7 @@ import {
   PushPinOutlined as PushPinOutlinedIcon,
 } from '@mui/icons-material';
 import SkillsNavIcon from '../../icons/SkillsIcon';
+import KnowledgeBaseIcon from '../../icons/KnowledgeBaseIcon';
 import {
   SIDEBAR_CHAT_ROW_LIST_ITEM_BUTTON_SX,
   SIDEBAR_HIDE_SCROLLBAR_SX,
@@ -36,13 +37,16 @@ import {
 } from '../../constants/sidebarRailIcons';
 import {
   ASTRA_OPEN_AGENT_CONSTRUCTOR,
+  ASTRA_OPEN_KNOWLEDGE_BASES_SIDEBAR,
   ASTRA_OPEN_SKILLS_SIDEBAR,
   ASTRA_OPEN_TRANSCRIPTION_SIDEBAR,
 } from '../../constants/hotkeys';
 import { usePendingAgentConstructorOpen } from '../../hooks/usePendingAgentConstructorOpen';
+import { usePendingKnowledgeBaseSidebarOpen } from '../../hooks/usePendingKnowledgeBaseSidebarOpen';
 import { usePendingSkillSidebarOpen } from '../../hooks/usePendingSkillSidebarOpen';
 import AgentConstructorPanel from './AgentConstructorPanel';
 import GalleryNavButton from './GalleryNavButton';
+import KnowledgeBasesSidebarPanel from './KnowledgeBasesSidebarPanel';
 import SkillsSidebarPanel from './SkillsSidebarPanel';
 import SidebarRailMenuGlyph from '../../icons/SidebarRailMenuGlyph';
 import TranscriptionSidebarSection from './TranscriptionSidebarSection';
@@ -87,6 +91,7 @@ export default function RightBar({
   );
   const [transcriptionMenuOpen, setTranscriptionMenuOpen] = useState(false);
   const [skillsPanelOpen, setSkillsPanelOpen] = useState(false);
+  const [knowledgeBasesPanelOpen, setKnowledgeBasesPanelOpen] = useState(false);
   const [agentConstructorOpen, setAgentConstructorOpen] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
 
@@ -112,7 +117,18 @@ export default function RightBar({
       setHidden(false);
       setOpen(true);
       setSkillsPanelOpen(false);
+      setKnowledgeBasesPanelOpen(false);
       setAgentConstructorOpen(true);
+    });
+  }, [setHidden, setOpen]);
+
+  const openKnowledgeBasesSidebar = useCallback(() => {
+    startTransition(() => {
+      setHidden(false);
+      setOpen(true);
+      setSkillsPanelOpen(false);
+      setAgentConstructorOpen(false);
+      setKnowledgeBasesPanelOpen(true);
     });
   }, [setHidden, setOpen]);
 
@@ -121,16 +137,19 @@ export default function RightBar({
       setHidden(false);
       setOpen(true);
       setAgentConstructorOpen(false);
+      setKnowledgeBasesPanelOpen(false);
       setSkillsPanelOpen(true);
     });
   }, [setHidden, setOpen]);
 
   usePendingAgentConstructorOpen(openConstructorSidebar);
   usePendingSkillSidebarOpen(openSkillsSidebar);
+  usePendingKnowledgeBaseSidebarOpen(openKnowledgeBasesSidebar);
 
   useEffect(() => {
     const onAgent = () => openConstructorSidebar();
     const onSkills = () => openSkillsSidebar();
+    const onKnowledgeBases = () => openKnowledgeBasesSidebar();
     const onTranscription = () => {
       startTransition(() => {
         setHidden(false);
@@ -140,13 +159,15 @@ export default function RightBar({
     };
     window.addEventListener(ASTRA_OPEN_AGENT_CONSTRUCTOR, onAgent);
     window.addEventListener(ASTRA_OPEN_SKILLS_SIDEBAR, onSkills);
+    window.addEventListener(ASTRA_OPEN_KNOWLEDGE_BASES_SIDEBAR, onKnowledgeBases);
     window.addEventListener(ASTRA_OPEN_TRANSCRIPTION_SIDEBAR, onTranscription);
     return () => {
       window.removeEventListener(ASTRA_OPEN_AGENT_CONSTRUCTOR, onAgent);
       window.removeEventListener(ASTRA_OPEN_SKILLS_SIDEBAR, onSkills);
+      window.removeEventListener(ASTRA_OPEN_KNOWLEDGE_BASES_SIDEBAR, onKnowledgeBases);
       window.removeEventListener(ASTRA_OPEN_TRANSCRIPTION_SIDEBAR, onTranscription);
     };
-  }, [openConstructorSidebar, openSkillsSidebar, setHidden, setOpen]);
+  }, [openConstructorSidebar, openSkillsSidebar, openKnowledgeBasesSidebar, setHidden, setOpen]);
 
   const panelIsLight = isSidebarPanelLight(panelBg);
 
@@ -271,12 +292,26 @@ export default function RightBar({
                   </Tooltip>
                 </ListItem>
                 <ListItem disablePadding sx={{ mb: 0.5, display: 'block' }}>
+                  <Tooltip title="Базы знаний" placement="left">
+                    <Box component="span" sx={{ display: 'flex', width: '100%', justifyContent: 'center' }}>
+                      <ListItemButton
+                        onClick={openKnowledgeBasesSidebar}
+                        selected={knowledgeBasesPanelOpen}
+                        sx={getSidebarRailCollapsedListItemButtonSx(panelIsLight)}
+                      >
+                        <KnowledgeBaseIcon sx={SIDEBAR_LIST_ICON_SX} />
+                      </ListItemButton>
+                    </Box>
+                  </Tooltip>
+                </ListItem>
+                <ListItem disablePadding sx={{ mb: 0.5, display: 'block' }}>
                   <Tooltip title="Конструктор агента" placement="left">
                     <Box component="span" sx={{ display: 'flex', width: '100%', justifyContent: 'center' }}>
                       <ListItemButton
                         onClick={() => {
                           setOpen(true);
                           setSkillsPanelOpen(false);
+                          setKnowledgeBasesPanelOpen(false);
                           setAgentConstructorOpen(true);
                         }}
                         sx={getSidebarRailCollapsedListItemButtonSx(panelIsLight)}
@@ -433,7 +468,10 @@ export default function RightBar({
                     onClick={() => {
                       setSkillsPanelOpen((prev) => {
                         const next = !prev;
-                        if (next) setAgentConstructorOpen(false);
+                        if (next) {
+                          setAgentConstructorOpen(false);
+                          setKnowledgeBasesPanelOpen(false);
+                        }
                         return next;
                       });
                     }}
@@ -466,6 +504,49 @@ export default function RightBar({
                     />
                   </ListItemButton>
                 </ListItem>
+                <ListItem disablePadding sx={{ mb: 0.5 }}>
+                  <ListItemButton
+                    onClick={() => {
+                      setKnowledgeBasesPanelOpen((prev) => {
+                        const next = !prev;
+                        if (next) {
+                          setSkillsPanelOpen(false);
+                          setAgentConstructorOpen(false);
+                        }
+                        return next;
+                      });
+                    }}
+                    sx={{
+                      ...SIDEBAR_CHAT_ROW_LIST_ITEM_BUTTON_SX,
+                      color: 'white',
+                      backgroundColor: knowledgeBasesPanelOpen
+                        ? 'rgba(255,255,255,0.15)'
+                        : 'transparent',
+                      '&:hover': {
+                        backgroundColor: knowledgeBasesPanelOpen
+                          ? 'rgba(255,255,255,0.2)'
+                          : 'rgba(255,255,255,0.08)',
+                      },
+                    }}
+                  >
+                    <ListItemIcon
+                      sx={{
+                        color: '#ffffff',
+                        minWidth: 40,
+                        mr: `${SIDEBAR_LIST_ICON_TO_TEXT_GAP_PX}px`,
+                        '& .MuiSvgIcon-root': { fontSize: '1.375rem' },
+                      }}
+                    >
+                      <KnowledgeBaseIcon />
+                    </ListItemIcon>
+                    <ListItemText
+                      primary="Базы знаний"
+                      primaryTypographyProps={{
+                        sx: { fontSize: '0.8rem', fontWeight: 400, color: '#ffffff' },
+                      }}
+                    />
+                  </ListItemButton>
+                </ListItem>
               </List>
               {skillsPanelOpen && (
                 <Box
@@ -481,13 +562,30 @@ export default function RightBar({
                   <SkillsSidebarPanel isOpen={true} />
                 </Box>
               )}
+              {knowledgeBasesPanelOpen && (
+                <Box
+                  sx={{
+                    flex: 1,
+                    minHeight: 0,
+                    overflow: 'hidden',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    borderTop: '1px solid rgba(255,255,255,0.08)',
+                  }}
+                >
+                  <KnowledgeBasesSidebarPanel isOpen={true} />
+                </Box>
+              )}
               <List sx={{ py: 0, px: open ? 1 : 0.5 }}>
                 <ListItem disablePadding sx={{ mb: 0.5 }}>
                   <ListItemButton
                     onClick={() => {
                       setAgentConstructorOpen((prev) => {
                         const next = !prev;
-                        if (next) setSkillsPanelOpen(false);
+                        if (next) {
+                          setSkillsPanelOpen(false);
+                          setKnowledgeBasesPanelOpen(false);
+                        }
                         return next;
                       });
                     }}

@@ -27,6 +27,7 @@ import {
   Article as ArticleIcon,
   Close as CloseIcon,
   LibraryBooks as LibraryIcon,
+  Image as ImageIcon,
 } from '@mui/icons-material';
 import { getApiUrl, API_ENDPOINTS, getAuthFetchHeaders } from '../config/api';
 import { useAppActions } from '../contexts/AppContext';
@@ -37,10 +38,13 @@ import RagUploadingFileThumb from './RagUploadingFileThumb';
 import {
   commitRagUploadUiUpdate,
   createRagPendingUploads,
+  formatRagApiDetail,
   getRagFileTypeLabel,
   mapWithConcurrency,
   mergeRagDocumentsById,
+  parseRagDuplicateUploadMessage,
   parseRagUploadDocumentId,
+  ragWarningAlertSx,
   removeRagPendingUploads,
   RAG_UPLOAD_CONCURRENCY,
   type RagPendingUpload,
@@ -67,6 +71,7 @@ function getFileIcon(filename: string) {
   if (['xlsx', 'xls', 'csv'].includes(ext)) return <ExcelIcon sx={{ color: '#43a047' }} />;
   if (ext === 'txt') return <TxtIcon sx={{ color: '#1e88e5' }} />;
   if (['docx', 'doc'].includes(ext)) return <ArticleIcon sx={{ color: '#1565c0' }} />;
+  if(['jpg', 'jpeg', 'png', 'webp','bmp'].includes(ext)) return <ImageIcon sx={{ color: '#8e24aa' }} />;
   return <DocumentIcon sx={{ color: '#7b1fa2' }} />;
 }
 
@@ -76,10 +81,35 @@ interface Props {
 }
 
 async function fetchDocumentList(): Promise<MemoryRagDoc[]> {
-  const resp = await fetch(getApiUrl(API_ENDPOINTS.MEMORY_RAG_LIST));
+  const { ensurePersonalLibraryKbId } = await import('../utils/personalLibraryKb');
+  const kbId = await ensurePersonalLibraryKbId();
+  if (kbId == null) return [];
+  const resp = await fetch(getApiUrl(API_ENDPOINTS.KB_DOCUMENTS_LIST), {
+    headers: getAuthFetchHeaders(),
+  });
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   const data = await resp.json();
-  return data.documents || [];
+  const rows: unknown[] = Array.isArray(data) ? data : data.documents || [];
+  return rows
+    .map((row) => {
+      const r = row as Record<string, unknown>;
+      const meta = (r.metadata && typeof r.metadata === 'object'
+        ? (r.metadata as Record<string, unknown>)
+        : {}) as Record<string, unknown>;
+      try {
+        if (Number(meta.knowledge_base_id ?? r.knowledge_base_id) !== kbId) return null;
+      } catch {
+        return null;
+      }
+      return {
+        id: Number(r.id),
+        filename: String(r.filename || ''),
+        created_at: (r.created_at as string | null) ?? null,
+        size: (r.size as number | null) ?? null,
+        file_type: (r.file_type as string | null) ?? null,
+      } as MemoryRagDoc;
+    })
+    .filter((d): d is MemoryRagDoc => d != null && Number.isFinite(d.id));
 }
 
 export default function MemoryRagLibraryModal({ open, onClose }: Props) {
@@ -90,7 +120,7 @@ export default function MemoryRagLibraryModal({ open, onClose }: Props) {
   const [fileSearchQuery, setFileSearchQuery] = useState('');
   const [banner, setBanner] = useState<{
     message: string;
-    severity: 'success' | 'error' | 'info';
+    severity: 'success' | 'error' | 'info' | 'warning';
   } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { showNotification } = useAppActions();
@@ -143,7 +173,7 @@ export default function MemoryRagLibraryModal({ open, onClose }: Props) {
     }
   };
 
-  const allowed = ['.pdf', '.docx', '.doc', '.docm', '.xlsx', '.xls', '.xlsm', '.txt', '.csv', '.md', '.log', '.rtf'];
+  const allowed = ['.pdf', '.docx', '.doc', '.docm', '.xlsx', '.xls', '.xlsm', '.ppt', '.pptx', '.txt', '.csv', '.md', '.log', '.rtf', '.jpg', '.jpeg', '.png', '.webp', '.bmp'];
 
   const uploadFiles = async (files: FileList) => {
     if (!files.length) return;
@@ -153,12 +183,27 @@ export default function MemoryRagLibraryModal({ open, onClose }: Props) {
     });
     if (!valid.length) {
       setBanner({
-        message: 'Допустимы: PDF, DOC/DOCX/DOCM, XLS/XLSX/XLSM, TXT, MD, CSV, LOG, RTF',
+        message: 'Допустимы: PDF, DOC/DOCX/DOCM, XLS/XLSX/XLSM, PPT/PPTX, TXT, MD, CSV, LOG, RTF, JPG, JPEG, PNG, WEBP, BMP (OCR)',
         severity: 'error',
       });
       return;
     }
+
     const pendingEntries = createRagPendingUploads(valid);
+    const dropPending = (ids: string[]) => {
+      setPendingUploads((prev) => removeRagPendingUploads(prev, ids));
+    };
+
+    const { ensurePersonalLibraryKbId } = await import('../utils/personalLibraryKb');
+    const kbId = await ensurePersonalLibraryKbId();
+    if (kbId == null) {
+      dropPending(pendingEntries.map((entry) => entry.clientId));
+      setBanner({
+        message: 'Не удалось подготовить личную базу знаний',
+        severity: 'error',
+      });
+      return;
+    }
 
     setUploading(true);
     setBanner(null);
@@ -166,6 +211,8 @@ export default function MemoryRagLibraryModal({ open, onClose }: Props) {
 
     let stopRemaining = false;
     let successCount = 0;
+    let duplicateCount = 0;
+    let lastDuplicateMsg: string | null = null;
 
     await mapWithConcurrency(valid, RAG_UPLOAD_CONCURRENCY, async (file, index) => {
       if (stopRemaining) {
@@ -182,14 +229,27 @@ export default function MemoryRagLibraryModal({ open, onClose }: Props) {
       try {
         const fd = new FormData();
         fd.append('file', file);
-        const resp = await fetch(getApiUrl(API_ENDPOINTS.MEMORY_RAG_UPLOAD), {
+        fd.append('knowledge_base_id', String(kbId));
+        const resp = await fetch(getApiUrl(API_ENDPOINTS.KB_DOCUMENTS_UPLOAD), {
           method: 'POST',
           headers: getAuthFetchHeaders(),
           body: fd,
         });
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-          throw new Error(typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail));
+          const duplicateMsg = parseRagDuplicateUploadMessage(resp.status, err, file.name);
+          if (duplicateMsg) {
+            duplicateCount += 1;
+            lastDuplicateMsg = duplicateMsg;
+            setBanner({ message: duplicateMsg, severity: 'warning' });
+            if (pendingId) {
+              commitRagUploadUiUpdate(() => {
+                setPendingUploads((prev) => removeRagPendingUploads(prev, [pendingId]));
+              });
+            }
+            return;
+          }
+          throw new Error(formatRagApiDetail(err.detail, resp.statusText));
         }
         const data = (await resp.json().catch(() => ({}))) as Record<string, unknown>;
         const docId = parseRagUploadDocumentId(data);
@@ -248,10 +308,19 @@ export default function MemoryRagLibraryModal({ open, onClose }: Props) {
       });
       return;
     }
-    setBanner({
-      message: `Загружено файлов: ${successCount || valid.length}. Исходники сохранены в хранилище, текст проиндексирован в PostgreSQL (pgvector).`,
-      severity: 'success',
-    });
+    if (successCount > 0 && duplicateCount > 0) {
+      setBanner({
+        message: `Загружено: ${successCount}. Пропущено дубликатов: ${duplicateCount}.`,
+        severity: 'warning',
+      });
+    } else if (successCount > 0) {
+      setBanner({
+        message: `Загружено файлов: ${successCount}. Исходники сохранены в хранилище, текст проиндексирован в PostgreSQL (pgvector).`,
+        severity: 'success',
+      });
+    } else if (lastDuplicateMsg) {
+      setBanner({ message: lastDuplicateMsg, severity: 'warning' });
+    }
     void fetchDocumentList()
       .then((fresh) => {
         setDocuments((prev) => mergeRagDocumentsById(prev, fresh));
@@ -261,7 +330,7 @@ export default function MemoryRagLibraryModal({ open, onClose }: Props) {
 
   const handleDelete = async (doc: MemoryRagDoc) => {
     try {
-      const url = `${getApiUrl(API_ENDPOINTS.MEMORY_RAG_DELETE)}/${doc.id}`;
+      const url = `${getApiUrl(API_ENDPOINTS.KB_DOCUMENTS_DELETE)}/${doc.id}`;
       const resp = await fetch(url, { method: 'DELETE' });
       if (!resp.ok) {
         // Текст из detail объясняет причину («хранилище недоступно»),
@@ -308,7 +377,11 @@ export default function MemoryRagLibraryModal({ open, onClose }: Props) {
       </DialogTitle>
       <DialogContent dividers>
         {banner && (
-          <Alert severity={banner.severity} onClose={() => setBanner(null)} sx={{ mb: 2 }}>
+          <Alert
+            severity={banner.severity}
+            onClose={() => setBanner(null)}
+            sx={banner.severity === 'warning' ? ragWarningAlertSx : { mb: 2 }}
+          >
             {banner.message}
           </Alert>
         )}
@@ -333,7 +406,7 @@ export default function MemoryRagLibraryModal({ open, onClose }: Props) {
             type="file"
             multiple
             hidden
-            accept=".pdf,.doc,.docx,.docm,.xls,.xlsx,.xlsm,.txt,.md,.log,.csv,.rtf"
+            accept=".pdf,.doc,.docx,.docm,.xls,.xlsx,.xlsm,.ppt,.pptx,.txt,.md,.log,.csv,.rtf,.jpg,.jpeg,.png,.webp,.bmp"
             onChange={(e) => {
               if (e.target.files?.length) uploadFiles(e.target.files);
               e.target.value = '';

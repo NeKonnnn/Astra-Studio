@@ -42,6 +42,7 @@ class RagModelsClient:
         env_timeout = os.getenv("RAG_MODELS_HTTP_TIMEOUT", "").strip()
         self.timeout = float(env_timeout) if env_timeout else timeout
 
+
     async def _request(
         self,
         method: str,

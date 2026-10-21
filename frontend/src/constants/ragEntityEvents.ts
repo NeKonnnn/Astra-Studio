@@ -1,7 +1,7 @@
 export const ASTRA_RAG_ENTITY_SETTINGS_APPLIED = 'astrachat:rag-entity-settings-applied';
 
 export interface RagEntitySettingsAppliedDetail {
-  scope: 'agent' | 'project';
+  scope: 'agent' | 'project' | 'kb';
   entityId: string | number;
   entityName?: string;
 }

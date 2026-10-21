@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextvars
 import json
 import os
 import re
@@ -17,6 +18,7 @@ from backend.settings.logging import get_logger
 
 logger = get_logger(__name__)
 
+
 @dataclass
 class ProcessedQuery:
     original: str
@@ -26,6 +28,7 @@ class ProcessedQuery:
     multi_variants: Optional[List[str]]
     filters: Optional[Dict[str, Any]]
 
+
 def _cut(text: Optional[str], limit: int = 300) -> str:
     """Текст для лога: одной строкой и без простыней.
 
@@ -34,6 +37,7 @@ def _cut(text: Optional[str], limit: int = 300) -> str:
     """
     s = " ".join(str(text or "").split())
     return s if len(s) <= limit else f"{s[:limit]}…(+{len(s) - limit} симв.)"
+
 
 def _hyde_max_chars() -> int:
     try:
@@ -73,6 +77,10 @@ async def _llm_short(prompt: str, system: str, max_tokens: int = 512) -> str:
     from backend.llm_providers.routing import is_llm_error_text
 
     loop = asyncio.get_running_loop()
+    # Модель этого чата, см. llm_judge.py: читаем до потока.
+    from backend.settings.cef_logger.cef_audit_context import chat_model_peek
+
+    _model_path = chat_model_peek()
 
     def _call() -> str:
         return ask_agent(
@@ -80,6 +88,7 @@ async def _llm_short(prompt: str, system: str, max_tokens: int = 512) -> str:
             history=[],
             streaming=False,
             system_prompt=system,
+            model_path=_model_path,
             max_tokens=max_tokens,
             service_call=True,
         )
@@ -94,8 +103,207 @@ async def _llm_short(prompt: str, system: str, max_tokens: int = 512) -> str:
         return ""
     return raw or ""
 
+
+# Предыдущий вопрос пользователя. Контекстом, а не аргументом: до
+# process_user_query путь идёт через три метода RagClient, и протаскивать
+# историю через все сигнатуры - большая правка ради одной строки.
+_prev_user_question: contextvars.ContextVar = contextvars.ContextVar(
+    "rag_prev_user_question", default=None
+)
+
+# Длинный «предыдущий вопрос» размоет эмбеддинг сильнее, чем поможет.
+_PREV_QUESTION_MAX_CHARS = 300
+
+# Слова, которыми вопрос ссылается на сказанное раньше: предмет остался в
+# предыдущей реплике. Сравниваем ЦЕЛИКОМ со словом, а не подстрокой: «нее»
+# входит в «подробнее», и подстрочная проверка ловила обычные вопросы.
+_FOLLOWUP_HINT_WORDS = frozenset(
+    (
+        "там",
+        "тут",
+        "туда",
+        "оттуда",
+        "него",
+        "нему",
+        "ним",
+        "неё",
+        "нее",
+        "ней",
+        "них",
+        "этом",
+        "этой",
+        "этого",
+        "этот",
+        "эту",
+        "эти",
+        "тогда",
+        "теперь",
+    )
+)
+
+# Эти из двух слов, внутрь слова не попадут - ищем подстрокой.
+_FOLLOWUP_HINT_PHRASES = ("в нем", "в нём", "а еще", "а ещё", "а также")
+
+# Короткий вопрос почти всегда опирается на предыдущий: «посмотри в файле
+# smeta.xlsx» - четыре слова, и предмета в них нет.
+_FOLLOWUP_MAX_WORDS = 6
+
+
+def _contextualize_enabled() -> bool:
+    """RAG_QUERY_CONTEXTUALIZE=0 - не дополнять вектор предыдущим вопросом."""
+    raw = (os.getenv("RAG_QUERY_CONTEXTUALIZE", "1") or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def set_rag_dialog_context(
+    history: Optional[List[Dict[str, Any]]],
+    current: Optional[str] = None,
+) -> None:
+    """Запомнить предыдущий вопрос пользователя для дополнения запроса.
+
+    Вызывать на КАЖДОМ сообщении, в том числе с пустой историей: иначе
+    значение от прошлого запроса утечёт в следующий.
+
+    current - текст текущего сообщения. На момент вызова история его ещё не
+    содержит, но если порядок когда-нибудь поменяют, запрос не должен
+    склеиться сам с собой.
+    """
+    now = " ".join(str(current or "").split())
+    prev = ""
+    for msg in reversed(list(history or [])):
+        if not isinstance(msg, dict):
+            continue
+        if str(msg.get("role") or "").strip().lower() != "user":
+            continue
+        text = " ".join(str(msg.get("content") or "").split())
+        if not text or (now and text == now):
+            continue
+        prev = text
+        break
+    _prev_user_question.set(prev[:_PREV_QUESTION_MAX_CHARS] or None)
+    # Реплики для переписывания запроса моделью. В отличие от склейки берём
+    # и ответы ассистента: предмет часто назван именно в них («в файле
+    # smeta.xlsx есть раздел с итогами»).
+    turns: List[str] = []
+    for msg in list(history or [])[-_REWRITE_MAX_TURNS * 2 :]:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "").strip().lower()
+        if role not in ("user", "assistant"):
+            continue
+        text = " ".join(str(msg.get("content") or "").split())
+        if not text:
+            continue
+        who = "Пользователь" if role == "user" else "Ассистент"
+        turns.append(f"{who}: {text[:_REWRITE_TURN_MAX_CHARS]}")
+    _dialog_turns.set(turns or None)
+    # Кэш переписывания - свой на каждое сообщение: три источника (проект,
+    # KB, память) переписывают один и тот же вопрос, вызов нужен один.
+    _rewritten_query.set(None)
+
+
+def looks_like_followup(text: str) -> bool:
+    """Вопрос выглядит продолжением разговора, а не самостоятельным."""
+    t = " ".join(str(text or "").split()).lower()
+    if not t:
+        return False
+    if len(t.split()) <= _FOLLOWUP_MAX_WORDS:
+        return True
+    words = re.findall(r"[^\W\d_]+", t, flags=re.UNICODE)
+    if any(w in _FOLLOWUP_HINT_WORDS for w in words):
+        return True
+    return any(phrase in t for phrase in _FOLLOWUP_HINT_PHRASES)
+
+
+# Хвост разговора для переписывания: пар «вопрос-ответ».
+_REWRITE_MAX_TURNS = 4
+_REWRITE_TURN_MAX_CHARS = 400
+
+# Реплики диалога и кэш переписывания - оба на время одного сообщения.
+_dialog_turns: contextvars.ContextVar = contextvars.ContextVar(
+    "rag_dialog_turns", default=None
+)
+_rewritten_query: contextvars.ContextVar = contextvars.ContextVar(
+    "rag_rewritten_query", default=None
+)
+
+
+def _rewrite_enabled() -> bool:
+    """RAG_QUERY_REWRITE=0 - не переписывать запрос моделью.
+
+    Отдельно от RAG_QUERY_CONTEXTUALIZE: тот выключает бесплатную склейку,
+    этот - только вызовы модели.
+    """
+    raw = (os.getenv("RAG_QUERY_REWRITE", "1") or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+async def rewrite_query_with_context(query: str) -> Optional[str]:
+    """Переписать вопрос по истории - когда поиск ничего не нашёл.
+
+    Зовётся ПОСЛЕ неудачного поиска, а не до него: вызов модели тратится
+    только там, где дешёвая склейка не помогла, а не на каждом коротком
+    вопросе.
+
+    Результат кэшируется на сообщение: источников три (проект, KB, память),
+    вопрос у них один, вызов нужен один. Неудача тоже кэшируется - второй
+    раз модель не дёргаем.
+
+    None - переписывать нечем, выключено или не получилось.
+    """
+    if not _rewrite_enabled():
+        return None
+    cached = _rewritten_query.get()
+    if cached is not None:
+        return cached or None
+
+    turns = _dialog_turns.get()
+    original = " ".join(str(query or "").split())
+    if not turns or not original:
+        return None
+
+    rewritten = await _llm_short(
+        "Перепиши последний вопрос так, чтобы он был понятен без переписки: "
+        "подставь в него предмет из предыдущих сообщений. Не отвечай на вопрос "
+        "и не добавляй ничего от себя. Сохрани язык, термины и имена файлов "
+        "автора. Верни только вопрос, одной строкой.\
+\
+Переписка:\
+" + "\
+".join(turns) + f"\
+\
+Последний вопрос: {original}",
+        "Ты переписываешь поисковые запросы. Отвечай только текстом запроса.",
+        max_tokens=200,
+    )
+
+    candidate = " ".join(str(rewritten or "").split())
+    # Ответ в разы длиннее вопроса - модель не переписала, а ответила.
+    if candidate and len(candidate) > max(200, len(original) * 6):
+        logger.debug(
+            "[RAG-PREP] переписывание: ответ слишком длинный, пропускаем: %s",
+            _cut(candidate, 160),
+        )
+        candidate = ""
+    if not candidate or candidate == original:
+        _rewritten_query.set("")
+        return None
+
+    _rewritten_query.set(candidate)
+    logger.debug(
+        "[RAG-PREP] переписали запрос по истории: %r -> %r",
+        _cut(original),
+        _cut(candidate),
+    )
+    return candidate
+
+
 async def process_user_query(
-    user_text: str, *, fix_typos: bool = False, multi_query: bool = False, hyde: bool = False
+    user_text: str,
+    *,
+    fix_typos: bool = False,
+    multi_query: bool = False,
+    hyde: bool = False,
 ) -> ProcessedQuery:
     original = user_text or ""
     normalized = normalize_query(original)
@@ -170,12 +378,16 @@ async def process_user_query(
                 data = json.loads(m.group())
                 vars_ = data.get("variants") or []
                 if isinstance(vars_, list) and vars_:
-                    multi_variants = [str(x).strip() for x in vars_[:6] if str(x).strip()]
+                    multi_variants = [
+                        str(x).strip() for x in vars_[:6] if str(x).strip()
+                    ]
             if multi_variants:
                 logger.debug(
                     "[RAG-PREP] multi-query придумал %s вариантов:\n%s",
                     len(multi_variants),
-                    "\n".join(f"    {i}. {_cut(v)}" for i, v in enumerate(multi_variants, 1)),
+                    "\n".join(
+                        f"    {i}. {_cut(v)}" for i, v in enumerate(multi_variants, 1)
+                    ),
                 )
             else:
                 logger.debug(
@@ -214,6 +426,19 @@ async def process_user_query(
             logger.exception("RAG_HYDE_ENABLED")
     if filters:
         logger.debug("[RAG-PREP] фильтры из запроса: %s", filters)
+
+    # Дешёвая склейка с предыдущим вопросом для follow-up (без вызова модели).
+    prev = _prev_user_question.get()
+    if _contextualize_enabled() and prev and looks_like_followup(q):
+        if vector_query:
+            vector_query = f"{prev}\n{vector_query}"
+        else:
+            vector_query = f"{prev}\n{q}"
+        logger.debug(
+            "[RAG-PREP] follow-up: вектор дополнен предыдущим вопросом: %r",
+            _cut(vector_query),
+        )
+
     logger.debug(
         "[RAG-PREP] итог препроцесса: fix_typos=%s, multi_query=%s (вариантов=%s), "
         "HyDE(vector_query=%s), filters=%s, query_for_search=%r",

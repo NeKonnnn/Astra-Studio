@@ -4,12 +4,17 @@ routes/model_comparison.py - независимые настройки срав�
 
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from backend.app_state import get_model_comparison_models, set_model_comparison_models
+from backend.auth.jwt_handler import get_current_user
 from backend.schemas import ModelComparisonModelsRequest
 
-router = APIRouter(prefix="/api/model-comparison", tags=["model-comparison"])
+router = APIRouter(
+    prefix="/api/model-comparison",
+    tags=["model-comparison"],
+    dependencies=[Depends(get_current_user)],
+)
 
 
 @router.get("/models")

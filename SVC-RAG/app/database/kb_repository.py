@@ -36,7 +36,13 @@ class KbDocumentRepository:
                     updated_at TIMESTAMP DEFAULT NOW()
                 )
             """)
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_kb_documents_filename ON kb_documents(filename)")
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_kb_documents_filename ON kb_documents(filename)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_kb_documents_content_hash "
+                "ON kb_documents ((metadata->>'content_hash'))"
+            )
         logger.info("Таблица kb_documents готова")
 
     async def create_document(self, document: Document) -> Optional[int]:
@@ -77,6 +83,106 @@ class KbDocumentRepository:
                 request_uuid=fn,
             )
             raise
+
+    async def find_duplicate(
+        self,
+        *,
+        content_hash: Optional[str] = None,
+        filename: Optional[str] = None,
+        size: Optional[int] = None,
+        agent_id: Optional[int] = None,
+        knowledge_base_id: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Найти дубликат в scope базы знаний / агента (или «общие» KB).
+
+        Приоритет: metadata.content_hash; для старых документов без hash -
+        точное имя файла + size.
+        """
+        digest = (content_hash or "").strip().lower()
+        name = (filename or "").strip()
+        size_s = str(int(size)) if size is not None else None
+        if not digest and not (name and size_s is not None):
+            return None
+
+        async with await self.db.acquire() as conn:
+            if knowledge_base_id is not None:
+                row = await conn.fetchrow(
+                    """
+                    SELECT id, filename FROM kb_documents
+                    WHERE (
+                        ($1::text <> '' AND LOWER(COALESCE(metadata->>'content_hash', '')) = $1)
+                        OR (
+                            $2::text <> '' AND $3::text IS NOT NULL
+                            AND (metadata->>'content_hash' IS NULL
+                                 OR TRIM(COALESCE(metadata->>'content_hash', '')) = '')
+                            AND LOWER(filename) = LOWER($2)
+                            AND COALESCE(metadata->>'size', '') = $3
+                        )
+                    )
+                    AND COALESCE((metadata->>'knowledge_base_id')::int, -1) = $4
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    digest,
+                    name,
+                    size_s,
+                    int(knowledge_base_id),
+                )
+            elif agent_id is not None:
+                row = await conn.fetchrow(
+                    """
+                    SELECT id, filename FROM kb_documents
+                    WHERE (
+                        ($1::text <> '' AND LOWER(COALESCE(metadata->>'content_hash', '')) = $1)
+                        OR (
+                            $2::text <> '' AND $3::text IS NOT NULL
+                            AND (metadata->>'content_hash' IS NULL
+                                 OR TRIM(COALESCE(metadata->>'content_hash', '')) = '')
+                            AND LOWER(filename) = LOWER($2)
+                            AND COALESCE(metadata->>'size', '') = $3
+                        )
+                    )
+                    AND COALESCE((metadata->>'agent_id')::int, -1) = $4
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    digest,
+                    name,
+                    size_s,
+                    int(agent_id),
+                )
+            else:
+                row = await conn.fetchrow(
+                    """
+                    SELECT id, filename FROM kb_documents
+                    WHERE (
+                        ($1::text <> '' AND LOWER(COALESCE(metadata->>'content_hash', '')) = $1)
+                        OR (
+                            $2::text <> '' AND $3::text IS NOT NULL
+                            AND (metadata->>'content_hash' IS NULL
+                                 OR TRIM(COALESCE(metadata->>'content_hash', '')) = '')
+                            AND LOWER(filename) = LOWER($2)
+                            AND COALESCE(metadata->>'size', '') = $3
+                        )
+                    )
+                    AND (
+                        metadata->>'agent_id' IS NULL
+                        OR TRIM(COALESCE(metadata->>'agent_id', '')) = ''
+                    )
+                    AND (
+                        metadata->>'knowledge_base_id' IS NULL
+                        OR TRIM(COALESCE(metadata->>'knowledge_base_id', '')) = ''
+                    )
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    digest,
+                    name,
+                    size_s,
+                )
+        if not row:
+            return None
+        return {"id": int(row["id"]), "filename": row["filename"]}
 
     async def get_document(self, document_id: int) -> Optional[Document]:
         async with await self.db.acquire() as conn:
@@ -121,7 +227,7 @@ class KbDocumentRepository:
     async def get_all_documents(self) -> List[Document]:
         async with await self.db.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT id, filename, content, metadata, created_at, updated_at FROM kb_documents ORDER BY created_at DESC"
+                "SELECT id, filename, metadata, created_at, updated_at FROM kb_documents ORDER BY created_at DESC"
             )
         out = []
         for row in rows:
@@ -132,12 +238,57 @@ class KbDocumentRepository:
                 Document(
                     id=row["id"],
                     filename=row["filename"],
-                    content=row["content"],
+                    content=None,  # текст здесь не нужен, см. Document.content
                     metadata=meta or {},
                     created_at=row["created_at"],
                     updated_at=row["updated_at"],
                 )
             )
+        return out
+
+    async def list_documents_brief(self) -> List[Dict[str, Any]]:
+        """Список документов для интерфейса - без разбора метаданных.
+
+        Фронт опрашивает список раз в десять секунд. Наверху берут пять
+        полей, из метаданных - только size и file_type, а разбирался ради
+        них весь блоб: ключи MinIO, настройки нарезки, confidence.
+
+        Шестое поле - agent_id. Фронт показывает файл в карточке агента по
+        двум признакам: id в config.kb_document_ids агента ИЛИ
+        metadata.agent_id документа. Второй признак - подстраховка ровно
+        на случай, когда id до карточки не доехал: ответ на загрузку
+        оборвался по таймауту, а документ в базе появился.
+        """
+        async with await self.db.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT id, filename, created_at,
+                       COALESCE(metadata->>'size', '0') AS size,
+                       COALESCE(metadata->>'file_type', '') AS file_type,
+                       metadata->>'agent_id' AS agent_id,
+                       metadata->>'knowledge_base_id' AS knowledge_base_id
+                FROM kb_documents ORDER BY created_at DESC
+                """)
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            item: Dict[str, Any] = {
+                "id": r["id"],
+                "filename": r["filename"],
+                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+                "size": r["size"],
+                "file_type": r["file_type"],
+            }
+            # Кладём обратно в metadata, а не отдельным полем: фронт читает
+            # agent_id / knowledge_base_id именно оттуда.
+            meta: Dict[str, Any] = {}
+            agent_id = str(r["agent_id"] or "").strip()
+            if agent_id.isdigit():
+                meta["agent_id"] = int(agent_id)
+            kb_id = str(r["knowledge_base_id"] or "").strip()
+            if kb_id.isdigit():
+                meta["knowledge_base_id"] = int(kb_id)
+            if meta:
+                item["metadata"] = meta
+            out.append(item)
         return out
 
     async def get_documents_by_owner(self, owner_user_id: str) -> List[Document]:
@@ -202,7 +353,29 @@ class KbDocumentRepository:
                 )
             )
         return out
-        return out
+
+    async def clone_document_row(
+        self,
+        source_id: int,
+        *,
+        metadata: Dict[str, Any],
+    ) -> Optional[int]:
+        """Скопировать строку kb_documents с новым metadata. Возвращает id клона."""
+        src = await self.get_document(source_id)
+        if not src:
+            return None
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+        return await self.create_document(
+            Document(
+                filename=src.filename,
+                content=src.content,
+                metadata=metadata if isinstance(metadata, dict) else {},
+                created_at=now,
+                updated_at=now,
+            )
+        )
 
     async def delete_document(self, document_id: int) -> bool:
         try:
@@ -612,6 +785,32 @@ class KbVectorRepository:
                 )
             )
         return out
+
+    async def clone_vectors_to_document(
+        self, source_document_id: int, target_document_id: int
+    ) -> int:
+        """Скопировать чанки/эмбеддинги во все таблицы kb_vectors*."""
+        copied = 0
+        async with await self.db.acquire() as conn:
+            for table in await self._all_tables(conn):
+                # Колонки совпадают во всех dim-таблицах; embedding копируем as-is.
+                status = await conn.execute(
+                    f"""
+                    INSERT INTO {table}
+                        (document_id, chunk_index, embedding, content, metadata)
+                    SELECT $2, chunk_index, embedding, content, metadata
+                    FROM {table}
+                    WHERE document_id = $1
+                    """,
+                    int(source_document_id),
+                    int(target_document_id),
+                )
+                # asyncpg: "INSERT 0 N"
+                try:
+                    copied += int(str(status).split()[-1])
+                except (TypeError, ValueError, IndexError):
+                    pass
+        return copied
 
     async def delete_vectors_by_document(self, document_id: int) -> bool:
         """Чистит вектора документа во ВСЕХ таблицах.

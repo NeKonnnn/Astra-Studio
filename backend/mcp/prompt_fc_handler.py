@@ -26,7 +26,12 @@ from backend.agents.step_debug import (
     log_tool_call,
     log_tool_result,
 )
-from backend.agents.subagents.parent import run_native_tool_call, subagent_call_args
+from backend.agents.subagents.parallel import run_tool_calls
+from backend.agents.subagents.parent import (
+    new_subagent_call,
+    run_native_tool_call,
+    subagent_call_args,
+)
 from backend.agents.subagents.settings import NATIVE_SERVER_ID
 from backend.mcp.types import AgentLoopResult, McpCallContext, McpToolInfo
 from backend.settings.config import get_settings
@@ -233,13 +238,14 @@ async def run_prompt_json_fc(
             content_preview=result.content or "",
             duration_ms=llm_ms,
         )
-        tool_results: List[str] = []
-        for call in calls:
-            if not isinstance(call, dict):
-                continue
+
+        # Один вызов шага → строка результата для модели. Вызовы subagent
+        # шага идут одновременно (run_tool_calls), остальные - по очереди.
+        async def _run_call(item) -> str:
+            nonlocal tool_calls_executed
+            call, tool_info, sub_call = item
             name = str(call.get("name") or "")
             params = call.get("parameters") or call.get("arguments") or {}
-            tool_info = _find_tool(name, tools)
             if not tool_info:
                 log_tool_result(
                     step=step,
@@ -248,8 +254,7 @@ async def run_prompt_json_fc(
                     success=False,
                     error="Tool not found",
                 )
-                tool_results.append(f"Tool {name} not found")
-                continue
+                return f"Tool {name} not found"
             if tool_info.server_id == NATIVE_SERVER_ID:
                 # Над try: в except они нужны для tool_end, а внутри try могли
                 # бы остаться неопределёнными.
@@ -282,8 +287,9 @@ async def run_prompt_json_fc(
                         tool_args,
                         subagent_ctx=subagent_ctx,
                         subagent_config=subagent_config,
+                        call=sub_call,
                     )
-                    tool_results.append(for_model)
+                    res = for_model
                     tool_calls_executed += 1
                     duration_ms = int((time.perf_counter() - started) * 1000)
                     log_tool_result(
@@ -315,7 +321,7 @@ async def run_prompt_json_fc(
                         success=False,
                         error=str(exc),
                     )
-                    tool_results.append(f"Native tool error: {exc}")
+                    res = f"Native tool error: {exc}"
                     # Без tool_end карточка инструмента в UI остаётся
                     # «в работе» навсегда. Нативный режим это делает сам.
                     await emit_mcp_tool_end(
@@ -329,7 +335,7 @@ async def run_prompt_json_fc(
                         call_id=call_id,
                         arguments=tool_args,
                     )
-                continue
+                return res
             session = sessions.get(tool_info.server_id)
             if not session:
                 log_tool_result(
@@ -339,10 +345,7 @@ async def run_prompt_json_fc(
                     success=False,
                     error=f"MCP session for {tool_info.server_id} unavailable",
                 )
-                tool_results.append(
-                    f"MCP session for {tool_info.server_id} unavailable"
-                )
-                continue
+                return f"MCP session for {tool_info.server_id} unavailable"
             try:
                 started = time.perf_counter()
                 call_id = uuid.uuid4().hex
@@ -367,7 +370,7 @@ async def run_prompt_json_fc(
                     tool_info.server_id, tool_info.name, tool_args, context, session
                 )
                 parsed = parse_mcp_result_to_struct(raw)
-                tool_results.append(format_parsed_for_llm(parsed) or str(raw))
+                res = format_parsed_for_llm(parsed) or str(raw)
                 tool_calls_executed += 1
                 download_links = enrich_download_links(parsed, tool_info.server_id)
                 result_ui = format_tool_result_for_ui(parsed, raw)
@@ -426,7 +429,19 @@ async def run_prompt_json_fc(
                     arguments=tool_args if "tool_args" in locals() else None,
                     result=str(exc),
                 )
-                tool_results.append(f"Error calling {name}: {exc}")
+                res = f"Error calling {name}: {exc}"
+            return res
+
+        items = []
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+            tool_info = _find_tool(str(call.get("name") or ""), tools)
+            # Номер метки [[ОТВЕТ N]] субагенту - до запуска, по порядку.
+            items.append((call, tool_info, new_subagent_call(tool_info, subagent_ctx)))
+        tool_results: List[str] = await run_tool_calls(
+            items, _run_call, parallel=lambda item: item[2] is not None, step=step
+        )
         working_messages.append(
             {
                 "role": "assistant",

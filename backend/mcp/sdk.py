@@ -38,10 +38,7 @@ def import_mcp_sdk() -> ModuleType:
     backend_path = _BACKEND_ROOT.resolve().as_posix()
     saved_path = sys.path[:]
     try:
-        sys.path = [
-            p for p in sys.path
-            if Path(p).resolve().as_posix() != backend_path
-        ]
+        sys.path = [p for p in sys.path if Path(p).resolve().as_posix() != backend_path]
         return importlib.import_module("mcp")
     finally:
         sys.path = saved_path

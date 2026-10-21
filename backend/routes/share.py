@@ -3,12 +3,12 @@
 """
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
+from typing import Annotated, List, Dict, Any, Optional
 import uuid
 from datetime import datetime
 
 from backend.database.init_db import get_mongodb_connection
-from backend.auth.jwt_handler import get_optional_user
+from backend.auth.jwt_handler import get_current_user, get_optional_user
 from backend.settings.logging import get_logger
 
 logger = get_logger(__name__)
@@ -190,8 +190,7 @@ async def get_shared_conversation(
 
 @router.delete("/{share_id}")
 async def delete_shared_conversation(
-    share_id: str,
-    current_user=Depends(get_optional_user)
+    share_id: str, current_user: Annotated[dict, Depends(get_current_user)]
 ):
     """
     Удалить публичную ссылку (только создатель может удалить)
@@ -203,28 +202,30 @@ async def delete_shared_conversation(
             raise HTTPException(status_code=500, detail="База данных недоступна")
 
         # Ищем публичную ссылку
-        shared_data = await mongodb_conn.db.shared_conversations.find_one({"share_id": share_id})
-        
+        shared_data = await mongodb_conn.db.shared_conversations.find_one(
+            {"share_id": share_id}
+        )
+
         if not shared_data:
             raise HTTPException(status_code=404, detail="Публичная ссылка не найдена")
-        
-        # Проверяем права (только создатель может удалить)
-        if current_user and shared_data.get("created_by") != current_user.get("user_id"):
+
+        # Только создатель может удалить
+        if shared_data.get("created_by") != current_user.get("user_id"):
             raise HTTPException(status_code=403, detail="Нет прав для удаления")
-        
+
         # Удаляем
         result = await mongodb_conn.db.shared_conversations.delete_one({"share_id": share_id})
-        
+
         if result.deleted_count == 0:
             raise HTTPException(status_code=500, detail="Ошибка при удалении")
-        
+
         logger.info(f"Удалена публичная ссылка: {share_id}")
-        
+
         return {"message": "Публичная ссылка успешно удалена"}
-        
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Ошибка при удалении публичной ссылки {share_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера")
+        logger.exception("Ошибка при удалении публичной ссылки %s", share_id)
+        raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера") from e
 

@@ -49,7 +49,8 @@ def _is_primarily_cyrillic(text: str) -> bool:
 
 def reranker_is_english_only() -> bool:
     """
-    По умолчанию ```RAG_RERANKER_ENGLISH_ONLY=0```.
+    По умолчанию ``RAG_RERANKER_ENGLISH_ONLY=1`` (реранкер считается англоязычным);
+    для многоязычного реранкера задайте ``RAG_RERANKER_ENGLISH_ONLY=0``.
     """
     return os.environ.get("RAG_RERANKER_ENGLISH_ONLY", "1").strip().lower() not in (
         "0",
@@ -281,8 +282,29 @@ def resolve_auto_pipeline_strategy(
         if qlen > 220:
             scores["hierarchical"] += 0.8
 
-    tie = ("lexical", "graph", "hybrid", "vector", "hierarchical")
-    best = min(scores.keys(), key=lambda s: (-scores[s], tie.index(s) if s in tie else 99))
+    # При равенстве оценок дорогой graph — после дешёвых hybrid/vector: «нейтральный»
+    # запрос (graph=vector=1.0) не должен уходить в графовый путь только из-за порядка.
+    tie = ("lexical", "hybrid", "vector", "graph", "hierarchical")
+    # auto = hybrid, если гибрид доступен
+    # Гибрид объединяет вектор и BM25 через RRF - покрывает оба случая сразу.
+    # RAG_AUTO_PREFER_HYBRID=0 возвращает старую эвристику.
+    _prefer_hybrid = (
+        os.environ.get("RAG_AUTO_PREFER_HYBRID", "1") or ""
+    ).strip().lower() not in ("0", "false", "no", "off")
+    if _prefer_hybrid and can_hybrid_bm25:
+        logger.debug(
+            "[RAG-AUTO] store=%s prefer_hybrid: auto -> hybrid (эвристика дала бы %s) query=%r",
+            store,
+            min(
+                scores.keys(),
+                key=lambda s: (-scores[s], tie.index(s) if s in tie else 99),
+            ),
+            raw_query[:160],
+        )
+        return "hybrid"
+    best = min(
+        scores.keys(), key=lambda s: (-scores[s], tie.index(s) if s in tie else 99)
+    )
     logger.debug(
         "[RAG-AUTO] store=%s mode=heuristic selected=%s query=%r scores=%s "
         "available={lexical:%s, hybrid:%s, graph:%s, vector:true}",
@@ -322,8 +344,8 @@ def filter_by_min_vector_similarity(
 ) -> List[Tuple[DocumentVector, float]]:
     """
     Отсекает чанки с косинусным сходством ниже порога до реранка.
-    Если ничего не прошло порог — возвращает пустой список: LLM получит пустой контекст
-    и правильно ответит «документов по теме нет». Fallback-минимум убран намеренно.
+    Если ничего не прошло порог — спасаем top-N по скору (минимум 3, максимум 12, ориентир k),
+    чтобы не обнулять recall на «трудных» корпусах (PDF/OCR). Это сознательный recall-first fallback.
     """
     if min_similarity <= 0 or not hits:
         return hits
@@ -648,7 +670,9 @@ def diversify_result_rows(
     if not rows or pool_limit <= 0:
         return []
     rows_sorted = sorted(rows, key=lambda x: x[1], reverse=True)
-    best_per_doc: Dict[Optional[int], Tuple[str, float, Optional[int], Optional[int]]] = {}
+    best_per_doc: Dict[
+        Optional[int], Tuple[str, float, Optional[int], Optional[int]]
+    ] = {}
     for row in rows_sorted:
         did = row[2]
         if did not in best_per_doc or row[1] > best_per_doc[did][1]:

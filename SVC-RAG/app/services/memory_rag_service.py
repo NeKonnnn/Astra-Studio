@@ -11,7 +11,7 @@ from app.database.memory_rag_repository import (
     MemoryRagDocumentRepository,
     MemoryRagVectorRepository,
 )
-from app.database.models import Document, DocumentVector
+from app.database.models import Document
 from app.database.graph_repository import GraphRepository
 from app.services.bm25_index import Bm25IndexCache, InMemoryBm25Index
 from app.services.chunker import (
@@ -31,6 +31,7 @@ logger = get_logger(__name__)
 
 _memory_reindex_generation = 0
 
+
 def _doc_actors(doc):
     """(owner, uploader, filename) из документа. Принимает и объект, и dict."""
     if isinstance(doc, dict):
@@ -49,13 +50,16 @@ def _doc_actors(doc):
     uploader = str(meta.get("uploaded_by") or "-").strip() or "-"
     return owner, uploader, name
 
+
 def bump_memory_reindex_generation() -> int:
     global _memory_reindex_generation
     _memory_reindex_generation += 1
     return _memory_reindex_generation
 
+
 def current_memory_reindex_generation() -> int:
     return _memory_reindex_generation
+
 
 def _memory_chunk_params() -> Tuple[Optional[int], Optional[int], Optional[str]]:
     """Единые настройки чанкования Библиотеки: env RAG_MEMORY** или дефолты
@@ -80,6 +84,7 @@ def _memory_chunk_params() -> Tuple[Optional[int], Optional[int], Optional[str]]
         strategy,
     )
 
+
 def memory_embedding_choice() -> Tuple[Optional[str], Optional[str]]:
     """(provider, model) Библиотеки из RAG_MEMORY_EMBEDDING_MODEL.
 
@@ -102,7 +107,9 @@ def memory_embedding_choice() -> Tuple[Optional[str], Optional[str]]:
         ).strip() or "PHOENIX_Embeddings"
         model = raw.split("/", 1)[1].strip()
     elif lower.startswith("phoenix/"):
-        provider = (os.getenv("RAG_PHOENIX_PROVIDER_ID") or "PHOENIX").strip() or "PHOENIX"
+        provider = (
+            os.getenv("RAG_PHOENIX_PROVIDER_ID") or "PHOENIX"
+        ).strip() or "PHOENIX"
         model = raw.split("/", 1)[1].strip()
     elif lower.startswith("corsur/"):
         provider = (os.getenv("RAG_CORSUR_PROVIDER_ID") or "CORSUR").strip() or "CORSUR"
@@ -111,6 +118,7 @@ def memory_embedding_choice() -> Tuple[Optional[str], Optional[str]]:
         provider = "native"
         model = raw.split("/", 1)[1].strip() if "/" in raw else raw
     return (provider, model) if model else (None, None)
+
 
 class MemoryRagService:
     def __init__(
@@ -140,6 +148,7 @@ class MemoryRagService:
 
     def _bm25_for(self, repo) -> InMemoryBm25Index:
         dim = int(getattr(repo, "embedding_dim", 0) or 0)
+
         def _make() -> InMemoryBm25Index:
             if not get_settings().rag.bm25_store_enabled:
                 return InMemoryBm25Index(repo.get_all_contents_for_bm25)
@@ -152,9 +161,7 @@ class MemoryRagService:
                 return await repo.bm25_store_load(store_key)
 
             async def _save(fingerprint, payload, chunk_count):
-                await repo.bm25_store_save(
-                    store_key, fingerprint, payload, chunk_count
-                )
+                await repo.bm25_store_save(store_key, fingerprint, payload, chunk_count)
 
             return InMemoryBm25Index(
                 repo.get_all_contents_for_bm25,
@@ -198,6 +205,28 @@ class MemoryRagService:
         provider: Optional[str] = None,
     ) -> Dict[str, Any]:
         timer = StageTimer("INDEX", store="memory", file=filename)
+        from app.services.document_duplicate import (
+            duplicate_index_result,
+            file_content_hash,
+        )
+        from app.services.text_duplicate import (
+            find_text_duplicate,
+            remember_text,
+            text_duplicate_index_result,
+        )
+
+        content_hash = file_content_hash(file_data)
+        existing = await self.doc_repo.find_duplicate(
+            content_hash=content_hash,
+            filename=filename,
+            size=len(file_data),
+        )
+        if existing:
+            return duplicate_index_result(
+                document_id=existing.get("id"),
+                filename=existing.get("filename") or filename,
+            )
+
         chunk_size, chunk_overlap, chunking_strategy = _memory_chunk_params()
         with timer.stage("route_embed_model"):
             prof, repo = await self._route(model, provider)
@@ -215,13 +244,42 @@ class MemoryRagService:
         text = strip_null_bytes(parsed.get("text", "") or "")
         if not text.strip():
             timer.log(logger)
-            return {"ok": False, "error": empty_document_index_error(parsed, filename), "document_id": None}
+            return {
+                "ok": False,
+                "error": empty_document_index_error(parsed, filename),
+                "document_id": None,
+            }
+
+        # Тот же текст под другим именем или в других байтах - до эмбеддингов.
+        async def _memory_doc_text(doc_id: int) -> Optional[str]:
+            doc = await self.doc_repo.get_document(doc_id)
+            return doc.content if doc else None
+
+        async def _same_text(older_than: Optional[int] = None):
+            return await find_text_duplicate(
+                store="memory",
+                text=text,
+                candidates=[
+                    (d["id"], d["filename"])
+                    for d in await self.doc_repo.list_documents_brief()
+                ],
+                load_text=_memory_doc_text,
+                older_than=older_than,
+                upload_name=filename,
+            )
+
+        with timer.stage("text_duplicate"):
+            same = await _same_text()
+        if same:
+            timer.log(logger)
+            return text_duplicate_index_result("memory", filename, same)
 
         meta: Dict[str, Any] = {
             "file_type": parsed.get("file_type", ""),
             "pages": parsed.get("pages", 0),
             "size": len(file_data),
             "source": "memory_library",
+            "content_hash": content_hash,
         }
         if minio_object:
             meta["minio_object"] = minio_object
@@ -244,7 +302,15 @@ class MemoryRagService:
                 "error": "Ошибка сохранения документа в БД",
                 "document_id": None,
             }
-        
+        # Одновременная загрузка того же текста (несколько файлов разом) тоже
+        # прошла проверку выше: после вставки поздний документ уступает раннему.
+        same = await _same_text(older_than=doc_id)
+        if same:
+            await self.doc_repo.delete_document(doc_id)
+            timer.log(logger)
+            return text_duplicate_index_result("memory", filename, same)
+        remember_text("memory", doc_id, text)
+
         # Пометка для логов гардрейла: клиент видит только список строк, имя
         # файла и id документа до него не доезжают. Ставим до ветвления, чтобы
         # покрыть и иерархическую индексацию, и обычную.
@@ -316,13 +382,28 @@ class MemoryRagService:
                 "error": "Не удалось нарезать чанки",
                 "document_id": None,
             }
-        chunks = [c for c, _m in chunks_with_meta]
+
+        from app.services.index_batching import embed_and_store
+
+        def _memory_vector_meta(idx: int, cmeta: dict) -> dict:
+            meta = {"chunk_index": idx, "document_filename": filename}
+            meta.update(cmeta)
+            return meta
 
         try:
-            with timer.stage("embed"):
-                embeddings = await prof.embed(chunks, kind="document")
+            # Волнами, см. index_batching: пик от размера пачки, а не от
+            # размера документа. vectors приходят без эмбеддингов - ниже
+            # они нужны только графу.
+            created, vectors = await embed_and_store(
+                chunks_with_meta,
+                document_id=doc_id,
+                repo=repo,
+                embed=lambda texts: prof.embed(texts, kind="document"),
+                make_metadata=_memory_vector_meta,
+                timer=timer,
+            )
         except Exception as e:
-            logger.error("Ошибка эмбеддингов memory_rag: %s", e)
+            logger.error("Ошибка индексации memory_rag: %s", e)
             await self.doc_repo.delete_document(doc_id)
             timer.log(logger)
             return {
@@ -330,25 +411,6 @@ class MemoryRagService:
                 "error": f"Ошибка эмбеддингов: {e}",
                 "document_id": None,
             }
-
-        vectors = []
-        for idx, ((chunk, cmeta), embedding) in enumerate(
-            zip(chunks_with_meta, embeddings)
-        ):
-            meta = {"chunk_index": idx, "document_filename": filename}
-            meta.update(cmeta)
-            vectors.append(
-                DocumentVector(
-                    document_id=doc_id,
-                    chunk_index=idx,
-                    embedding=embedding,
-                    content=chunk,
-                    metadata=meta,
-                )
-            )
-
-        with timer.stage("insert"):
-            created = await repo.create_vectors_batch(vectors)
         with timer.stage("bm25"):
             self._mark_bm25_dirty()
         if self.graph_repo:
@@ -438,23 +500,21 @@ class MemoryRagService:
         chunks = [c for c, _m in chunks_with_meta]
         if not chunks:
             return 0
-        embeddings = await prof.embed(chunks, kind="document")
-        vectors = []
-        for idx, ((chunk, cmeta), embedding) in enumerate(
-            zip(chunks_with_meta, embeddings)
-        ):
+        from app.services.index_batching import embed_and_store
+
+        def _memory_vector_meta(idx: int, cmeta: dict) -> dict:
             meta = {"chunk_index": idx, "document_filename": doc.filename}
             meta.update(cmeta)
-            vectors.append(
-                DocumentVector(
-                    document_id=document_id,
-                    chunk_index=idx,
-                    embedding=embedding,
-                    content=chunk,
-                    metadata=meta,
-                )
-            )
-        created = await repo.create_vectors_batch(vectors)
+            return meta
+
+        # Волнами, см. index_batching.
+        created, vectors = await embed_and_store(
+            chunks_with_meta,
+            document_id=document_id,
+            repo=repo,
+            embed=lambda texts: prof.embed(texts, kind="document"),
+            make_metadata=_memory_vector_meta,
+        )
         self._mark_bm25_dirty()
         await self._rebuild_graph_for_document(document_id)
         return created
@@ -503,6 +563,9 @@ class MemoryRagService:
                 )
                 n_docs += 1
                 n_chunks += c
+                from app.core import mem_release
+
+                mem_release.release("реиндекс memory")
                 _own, _up, _name = _doc_actors(doc)
                 logger.debug(
                     "[REINDEX memory] '%s' (id=%s, owner=%s, uploader=%s) чанков=%s",
@@ -617,19 +680,30 @@ class MemoryRagService:
         )
         return (hits, trace) if return_trace else hits
 
+    async def check_duplicate(
+        self,
+        *,
+        content_hash: Optional[str] = None,
+        filename: Optional[str] = None,
+        size: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        existing = await self.doc_repo.find_duplicate(
+            content_hash=content_hash,
+            filename=filename,
+            size=size,
+        )
+        if not existing:
+            return {"duplicate": False}
+        return {
+            "duplicate": True,
+            "document_id": existing.get("id"),
+            "filename": existing.get("filename"),
+        }
+
     async def list_documents(self) -> List[Dict[str, Any]]:
-        docs = await self.doc_repo.get_all_documents()
-        return [
-            {
-                "id": d.id,
-                "filename": d.filename,
-                "metadata": d.metadata,
-                "created_at": d.created_at.isoformat() if d.created_at else None,
-                "size": (d.metadata or {}).get("size", 0),
-                "file_type": (d.metadata or {}).get("file_type", ""),
-            }
-            for d in docs
-        ]
+        # См. kb_service: size и file_type достаются в SQL, метаданные
+        # целиком не разбираются.
+        return await self.doc_repo.list_documents_brief()
 
     async def delete_document(self, document_id: int) -> Dict[str, Any]:
         """Удаляет из БД; возвращает minio-ключи для очистки в backend."""

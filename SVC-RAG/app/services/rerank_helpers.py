@@ -9,6 +9,22 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 
 
+def _chunk_label(dv: Any) -> str:
+    doc_id = getattr(dv, "document_id", None)
+    chunk_index = getattr(dv, "chunk_index", None)
+    return f"doc{doc_id}:чанк{chunk_index}"
+
+
+def _preview(dv: Any, *, limit: int = 120) -> str:
+    raw = getattr(dv, "content", None)
+    if raw is None:
+        return ""
+    text = " ".join(str(raw).split())
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "…"
+
+
 async def rerank_vector_hits(
     query: str,
     hits: List[Tuple[Any, float]],

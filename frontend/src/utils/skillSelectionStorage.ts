@@ -154,6 +154,29 @@ export function renameSkillSlugInAllChats(oldSlug: string, newSlug: string, name
   }
 }
 
+/** Убрать удалённый skill из активных во всех чатах (чтобы погасла синяя иконка в поле ввода). */
+export function removeSkillSlugFromAllChats(slug: string): void {
+  const id = (slug || '').trim();
+  if (!id) return;
+  const prefix = 'chat:';
+  const suffix = ':active_skill_ids';
+  const keys: string[] = [];
+  for (let i = 0; i < localStorage.length; i += 1) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith(prefix) && key.endsWith(suffix)) keys.push(key);
+  }
+  for (const key of keys) {
+    const chatId = key.slice(prefix.length, key.length - suffix.length);
+    if (!chatId) continue;
+    const refs = getActiveSkillRefs(chatId);
+    if (!refs.some((r) => r.slug === id)) continue;
+    setActiveSkillRefs(
+      chatId,
+      refs.filter((r) => r.slug !== id),
+    );
+  }
+}
+
 export function copyActiveSkills(fromChatId: string, toChatId: string): void {
   if (!fromChatId || !toChatId || fromChatId === toChatId) return;
   const refs = getActiveSkillRefs(fromChatId);

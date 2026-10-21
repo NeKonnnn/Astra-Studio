@@ -17,7 +17,7 @@ export function resetRagEntityDefaultsCache(): void {
 
 /** Загрузить дефолты из GET /api/rag/settings (без entity_id). */
 export async function fetchRagEntityDefaults(
-  scope: 'project' | 'agent' = 'project',
+  scope: 'project' | 'agent' | 'kb' = 'project',
 ): Promise<RagEntityModelDefaults> {
   if (cachedDefaults) return cachedDefaults;
   if (!loadPromise) {

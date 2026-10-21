@@ -8,7 +8,8 @@
   chat_integration.maybe_run_mcp_agent → prepare_parent_tools, with_parent_rules,
                                           finish_parent_result
   agent_loop (native tools) и
-  prompt_fc_handler (prompt_json_fc)  → subagent_call_args, run_native_tool_call
+  prompt_fc_handler (prompt_json_fc)  → subagent_call_args, new_subagent_call,
+                                          run_native_tool_call
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ from backend.agents.subagents.settings import (
     subagents_from_profile,
 )
 from backend.agents.subagents.tool import (
+    SubagentCall,
     SubagentRunContext,
     build_subagent_tools,
     execute_native_tool,
@@ -308,31 +310,50 @@ def subagent_call_args(
     )
 
 
+def new_subagent_call(
+    tool_info: Optional[McpToolInfo], subagent_ctx: Optional[SubagentRunContext]
+) -> Optional[SubagentCall]:
+    """Слот вызова subagent (None - не субагент): номер метки занят сразу.
+
+    Цикл берёт слоты всех вызовов шага до их запуска - номера [[ОТВЕТ N]]
+    идут в порядке вызовов, хотя ответы приходят в любом.
+    """
+    if (
+        subagent_ctx is None
+        or tool_info is None
+        or tool_info.server_id != NATIVE_SERVER_ID
+        or tool_info.name != SUBAGENT_TOOL_NAME
+    ):
+        return None
+    return SubagentCall(reserved_no=subagent_ctx.reserve_answer_no())
+
+
 async def run_native_tool_call(
     tool_info: McpToolInfo,
     tool_args: Dict[str, Any],
     *,
     subagent_ctx: Optional[SubagentRunContext],
     subagent_config: Optional[AgentSubagentsConfig],
+    call: Optional[SubagentCall] = None,
 ) -> Tuple[str, str, Optional[Dict[str, Any]]]:
     """Встроенный инструмент: (результат для модели, для UI, document_search).
 
     Модели - с меткой [[ОТВЕТ N]], в карточку в чате - без неё; источники
     ребёнка - в карточку. Ошибка уходит наружу: цикл сам ставит failure.
     """
-    try:
-        content = await execute_native_tool(
-            tool_info,
-            tool_args,
-            subagent_ctx=subagent_ctx,
-            subagent_config=subagent_config,
-        )
-    except Exception:
-        if subagent_ctx is not None:
-            subagent_ctx.last_document_search = None
-        raise
-    doc_search = None
-    if subagent_ctx is not None:
-        doc_search = getattr(subagent_ctx, "last_document_search", None)
-        subagent_ctx.last_document_search = None
-    return subagent_result_for_model(subagent_ctx, content), content, doc_search
+    call = call if call is not None else SubagentCall()
+    content = await execute_native_tool(
+        tool_info,
+        tool_args,
+        subagent_ctx=subagent_ctx,
+        subagent_config=subagent_config,
+        call=call,
+    )
+    doc_search = call.document_search
+    for_model = subagent_result_for_model(subagent_ctx, content, call.answer_no)
+    # Прогресс по плану хода - только модели главного, в чат не уходит.
+    if subagent_ctx is not None and tool_info.name == SUBAGENT_TOOL_NAME:
+        progress = plan_progress_line(subagent_ctx)
+        if progress:
+            for_model = f"{for_model}\n\n{progress}"
+    return for_model, content, doc_search

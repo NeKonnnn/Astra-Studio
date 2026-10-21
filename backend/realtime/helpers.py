@@ -3,10 +3,9 @@ socket_helpers.py - утилиты, общие для socket_handlers и роу�
 """
 
 import json
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from backend.settings.logging import get_logger
-from backend.settings.rag_client import RagReindexInProgress
 
 logger = get_logger(__name__)
 
@@ -48,6 +47,11 @@ def _terminal_chat_inference_banner(
 ):
     import backend.app_state as _state
 
+    # 10 — это уровень DEBUG (то же, что logging.DEBUG)
+    # INFO=20, WARNING=30, ERROR=40
+    if not logger.isEnabledFor(10):
+        return
+
     lines = [
         "",
         "=" * 76,
@@ -57,24 +61,36 @@ def _terminal_chat_inference_banner(
         f"  Socket: {str(sid)[:20]}…  |  conversation_id: {conversation_id}",
         f"  Текст запроса (начало): {(user_preview or '')[:160]!r}",
     ]
-    path = model_path_for_call if model_path_for_call is not None else _state.get_current_model_path()
+    path = (
+        model_path_for_call
+        if model_path_for_call is not None
+        else _state.get_current_model_path()
+    )
     lines.append(f"  Модель (путь для вызова LLM): {path!r}")
     if enable_thinking is None:
-        lines.append("  enable_thinking: не передан в баннер (не socket / старый вызов)")
+        lines.append(
+            "  enable_thinking: не передан в баннер (не socket / старый вызов)"
+        )
     else:
-        lines.append(f"  enable_thinking (режим «Мышление» и т.п.): {enable_thinking!r}")
+        lines.append(
+            f"  enable_thinking (режим «Мышление» и т.п.): {enable_thinking!r}"
+        )
     if _state.get_model_info:
         try:
             info = _state.get_model_info()
             if info:
-                lines.append(f"  get_model_info: {json.dumps(info, ensure_ascii=False, default=str)[:500]}")
+                lines.append(
+                    f"  get_model_info: {json.dumps(info, ensure_ascii=False, default=str)[:500]}"
+                )
         except Exception:
             logger.exception("get_model_info: ошибка")
             lines.append("  get_model_info: ошибка")
     if _state.model_settings:
         try:
             st = _state.model_settings.get_all()
-            lines.append(f"  Настройки модели: {json.dumps(st, ensure_ascii=False, default=str)}")
+            lines.append(
+                f"  Настройки модели: {json.dumps(st, ensure_ascii=False, default=str)}"
+            )
         except Exception:
             logger.exception("Настройки модели: недоступны")
             lines.append("  Настройки модели: недоступны")
@@ -84,7 +100,9 @@ def _terminal_chat_inference_banner(
         try:
             gp = _state.context_prompt_manager.get_global_prompt() or ""
             prev = gp[:500] + ("…" if len(gp) > 500 else "")
-            lines.append(f"  Глобальный системный промпт ({len(gp)} симв., начало): {prev!r}")
+            lines.append(
+                f"  Глобальный системный промпт ({len(gp)} симв., начало): {prev!r}"
+            )
         except Exception:
             logger.exception("Глобальный промпт: ошибка")
             lines.append("  Глобальный промпт: ошибка")
@@ -92,14 +110,18 @@ def _terminal_chat_inference_banner(
         lines.append("  Глобальный промпт: менеджер недоступен")
     if extra_line:
         lines.append(f"  {extra_line}")
-    lines.append("  Примечание: блок get_model_info - глобальное состояние llm-svc (что загружено в память)")
+    lines.append(
+        "  Примечание: блок get_model_info - глобальное состояние llm-svc (что загружено в память)"
+    )
     lines.append(
         "  Реальный ответ строится по полю model в POST /v1/chat/completions (см. лог generate_response выше);"
     )
-    lines.append("  при выбранном агенте туда подставляется модель из конструктора (llm-svc://id)")
+    lines.append(
+        "  при выбранном агенте туда подставляется модель из конструктора (llm-svc://id)"
+    )
     lines.append("=" * 76)
     for line in lines:
-        logger.info("%s", line)
+        logger.debug("%s", line)
 
 
 async def kb_search_agent_documents(
@@ -130,8 +152,6 @@ async def kb_search_agent_documents(
             document_ids=ids,
             strategy=strategy,
         )
-    except RagReindexInProgress:
-        raise
     except Exception:
         logger.exception("KB search по документам агента %s", ids)
         return []
@@ -139,11 +159,7 @@ async def kb_search_agent_documents(
 
 
 async def _resolve_agent_chat_params(
-    agent_id_raw,
-    user_id=None,
-    user: Optional[dict] = None,
-    *,
-    skip_access_check: bool = False,
+    agent_id_raw, user_id=None, user: Optional[dict] = None, *, skip_access_check: bool = False
 ) -> dict:
     """Модель и параметры из карточки агента (конструктор).
 
@@ -159,6 +175,8 @@ async def _resolve_agent_chat_params(
         "system_prompt": None,
         "file_search_enabled": False,
         "kb_document_ids": [],
+        "knowledge_bases_enabled": False,
+        "knowledge_base_ids": [],
         "skill_ids": [],
         "skills_enabled": False,
         "mcp_enabled": False,
@@ -171,10 +189,6 @@ async def _resolve_agent_chat_params(
         "agent_id": None,
         "agent_ids": [],
         "hide_sequential_outputs": False,
-        "shared_chain_rag": False,
-        "use_parent_shared_rag": True,
-        "max_chain_agents": None,
-        "max_subagents": None,
         "recursion_limit": None,
         "subagents": None,
     }
@@ -184,6 +198,22 @@ async def _resolve_agent_chat_params(
         aid = int(agent_id_raw)
     except (TypeError, ValueError):
         return empty
+
+    # Глобальная роль (ENV + LDAP/Keycloak): base / без viewer+ → агенты в чате недоступны.
+    try:
+        from backend.auth.agent_platform_roles import user_can_use_agents
+
+        if user is not None and not user_can_use_agents(user):
+            logger.warning(
+                "[chat] blocked by agents feature gate user=%s agent_id=%s",
+                user.get("user_id"),
+                aid,
+            )
+            return empty
+    except Exception:
+        # Роль-резолвинг не должен ронять чат: в случае ошибки лучше "пустить" (legacy behaviour).
+        pass
+
     try:
         from backend.database.init_db import get_agent_repository
 
@@ -206,7 +236,11 @@ async def _resolve_agent_chat_params(
                 low = mp.lower()
             if low.startswith("llm-svc://"):
                 out["model_path"] = mp
-            elif "/" in mp or mp.lower().endswith(".gguf") or (len(mp) > 2 and mp[1] == ":"):
+            elif (
+                "/" in mp
+                or mp.lower().endswith(".gguf")
+                or (len(mp) > 2 and mp[1] == ":")
+            ):
                 out["model_path"] = mp
             else:
                 out["model_path"] = f"llm-svc://{mp}"
@@ -240,6 +274,21 @@ async def _resolve_agent_chat_params(
                 except (TypeError, ValueError):
                     continue
             out["kb_document_ids"] = sorted(set(kb_ids))
+        raw_kbase_ids = cfg.get("knowledge_base_ids")
+        if isinstance(raw_kbase_ids, list):
+            kbase_ids: List[int] = []
+            for v in raw_kbase_ids:
+                try:
+                    kid = int(v)
+                except (TypeError, ValueError):
+                    continue
+                if kid > 0:
+                    kbase_ids.append(kid)
+            out["knowledge_base_ids"] = sorted(set(kbase_ids))
+        if "knowledge_bases_enabled" in cfg:
+            out["knowledge_bases_enabled"] = bool(cfg.get("knowledge_bases_enabled"))
+        else:
+            out["knowledge_bases_enabled"] = bool(out["knowledge_base_ids"])
         raw_skill_ids = cfg.get("skill_ids") or cfg.get("skills")
         if isinstance(raw_skill_ids, list):
             out["skill_ids"] = [str(v).strip() for v in raw_skill_ids if str(v).strip()]
@@ -250,10 +299,14 @@ async def _resolve_agent_chat_params(
         out["mcp_enabled"] = bool(cfg.get("mcp_enabled", False))
         raw_mcp_ids = cfg.get("mcp_server_ids")
         if isinstance(raw_mcp_ids, list):
-            out["mcp_server_ids"] = [str(v).strip() for v in raw_mcp_ids if str(v).strip()]
+            out["mcp_server_ids"] = [
+                str(v).strip() for v in raw_mcp_ids if str(v).strip()
+            ]
         raw_plugin_ids = cfg.get("plugin_ids")
         if isinstance(raw_plugin_ids, list):
-            out["plugin_ids"] = [str(v).strip() for v in raw_plugin_ids if str(v).strip()]
+            out["plugin_ids"] = [
+                str(v).strip() for v in raw_plugin_ids if str(v).strip()
+            ]
         if "plugins_enabled" in cfg:
             out["plugins_enabled"] = bool(cfg.get("plugins_enabled"))
         else:
@@ -261,7 +314,7 @@ async def _resolve_agent_chat_params(
         out["artifacts_enabled"] = bool(cfg.get("artifacts_enabled", False))
         out["shadcn_enabled"] = bool(cfg.get("shadcn_enabled", False))
         out["user_prompt_mode"] = bool(cfg.get("user_prompt_mode", False))
-        from backend.agents.chain import parse_agent_ids
+        from backend.agents.chain.settings import parse_agent_ids
 
         for limit_key in ("max_chain_agents", "max_subagents"):
             raw_limit = cfg.get(limit_key)
@@ -287,7 +340,7 @@ async def _resolve_agent_chat_params(
                 out["recursion_limit"] = parsed
         if isinstance(cfg.get("subagents"), dict):
             out["subagents"] = dict(cfg["subagents"])
-        logger.info(
+        logger.debug(
             f"[chat] agent_id={aid} → model_path={out['model_path']}, "
             f"max_tokens={out['max_tokens']}, temperature={out['temperature']}, "
             f"file_search={out['file_search_enabled']}, "
@@ -355,3 +408,315 @@ def agent_plugin_ids(agent_profile: dict) -> List[str]:
     if not enabled:
         return []
     return ids
+
+def _normalize_kb_ids(knowledge_base_ids: Optional[List[Any]]) -> List[int]:
+    out: List[int] = []
+    if not isinstance(knowledge_base_ids, list):
+        return out
+    seen: set[int] = set()
+    for raw in knowledge_base_ids:
+        try:
+            kid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if kid > 0 and kid not in seen:
+            seen.add(kid)
+            out.append(kid)
+    return out
+
+
+async def map_knowledge_base_document_ids(
+    rag_client: Any,
+    knowledge_base_ids: Optional[List[Any]],
+) -> Dict[int, List[int]]:
+    """kb_id → document_ids по metadata.knowledge_base_id."""
+    want = set(_normalize_kb_ids(knowledge_base_ids))
+    if not rag_client or not want:
+        return {}
+    try:
+        rows = list(await rag_client.kb_list_documents() or [])
+    except Exception:
+        logger.exception("map_knowledge_base_document_ids: kb_list_documents failed")
+        return {}
+    by_kb: Dict[int, List[int]] = {kid: [] for kid in want}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        raw_kb = meta.get("knowledge_base_id", row.get("knowledge_base_id"))
+        try:
+            kid = int(raw_kb)
+        except (TypeError, ValueError):
+            continue
+        if kid not in want:
+            continue
+        try:
+            by_kb[kid].append(int(row["id"]))
+        except (TypeError, ValueError, KeyError):
+            continue
+    for kid in list(by_kb.keys()):
+        by_kb[kid] = sorted(set(by_kb[kid]))
+    empty = sorted(kid for kid, docs in by_kb.items() if not docs)
+    if empty:
+        logger.warning(
+            "map_knowledge_base_document_ids: kb_ids=%s без документов "
+            "(kb_list_documents=%s)",
+            empty,
+            len(rows),
+        )
+    return by_kb
+
+
+async def expand_knowledge_base_document_ids(
+    rag_client: Any,
+    knowledge_base_ids: Optional[List[Any]],
+) -> List[int]:
+    """Развернуть id баз знаний в document_id по metadata.knowledge_base_id."""
+    by_kb = await map_knowledge_base_document_ids(rag_client, knowledge_base_ids)
+    out: List[int] = []
+    for docs in by_kb.values():
+        out.extend(docs)
+    return sorted(set(out))
+
+
+async def kb_search_knowledge_bases(
+    rag_client: Any,
+    query: str,
+    knowledge_base_ids: Optional[List[Any]],
+    k: int = 8,
+    strategy: Optional[str] = None,
+    *,
+    docs_by_kb: Optional[Dict[int, List[int]]] = None,
+    only_document_ids: Optional[List[int]] = None,
+) -> List[Tuple[str, float, Optional[int], Optional[int]]]:
+    """Поиск по нескольким entity-БЗ: у каждой свой embedding-снимок.
+
+    Документы разных БЗ могут быть залиты разными моделями — один общий
+    ``kb_search`` с настройками первой БЗ даёт пустую выдачу. Поэтому ищем
+    по каждой БЗ отдельно и сливаем hits.
+    """
+    if not rag_client or not query:
+        return []
+    kb_ids = _normalize_kb_ids(knowledge_base_ids)
+    if not kb_ids:
+        return []
+    if docs_by_kb is None:
+        docs_by_kb = await map_knowledge_base_document_ids(rag_client, kb_ids)
+
+    from backend.realtime.rag_evidence import filter_rag_hits_by_score
+    from backend.services.user_rag_settings import get_entity_rag_settings
+
+    allow_docs: Optional[set[int]] = None
+    if only_document_ids is not None:
+        allow_docs = set()
+        for raw in only_document_ids:
+            try:
+                allow_docs.add(int(raw))
+            except (TypeError, ValueError):
+                continue
+
+    merged: List[Tuple[str, float, Optional[int], Optional[int]]] = []
+    seen: set[Tuple[Optional[int], Optional[int], str]] = set()
+
+    for kb_id in kb_ids:
+        doc_ids = list(docs_by_kb.get(kb_id) or [])
+        if allow_docs is not None:
+            doc_ids = [d for d in doc_ids if d in allow_docs]
+        if not doc_ids:
+            continue
+        try:
+            settings = await get_entity_rag_settings("kb", kb_id)
+        except Exception:
+            logger.exception(
+                "kb_search_knowledge_bases: настройки kb_id=%s недоступны", kb_id
+            )
+            settings = {}
+        try:
+            top_k = int((settings or {}).get("rag_chat_top_k") or k)
+        except (TypeError, ValueError):
+            top_k = k
+        top_k = max(1, min(top_k, 64))
+        try:
+            min_sim = float((settings or {}).get("rag_similarity_threshold") or 0.0)
+        except (TypeError, ValueError):
+            min_sim = 0.0
+        emb_path = (settings or {}).get("rag_embedding_model_path")
+        try:
+            hits = await rag_client.kb_search(
+                query,
+                k=top_k,
+                document_ids=doc_ids,
+                strategy=strategy,
+                settings_override=settings if isinstance(settings, dict) else None,
+                settings_source="kb",
+            )
+        except Exception:
+            logger.exception(
+                "kb_search_knowledge_bases: поиск kb_id=%s docs=%s",
+                kb_id,
+                len(doc_ids),
+            )
+            continue
+        hit_list = filter_rag_hits_by_score(list(hits or []), min_sim)
+        logger.info(
+            "[RAG] kb_search kb_id=%s emb=%s docs=%s hits=%s",
+            kb_id,
+            emb_path,
+            len(doc_ids),
+            len(hit_list),
+        )
+        for h in hit_list:
+            try:
+                content, score, did, idx = h[0], h[1], h[2], h[3]
+            except (TypeError, ValueError, IndexError):
+                continue
+            key = (did, idx, str(content)[:120])
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append((content, score, did, idx))
+
+    merged.sort(
+        key=lambda h: float(h[1]) if isinstance(h[1], (int, float)) else -1.0,
+        reverse=True,
+    )
+    limit = max(1, min(int(k) * max(1, len(kb_ids)), 64))
+    return merged[:limit]
+
+
+async def partition_document_ids_by_knowledge_base(
+    rag_client: Any,
+    document_ids: Optional[List[Any]],
+) -> Tuple[Dict[int, List[int]], List[int]]:
+    """Разделить document_ids на entity-БЗ и legacy (без knowledge_base_id)."""
+    want: set[int] = set()
+    for raw in document_ids or []:
+        try:
+            want.add(int(raw))
+        except (TypeError, ValueError):
+            continue
+    if not rag_client or not want:
+        return {}, sorted(want)
+    try:
+        rows = list(await rag_client.kb_list_documents() or [])
+    except Exception:
+        logger.exception("partition_document_ids_by_knowledge_base failed")
+        return {}, sorted(want)
+    by_kb: Dict[int, List[int]] = {}
+    legacy: List[int] = []
+    found: set[int] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            did = int(row["id"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        if did not in want:
+            continue
+        found.add(did)
+        meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        raw_kb = meta.get("knowledge_base_id", row.get("knowledge_base_id"))
+        try:
+            kid = int(raw_kb)
+        except (TypeError, ValueError):
+            legacy.append(did)
+            continue
+        if kid > 0:
+            by_kb.setdefault(kid, []).append(did)
+        else:
+            legacy.append(did)
+    for did in want - found:
+        legacy.append(did)
+    for kid in list(by_kb.keys()):
+        by_kb[kid] = sorted(set(by_kb[kid]))
+    return by_kb, sorted(set(legacy))
+
+
+async def kb_search_scoped_documents(
+    rag_client: Any,
+    query: str,
+    *,
+    knowledge_base_ids: Optional[List[Any]] = None,
+    legacy_doc_ids: Optional[List[int]] = None,
+    k: int = 8,
+    strategy: Optional[str] = None,
+    only_document_ids: Optional[List[int]] = None,
+    docs_by_kb: Optional[Dict[int, List[int]]] = None,
+) -> List[Tuple[str, float, Optional[int], Optional[int]]]:
+    """Entity-БЗ (per-KB emb) + legacy agent docs (scope agent)."""
+    from backend.realtime.rag_evidence import merge_extra_hits
+
+    hits: List[Tuple[str, float, Optional[int], Optional[int]]] = []
+    kb_ids = _normalize_kb_ids(knowledge_base_ids)
+    if kb_ids:
+        hits = await kb_search_knowledge_bases(
+            rag_client,
+            query,
+            kb_ids,
+            k=k,
+            strategy=strategy,
+            docs_by_kb=docs_by_kb,
+            only_document_ids=only_document_ids,
+        )
+    legacy_ids = list(legacy_doc_ids or [])
+    if only_document_ids is not None:
+        allow = set()
+        for raw in only_document_ids:
+            try:
+                allow.add(int(raw))
+            except (TypeError, ValueError):
+                continue
+        legacy_ids = [d for d in legacy_ids if d in allow]
+    if legacy_ids:
+        legacy_hits = await kb_search_agent_documents(
+            rag_client, query, legacy_ids, k=k, strategy=strategy
+        )
+        try:
+            from backend.realtime.rag_evidence import (
+                filter_rag_hits_by_score,
+                rag_guard_env,
+            )
+
+            min_sim, _ = rag_guard_env("agent")
+            legacy_hits = filter_rag_hits_by_score(list(legacy_hits or []), min_sim)
+        except Exception:
+            logger.debug("legacy kb filter skipped", exc_info=True)
+        hits = merge_extra_hits(hits, legacy_hits)
+    return list(hits or [])
+
+
+def resolve_agent_legacy_kb_document_ids(
+    agent_profile: Optional[dict],
+) -> List[int]:
+    """Только legacy file_search document_ids агента (без entity БЗ)."""
+    if not isinstance(agent_profile, dict):
+        return []
+    if not agent_profile.get("file_search_enabled"):
+        return []
+    out: List[int] = []
+    raw_docs = agent_profile.get("kb_document_ids") or []
+    if not isinstance(raw_docs, list):
+        return []
+    for v in raw_docs:
+        try:
+            out.append(int(v))
+        except (TypeError, ValueError):
+            continue
+    return sorted(set(out))
+
+
+async def resolve_agent_kb_document_ids(
+    rag_client: Any,
+    agent_profile: Optional[dict],
+) -> List[int]:
+    """Собрать document_ids агента: legacy kb_document_ids + прикреплённые БЗ."""
+    if not isinstance(agent_profile, dict):
+        return []
+    out: List[int] = list(resolve_agent_legacy_kb_document_ids(agent_profile))
+    if agent_profile.get("knowledge_bases_enabled"):
+        expanded = await expand_knowledge_base_document_ids(
+            rag_client, agent_profile.get("knowledge_base_ids") or []
+        )
+        out.extend(expanded)
+    return sorted(set(out))

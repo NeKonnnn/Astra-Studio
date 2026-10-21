@@ -18,6 +18,7 @@ from backend.services.user_llm_settings import (
 )
 from backend.settings.cef_logger.cef_logger import log_cef_event
 from backend.settings.logging import get_logger
+from backend.utils.http_errors import public_error_detail
 
 logger = get_logger(__name__)
 
@@ -39,7 +40,7 @@ async def get_global_prompt(current_user: Annotated[dict, Depends(get_current_us
         }
     except Exception as e:
         logger.exception("Ошибка операции")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail=public_error_detail(e))
 
 
 @router.put("/global")
@@ -67,7 +68,7 @@ async def update_global_prompt(
         raise
     except Exception as e:
         logger.exception("Ошибка операции")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail=public_error_detail(e))
 
 
 @router.get("/models")
@@ -85,7 +86,7 @@ async def get_models_with_prompts(current_user: Annotated[dict, Depends(get_curr
         }
     except Exception as e:
         logger.exception("Ошибка операции")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail=public_error_detail(e))
 
 
 @router.get("/model/{model_path:path}")
@@ -100,7 +101,7 @@ async def get_model_prompt(model_path: str, current_user: Annotated[dict, Depend
         }
     except Exception as e:
         logger.exception("Ошибка операции")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail=public_error_detail(e))
 
 
 @router.put("/model/{model_path:path}")
@@ -118,7 +119,7 @@ async def update_model_prompt(
         raise
     except Exception as e:
         logger.exception("Ошибка операции")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail=public_error_detail(e))
 
 
 @router.get("/custom")
@@ -132,7 +133,7 @@ async def get_custom_prompts(current_user: Annotated[dict, Depends(get_current_u
         }
     except Exception as e:
         logger.exception("Ошибка операции")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail=public_error_detail(e))
 
 
 @router.post("/custom")
@@ -148,7 +149,7 @@ async def create_custom_prompt(request: dict, current_user: Annotated[dict, Depe
         raise
     except Exception as e:
         logger.exception("Ошибка операции")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail=public_error_detail(e))
 
 
 @router.delete("/custom/{prompt_id}")
@@ -161,7 +162,7 @@ async def delete_custom_prompt(prompt_id: str, current_user: Annotated[dict, Dep
         raise
     except Exception as e:
         logger.exception("Ошибка операции")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail=public_error_detail(e))
 
 
 @router.get("/effective/{model_path:path}")
@@ -182,4 +183,4 @@ async def get_effective_prompt(
         }
     except Exception as e:
         logger.exception("Ошибка операции")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail=public_error_detail(e))

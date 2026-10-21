@@ -82,7 +82,13 @@ class DocumentSummarizer:
         ]
 
         level_1_summaries = []
-        n = self.intermediate_summary_chunks
+        try:
+            n = int(self.intermediate_summary_chunks)
+        except (TypeError, ValueError):
+            n = 0
+        if n < 1:
+            # 0/отрицательное (например, из env) давало range(..., 0) → ValueError.
+            n = 8
         for i in range(0, len(level_0_chunks), n):
             batch = level_0_chunks[i : i + n]
             combined_text = "\n\n".join([c["content"] for c in batch])

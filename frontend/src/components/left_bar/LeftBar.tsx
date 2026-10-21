@@ -90,6 +90,7 @@ import { getApiUrl, getAuthFetchHeaders } from '../../config/api';
 import AuthenticatedInlineImage from '../AuthenticatedInlineImage';
 import { useImageCreations } from '../../hooks/useImageCreations';
 import { resolveCreationPreviewSrc } from '../../utils/imageCreations';
+import { prepareNewChatSettings } from '../../utils/newChatSettings';
 import CollectionsBookmarkOutlinedIcon from '@mui/icons-material/CollectionsBookmarkOutlined';
 
 interface SidebarProps {
@@ -327,10 +328,17 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
 
   const handleCreateChat = () => {
     const cur = getCurrentChat();
-    if (cur && !chatIsListedInAllChatsSection(cur)) {
+    // Не удаляем чат, если он ещё генерирует ответ — иначе стрим теряет цель.
+    if (
+      cur &&
+      !chatIsListedInAllChatsSection(cur) &&
+      !state.loadingChatIds.includes(cur.id) &&
+      !cur.messages.some((m) => m.isStreaming)
+    ) {
       deleteChat(cur.id);
     }
     const chatId = createChat();
+    prepareNewChatSettings(cur?.id, chatId);
     setCurrentChat(chatId);
     navigate('/');
   };
@@ -804,58 +812,117 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
           boxSizing: 'border-box',
         }}
       >
-        {open && (
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-            <Box
+        {open ? (
+          <>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+              <Box
+                sx={{
+                  width: 30,
+                  height: 30,
+                  borderRadius: '50%',
+                  overflow: 'hidden',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0,
+                }}
+              >
+                <Box
+                  component="img"
+                  src="/astra.png"
+                  alt="Astra"
+                  sx={{
+                    width: '70%',
+                    height: '70%',
+                    objectFit: 'cover',
+                    transform: 'scale(1.2)',
+                  }}
+                />
+              </Box>
+              <Box>
+                <Typography variant="subtitle1" fontWeight="bold" sx={{ lineHeight: 1.2, fontSize: '1.05rem' }}>
+                  AstraChat
+                </Typography>
+              </Box>
+            </Box>
+            <Tooltip title="Свернуть панель" placement="right">
+              <IconButton
+                onClick={onToggle}
+                sx={{
+                  color: 'var(--sidebar-fg, #ffffff)',
+                  opacity: 1,
+                  width: 40,
+                  height: 40,
+                  borderRadius: 1,
+                  p: 0,
+                  '&:hover': {
+                    backgroundColor: getSidebarPanelHoverBackground(sidebarPanelBg),
+                    opacity: 1,
+                  },
+                }}
+              >
+                <SidebarRailMenuGlyph side="left" />
+              </IconButton>
+            </Tooltip>
+          </>
+        ) : (
+          // Как в ChatGPT: логотип на месте кнопки; при hover — «Открыть панель»
+          <Tooltip title="Открыть панель" placement="right">
+            <IconButton
+              onClick={onToggle}
+              aria-label="Открыть панель"
               sx={{
-                width: 38,
-                height: 38,
-                borderRadius: '50%',
-                overflow: 'hidden',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexShrink: 0,
+                color: 'var(--sidebar-fg, #ffffff)',
+                width: 40,
+                height: 40,
+                borderRadius: 1,
+                p: 0,
+                position: 'relative',
+                '&:hover, &:focus-visible': {
+                  backgroundColor: getSidebarPanelHoverBackground(sidebarPanelBg),
+                },
+                '& .sidebar-rail-collapsed-logo': { opacity: 1 },
+                '& .sidebar-rail-collapsed-toggle': { opacity: 0 },
+                '&:hover .sidebar-rail-collapsed-logo, &:focus-visible .sidebar-rail-collapsed-logo': {
+                  opacity: 0,
+                },
+                '&:hover .sidebar-rail-collapsed-toggle, &:focus-visible .sidebar-rail-collapsed-toggle': {
+                  opacity: 1,
+                },
               }}
             >
               <Box
+                className="sidebar-rail-collapsed-logo"
                 component="img"
                 src="/astra.png"
-                alt="Astra"
+                alt=""
+                draggable={false}
                 sx={{
-                  width: '70%',
-                  height: '70%',
-                  objectFit: 'cover',
-                  transform: 'scale(1.2)',
+                  position: 'absolute',
+                  width: 30,
+                  height: 30,
+                  objectFit: 'contain',
+                  transition: 'opacity 0.12s ease',
+                  pointerEvents: 'none',
                 }}
               />
-            </Box>
-            <Box>
-              <Typography variant="h6" fontWeight="bold">
-                AstraChat
-              </Typography>
-            </Box>
-          </Box>
+              <Box
+                className="sidebar-rail-collapsed-toggle"
+                sx={{
+                  position: 'absolute',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  lineHeight: 0,
+                  transition: 'opacity 0.12s ease',
+                  pointerEvents: 'none',
+                }}
+              >
+                <SidebarRailMenuGlyph side="left" />
+              </Box>
+            </IconButton>
+          </Tooltip>
         )}
-        <Tooltip title={open ? 'Свернуть панель' : 'Открыть панель'} placement="right">
-          <IconButton
-            onClick={onToggle}
-            sx={{
-              color: 'var(--sidebar-fg, #ffffff)',
-              opacity: 1,
-              width: 40,
-              height: 40,
-              borderRadius: 1,
-              p: 0,
-              '&:hover': {
-                backgroundColor: getSidebarPanelHoverBackground(sidebarPanelBg),
-                opacity: 1,
-              },
-            }}
-          >
-            <SidebarRailMenuGlyph side="left" />
-          </IconButton>
-        </Tooltip>
       </Box>
 
       {open && (
@@ -2957,6 +3024,8 @@ backgroundColor: state.currentChatId === chat.id ? 'var(--sidebar-selected-bg, r
             iconColor: draft.iconColor,
             memory: draft.memory,
             instructions: draft.instructions,
+            knowledgeBasesEnabled: draft.knowledgeBasesEnabled,
+            knowledgeBaseIds: draft.knowledgeBaseIds,
           });
           if (pendingChatIdForProject) {
             moveChatToProject(pendingChatIdForProject, projectId);
@@ -2972,6 +3041,8 @@ backgroundColor: state.currentChatId === chat.id ? 'var(--sidebar-selected-bg, r
             iconColor: updates.iconColor,
             memory: updates.memory,
             instructions: updates.instructions,
+            knowledgeBasesEnabled: updates.knowledgeBasesEnabled,
+            knowledgeBaseIds: updates.knowledgeBaseIds,
           });
           if (pendingChatIdForProject) {
             moveChatToProject(pendingChatIdForProject, projectId);
@@ -2989,6 +3060,8 @@ backgroundColor: state.currentChatId === chat.id ? 'var(--sidebar-selected-bg, r
             iconColor: projectData.iconColor,
             memory: projectData.memory,
             instructions: projectData.instructions,
+            knowledgeBasesEnabled: projectData.knowledgeBasesEnabled,
+            knowledgeBaseIds: projectData.knowledgeBaseIds,
           });
           if (pendingChatIdForProject) {
             moveChatToProject(pendingChatIdForProject, projectId);

@@ -44,6 +44,10 @@ class ProjectRagDocumentRepository:
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_proj_rag_docs_created ON project_rag_documents(created_at DESC)"
             )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_proj_rag_docs_content_hash "
+                "ON project_rag_documents ((metadata->>'content_hash'))"
+            )
         logger.info("Таблица project_rag_documents готова")
 
     async def create_document(
@@ -69,6 +73,49 @@ class ProjectRagDocumentRepository:
                 document.updated_at,
             )
         return row["id"] if row else None
+
+    async def find_duplicate(
+        self,
+        *,
+        project_id: str,
+        content_hash: Optional[str] = None,
+        filename: Optional[str] = None,
+        size: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Дубликат внутри проекта: content_hash или filename+size."""
+        pid = (project_id or "").strip()
+        digest = (content_hash or "").strip().lower()
+        name = (filename or "").strip()
+        size_s = str(int(size)) if size is not None else None
+        if not pid or (not digest and not (name and size_s is not None)):
+            return None
+
+        async with await self.db.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, filename FROM project_rag_documents
+                WHERE project_id = $1
+                  AND (
+                    ($2::text <> '' AND LOWER(COALESCE(metadata->>'content_hash', '')) = $2)
+                    OR (
+                        $3::text <> '' AND $4::text IS NOT NULL
+                        AND (metadata->>'content_hash' IS NULL
+                             OR TRIM(COALESCE(metadata->>'content_hash', '')) = '')
+                        AND LOWER(filename) = LOWER($3)
+                        AND COALESCE(metadata->>'size', '') = $4
+                    )
+                  )
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                pid,
+                digest,
+                name,
+                size_s,
+            )
+        if not row:
+            return None
+        return {"id": int(row["id"]), "filename": row["filename"]}
 
     async def get_document(self, document_id: int) -> Optional[dict]:
         async with await self.db.acquire() as conn:
@@ -143,6 +190,7 @@ class ProjectRagDocumentRepository:
         return [int(r["id"]) for r in rows]
 
     async def delete_document(self, document_id: int) -> bool:
+        # Векторы удаляются через FK ON DELETE CASCADE (embedding_schema).
         async with await self.db.acquire() as conn:
             await conn.execute(
                 "DELETE FROM project_rag_documents WHERE id = $1", document_id
@@ -161,15 +209,32 @@ class ProjectRagDocumentRepository:
         except Exception:
             return 0
 
+    async def list_documents_brief(self, project_id: str) -> List[dict]:
+        """Документы проекта без их текста - для списка в интерфейсе"""
+        async with await self.db.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, project_id, filename, metadata, created_at, updated_at "
+                "FROM project_rag_documents WHERE project_id = $1 ORDER BY created_at DESC",
+                project_id,
+            )
+        return [self._row_to_dict(r) for r in rows]
+
     def _row_to_dict(self, row) -> dict:
         meta = row["metadata"]
         if isinstance(meta, str):
             meta = json.loads(meta) if meta else {}
+        # Колонки content в строке может не быть: список документов её не
+        # тянет (см. list_documents_brief). asyncpg на отсутствующее имя
+        # бросает KeyError - ловим и отдаём None
+        try:
+            content = row["content"]
+        except KeyError:
+            content = None
         return {
             "id": row["id"],
             "project_id": row["project_id"],
             "filename": row["filename"],
-            "content": row["content"],
+            "content": content,
             "metadata": meta or {},
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],

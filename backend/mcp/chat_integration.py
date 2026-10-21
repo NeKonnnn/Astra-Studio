@@ -64,6 +64,7 @@ def build_mcp_context_from_user(
     return McpCallContext(
         user_id=str(user.get("user_id") or user.get("username") or ""),
         username=str(user.get("username") or ""),
+        email=(str(user["email"]).strip() if user.get("email") else None),
         chat_id=chat_id,
         message_id=message_id,
         is_admin=bool(user.get("is_admin")),

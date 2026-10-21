@@ -12,7 +12,20 @@ export async function fetchProjectsFromServer(): Promise<Project[]> {
   return Array.isArray(data.projects) ? data.projects : [];
 }
 
-function projectToBody(project: Pick<Project, 'id' | 'name' | 'instructions' | 'memory' | 'icon' | 'iconType' | 'iconColor'>) {
+function projectToBody(
+  project: Pick<
+    Project,
+    | 'id'
+    | 'name'
+    | 'instructions'
+    | 'memory'
+    | 'icon'
+    | 'iconType'
+    | 'iconColor'
+    | 'knowledgeBasesEnabled'
+    | 'knowledgeBaseIds'
+  >,
+) {
   return {
     id: project.id,
     name: project.name,
@@ -21,6 +34,10 @@ function projectToBody(project: Pick<Project, 'id' | 'name' | 'instructions' | '
     icon: project.icon,
     iconType: project.iconType,
     iconColor: project.iconColor,
+    knowledgeBasesEnabled: Boolean(project.knowledgeBasesEnabled),
+    knowledgeBaseIds: Array.isArray(project.knowledgeBaseIds)
+      ? project.knowledgeBaseIds
+      : [],
   };
 }
 
@@ -44,6 +61,12 @@ export async function syncProjectUpdate(projectId: string, updates: Partial<Proj
   if (updates.icon !== undefined) body.icon = updates.icon;
   if (updates.iconType !== undefined) body.iconType = updates.iconType;
   if (updates.iconColor !== undefined) body.iconColor = updates.iconColor;
+  if (updates.knowledgeBasesEnabled !== undefined) {
+    body.knowledgeBasesEnabled = updates.knowledgeBasesEnabled;
+  }
+  if (updates.knowledgeBaseIds !== undefined) {
+    body.knowledgeBaseIds = updates.knowledgeBaseIds;
+  }
 
   const response = await fetch(getApiUrl(`/api/projects/${encodeURIComponent(projectId)}`), {
     method: 'PUT',

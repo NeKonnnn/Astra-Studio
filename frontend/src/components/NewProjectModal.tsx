@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import ProjectRagLibraryInline from './ProjectRagLibraryInline';
+import ProjectKnowledgeBasesField from './ProjectKnowledgeBasesField';
 import RAGSettings from './settings/RAGSettings';
 import { saveEntityRagSettings, type EntityRagDraft } from '../utils/entityRagSettings';
 import { useRagReindexStatus } from '../contexts/RagReindexStatusContext';
@@ -45,6 +46,8 @@ export interface DraftProjectPayload {
   icon?: string;
   iconType?: 'icon' | 'emoji';
   iconColor?: string;
+  knowledgeBasesEnabled?: boolean;
+  knowledgeBaseIds?: number[];
 }
 
 interface NewProjectModalProps {
@@ -68,6 +71,8 @@ export interface ProjectData {
   category?: string;
   memory: 'default' | 'project-only';
   instructions: string;
+  knowledgeBasesEnabled?: boolean;
+  knowledgeBaseIds?: number[];
 }
 
 const colorOptions = [
@@ -106,6 +111,8 @@ export default function NewProjectModal({
   const [instructions, setInstructions] = useState('');
   /** Черновик настроек РАГ: уезжает в БД вместе с созданием проекта. */
   const [ragDraft, setRagDraft] = useState<EntityRagDraft | null>(null);
+  const [knowledgeBasesEnabled, setKnowledgeBasesEnabled] = useState(false);
+  const [knowledgeBaseIds, setKnowledgeBaseIds] = useState<number[]>([]);
   const [showIconPicker, setShowIconPicker] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showRagSettingsPanel, setShowRagSettingsPanel] = useState(false);
@@ -152,6 +159,8 @@ export default function NewProjectModal({
     setIconTab(0);
     setRagDraftProjectId(null);
     setRagDraft(null);
+    setKnowledgeBasesEnabled(false);
+    setKnowledgeBaseIds([]);
   };
 
   const handleClose = () => {
@@ -169,6 +178,8 @@ export default function NewProjectModal({
     icon: iconType === 'icon' ? selectedIcon || undefined : selectedEmoji || undefined,
     iconType,
     iconColor: selectedColor,
+    knowledgeBasesEnabled,
+    knowledgeBaseIds: knowledgeBasesEnabled ? knowledgeBaseIds : [],
   });
 
   const handleCreate = async () => {
@@ -190,6 +201,8 @@ export default function NewProjectModal({
         category: undefined,
         memory: payload.memory,
         instructions: payload.instructions,
+        knowledgeBasesEnabled: payload.knowledgeBasesEnabled,
+        knowledgeBaseIds: payload.knowledgeBaseIds,
       };
       const createdId = onCreateProject?.(projectData);
       if (typeof createdId === 'string') {
@@ -522,6 +535,13 @@ export default function NewProjectModal({
             subtitle="После выбора файлов проект создаётся как черновик с текущим названием; при «Отменить» черновик удаляется."
           />
         </Box>
+
+        <ProjectKnowledgeBasesField
+          enabled={knowledgeBasesEnabled}
+          selectedIds={knowledgeBaseIds}
+          onEnabledChange={setKnowledgeBasesEnabled}
+          onSelectedIdsChange={setKnowledgeBaseIds}
+        />
 
         {/* RAG-настройки проекта (scope=project) */}
         <Box sx={{ mb: 2 }}>

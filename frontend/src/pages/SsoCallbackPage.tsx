@@ -1,15 +1,20 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Box, CircularProgress, Container, Typography, Alert } from '@mui/material';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
+
+/** Дедуп StrictMode: два mount не должны дважды бить exchange. */
+const inflightExchanges = new Map<string, Promise<void>>();
 
 function readSsoTicket(searchParams: URLSearchParams): string | null {
   const fromQuery = searchParams.get('ticket');
   if (fromQuery) {
     return fromQuery;
   }
-  const hashRaw = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : window.location.hash;
+  const hashRaw = window.location.hash.startsWith('#')
+    ? window.location.hash.slice(1)
+    : window.location.hash;
   if (!hashRaw) {
     return null;
   }
@@ -21,7 +26,6 @@ export default function SsoCallbackPage() {
   const navigate = useNavigate();
   const { completeSsoLogin } = useAuth();
   const [error, setError] = useState('');
-  const exchangeStartedRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -50,19 +54,26 @@ export default function SsoCallbackPage() {
         }
         return;
       }
-      if (exchangeStartedRef.current) {
-        return;
+
+      let pending = inflightExchanges.get(ticket);
+      if (!pending) {
+        pending = (async () => {
+          await completeSsoLogin(ticket);
+          sessionStorage.setItem(exchangeSessionKey, 'done');
+        })().finally(() => {
+          inflightExchanges.delete(ticket);
+        });
+        inflightExchanges.set(ticket, pending);
       }
-      exchangeStartedRef.current = true;
 
       try {
-        await completeSsoLogin(ticket);
-        sessionStorage.setItem(exchangeSessionKey, 'done');
+        await pending;
         if (!cancelled) {
           navigate('/', { replace: true });
         }
       } catch (err: unknown) {
         if (cancelled) return;
+        sessionStorage.removeItem(exchangeSessionKey);
         if (axios.isAxiosError(err)) {
           const detail = err.response?.data?.detail;
           setError(typeof detail === 'string' ? detail : 'Не удалось завершить вход через SSO');

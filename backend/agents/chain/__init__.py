@@ -9,6 +9,9 @@
   prompts.py   - сообщение следующему агенту, видимый пользователю текст
   profiles.py  - профили агентов цепочки, payload под шаг
   runner.py    - запуск цепочки в чате (был в realtime/handlers.py)
+  step_search.py - свой поисковый запрос шага (AGENT_CHAIN_STEP_QUERY)
+  answers.py   - метки [[ОТВЕТ N]] последнего шага -> ответы шагов как есть
+  runner.py    - запуск цепочки в чате (был в realtime/handlers.py)
 
 Общий RAG цепочки - backend/agents/shared_rag.py (он же у субагентов).
 """

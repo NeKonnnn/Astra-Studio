@@ -14,6 +14,7 @@ import {
   resolveEnableThinkingByMode,
 } from '../utils/modelThinking';
 import { mapChainStepsFromMeta } from '../constants/agentChain';
+import { stripReasoningMarkers } from '../utils/reasoningSplit';
 import { 
   showBrowserNotification,
   areNotificationsEnabled, 
@@ -225,6 +226,8 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   const thinkingTraceRef = useRef<string>('');
   // Накопленный текст ответа (без thinking) для корректного совмещения при стриминге
   const responseAccumulatedRef = useRef<string>('');
+  /** Последний принятый stream_seq с бэкенда (отсекает опоздавшие чанки). */
+  const lastStreamSeqRef = useRef<number>(0);
   const mcpToolCallsRef = useRef<McpToolCallRecord[]>([]);
 
   type StreamSession = {
@@ -234,6 +237,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     multiLLMMessageId: string | null;
     thinking: string;
     responseAccumulated: string;
+    lastStreamSeq: number;
     expectMultiLlm: boolean;
     isStopped: boolean;
     multiLLMResponses: Map<string, MultiLLMResponseSlot>;
@@ -282,6 +286,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     session.multiLLMMessageId = multiLLMMessageRef.current;
     session.thinking = thinkingTraceRef.current;
     session.responseAccumulated = responseAccumulatedRef.current;
+    session.lastStreamSeq = lastStreamSeqRef.current;
     session.expectMultiLlm = expectMultiLlmResponseRef.current;
     session.isStopped = isStoppedRef.current;
     session.multiLLMResponses = multiLLMResponsesRef.current;
@@ -296,6 +301,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     multiLLMMessageRef.current = session.multiLLMMessageId;
     thinkingTraceRef.current = session.thinking;
     responseAccumulatedRef.current = session.responseAccumulated;
+    lastStreamSeqRef.current = session.lastStreamSeq || 0;
     expectMultiLlmResponseRef.current = session.expectMultiLlm;
     isStoppedRef.current = session.isStopped;
     multiLLMResponsesRef.current = session.multiLLMResponses;
@@ -320,6 +326,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       multiLLMMessageId: partial?.multiLLMMessageId ?? null,
       thinking: partial?.thinking ?? '',
       responseAccumulated: partial?.responseAccumulated ?? '',
+      lastStreamSeq: partial?.lastStreamSeq ?? 0,
       expectMultiLlm: partial?.expectMultiLlm ?? false,
       isStopped: partial?.isStopped ?? false,
       multiLLMResponses: partial?.multiLLMResponses ?? new Map(),
@@ -342,8 +349,9 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     const rid = typeof data?.request_id === 'string' ? data.request_id.trim() : '';
     const cid = typeof data?.conversation_id === 'string' ? data.conversation_id.trim() : '';
     if (rid) {
-      const byReq = streamSessionsRef.current.get(rid);
-      if (byReq) return byReq;
+      // Только по request_id: события приходят всем вкладкам пользователя, и
+      // чужая генерация того же чата не должна писать в нашу сессию.
+      return streamSessionsRef.current.get(rid) || null;
     }
     if (cid) {
       let latest: StreamSession | null = null;
@@ -462,6 +470,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     clearRegenerationUi();
     thinkingTraceRef.current = '';
     responseAccumulatedRef.current = '';
+    lastStreamSeqRef.current = 0;
 
     if (currentChatIdRef.current && currentMessageRef.current) {
       updateMessage(currentChatIdRef.current, currentMessageRef.current, undefined, false);
@@ -1186,9 +1195,76 @@ export function SocketProvider({ children }: { children: ReactNode }) {
         if (expectMultiLlmResponseRef.current || multiLLMMessageRef.current) {
           return;
         }
-        
-        // Накапливаем чистый текст ответа (без thinking) отдельно
-        responseAccumulatedRef.current = data.accumulated || data.chunk;
+
+        // Накапливаем чистый текст ответа (без thinking) отдельно.
+        // Бэкенд шлёт stream_seq (монотонный). Опоздавший пакет с меньшим seq
+        // отбрасываем — это и есть «гонка порядка», из‑за которой презентация
+        // замирала: длинный чанк пришёл раньше короткого, а дальше все короче
+        // отбрасывались по длине навсегда / надолго.
+        {
+          const incomingAcc =
+            typeof data?.accumulated === 'string'
+              ? data.accumulated
+              : typeof data?.chunk === 'string'
+                ? data.chunk
+                : '';
+          const prevAcc = responseAccumulatedRef.current;
+          const candidateAcc =
+            typeof data?.accumulated === 'string'
+              ? incomingAcc
+              : prevAcc + (typeof data?.chunk === 'string' ? data.chunk : '');
+
+          const incomingSeq =
+            typeof data?.stream_seq === 'number' && Number.isFinite(data.stream_seq)
+              ? data.stream_seq
+              : null;
+
+          let keepPrev = false;
+          if (incomingSeq != null) {
+            if (incomingSeq <= lastStreamSeqRef.current) {
+              keepPrev = true;
+              try {
+                if (localStorage.getItem('astra:debug:presentation') === '1') {
+                  // eslint-disable-next-line no-console
+                  console.warn('[presentation] устаревший чанк по stream_seq — отбрасываю', {
+                    incomingSeq,
+                    lastSeq: lastStreamSeqRef.current,
+                    prevLen: prevAcc.length,
+                    candidateLen: candidateAcc.length,
+                  });
+                }
+              } catch {
+                /* no-op */
+              }
+            } else {
+              lastStreamSeqRef.current = incomingSeq;
+            }
+          } else {
+            // Fallback без stream_seq (старый бэкенд): не откатываем по длине,
+            // но разрешаем укорочение после вырезания reasoning.
+            const prevVisibleLen = stripReasoningMarkers(prevAcc).length;
+            const candVisibleLen = stripReasoningMarkers(candidateAcc).length;
+            keepPrev = !(
+              candidateAcc.length >= prevAcc.length || candVisibleLen >= prevVisibleLen
+            );
+            if (keepPrev) {
+              try {
+                if (localStorage.getItem('astra:debug:presentation') === '1') {
+                  // eslint-disable-next-line no-console
+                  console.warn('[presentation] чанк короче накопленного — отбрасываю (гонка порядка)', {
+                    prevLen: prevAcc.length,
+                    candidateLen: candidateAcc.length,
+                    prevVisibleLen,
+                    candVisibleLen,
+                  });
+                }
+              } catch {
+                /* no-op */
+              }
+            }
+          }
+          responseAccumulatedRef.current = keepPrev ? prevAcc : candidateAcc;
+        }
         // Итоговый контент = thinking (если есть) + ответ
         const chunkCombined = buildCombinedContent(
           thinkingTraceRef.current,
@@ -1483,6 +1559,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
 
         thinkingTraceRef.current = '';
         responseAccumulatedRef.current = '';
+        lastStreamSeqRef.current = 0;
         {
           const doneId = activeRequestIdRef.current || routedSession?.requestId || null;
           endStreamSession(doneId);
@@ -1528,6 +1605,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
         multiLLMResponsesRef.current.clear();
         thinkingTraceRef.current = '';
         responseAccumulatedRef.current = '';
+        lastStreamSeqRef.current = 0;
         {
           const doneId = activeRequestIdRef.current || routedSession?.requestId || null;
           endStreamSession(doneId);
@@ -1582,6 +1660,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
         expectedModelsCountRef.current = 0;
         thinkingTraceRef.current = '';
         responseAccumulatedRef.current = '';
+        lastStreamSeqRef.current = 0;
         {
           const doneId = activeRequestIdRef.current || routedSession?.requestId || null;
           endStreamSession(doneId);
@@ -1707,6 +1786,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     expectedModelsCountRef.current = 0;
     thinkingTraceRef.current = '';
     responseAccumulatedRef.current = '';
+    lastStreamSeqRef.current = 0;
     mcpToolCallsRef.current = [];
     clearMcpToolActivity();
     createStreamSession(requestId, chatId, {
@@ -1889,6 +1969,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     expectedModelsCountRef.current = 0;
     thinkingTraceRef.current = '';
     responseAccumulatedRef.current = '';
+    lastStreamSeqRef.current = 0;
     const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
     activeRequestIdRef.current = requestId;
     createStreamSession(requestId, chatId, {
@@ -2037,6 +2118,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     expectMultiLlmResponseRef.current = false;
     thinkingTraceRef.current = '';
     responseAccumulatedRef.current = '';
+    lastStreamSeqRef.current = 0;
     mcpToolCallsRef.current = [];
     clearMcpToolActivity();
     const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
@@ -2161,6 +2243,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     expectedModelsCountRef.current = 0;
     thinkingTraceRef.current = '';
     responseAccumulatedRef.current = '';
+    lastStreamSeqRef.current = 0;
     activeRequestIdRef.current = null;
 
     showNotification('info', 'Генерация остановлена');
@@ -2294,6 +2377,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
           expectMultiLlmResponseRef.current = false;
           thinkingTraceRef.current = '';
           responseAccumulatedRef.current = '';
+          lastStreamSeqRef.current = 0;
           clearRegenerationUi();
           clearMcpToolActivity();
         }

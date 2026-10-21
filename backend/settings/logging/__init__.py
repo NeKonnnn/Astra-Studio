@@ -2,6 +2,14 @@
 Единая система логирования backend.
 
 Матрица уровней — см. backend.settings.logging.matrix.LOG_MATRIX.
+
+Пример::
+
+    from backend.settings.logging import get_logger
+
+    logger = get_logger(__name__)
+    logger.info("Операция завершена")
+    logger.debug("Промежуточный шаг алгоритма")
 """
 
 from backend.settings.logging.errors import (

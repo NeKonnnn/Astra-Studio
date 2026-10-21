@@ -48,7 +48,12 @@ export async function fetchAgentTags(force = false): Promise<AgentTag[]> {
   inflight = (async () => {
     try {
       const resp = await fetch(getApiUrl('/api/agents/tags'), { headers: getAuthFetchHeaders() });
-      const data = resp.ok ? await resp.json() : {};
+      if (!resp.ok) {
+        // Ошибку (в т.ч. 5xx) не кэшируем: пустой справочник не должен
+        // «залипать» на минуту. Отдаём прежний кэш, если он был.
+        return cached ? cached.tags : [];
+      }
+      const data = await resp.json();
       const raw: unknown[] = Array.isArray(data?.tags) ? data.tags : [];
       const tags: AgentTag[] = [];
       for (const item of raw) {

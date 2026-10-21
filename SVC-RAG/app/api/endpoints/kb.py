@@ -7,7 +7,7 @@ import os
 from fastapi import (
     APIRouter,
     BackgroundTasks,
-    Depends, 
+    Depends,
     File,
     Form,
     HTTPException,
@@ -23,11 +23,13 @@ from app.api.rag_common import (
     filters_body_to_domain,
 )
 from app.dependencies import get_kb_service
+from app.services.document_duplicate import DUPLICATE_CODE, duplicate_http_detail
 from app.services.hit_types import hit_cosine
 from app.services.kb_service import KbService
 
 logger = get_logger(__name__)
 router = APIRouter()
+
 
 class KbIndexResponse(BaseModel):
     ok: bool
@@ -36,12 +38,18 @@ class KbIndexResponse(BaseModel):
     chunks_count: Optional[int] = None
     error: Optional[str] = None
 
+
 class KbDocumentItem(BaseModel):
     id: int
     filename: str
     created_at: Optional[str] = None
     size: Optional[int] = None
     file_type: Optional[str] = None
+    # Только {"agent_id": N} и только если он есть. Поле называется metadata,
+    # потому что фронт читает agent_id именно оттуда; блоб целиком сюда не
+    # кладём - см. list_documents_brief. Без этого поля FastAPI вырезал бы
+    # agent_id из ответа по response_model, даже если сервис его вернул.
+    metadata: Optional[Dict[str, Any]] = None
 
 class KbSearchRequest(RagSearchEvalBody):
     query: str
@@ -59,6 +67,7 @@ class KbSearchRequest(RagSearchEvalBody):
     reranker_model: Optional[str] = None
     reranker_provider: Optional[str] = None
 
+
 class KbSearchHit(BaseModel):
     content: str
     score: float
@@ -66,9 +75,11 @@ class KbSearchHit(BaseModel):
     chunk_index: Optional[int] = None
     cosine: Optional[float] = None
 
+
 class KbSearchResponse(BaseModel):
     hits: List[KbSearchHit]
     trace: Optional[Dict[str, Any]] = None
+
 
 @router.post("/documents", response_model=KbIndexResponse)
 async def kb_index_document(
@@ -80,7 +91,9 @@ async def kb_index_document(
     minio_bucket: Optional[str] = Form(None),
     owner_user_id: Optional[str] = Form(None),
     agent_id: Optional[int] = Form(None),
+    knowledge_base_id: Optional[int] = Form(None),
     uploaded_by: Optional[str] = Form(None),
+    relative_path: Optional[str] = Form(None),
     embedding_model: Optional[str] = Form(None),
     embedding_provider: Optional[str] = Form(None),
     kb: KbService = Depends(get_kb_service),
@@ -102,11 +115,22 @@ async def kb_index_document(
         minio_bucket=minio_bucket,
         owner_user_id=owner_user_id,
         agent_id=agent_id,
+        knowledge_base_id=knowledge_base_id,
         uploaded_by=uploaded_by,
+        relative_path=relative_path,
         model=embedding_model,
         provider=embedding_provider,
     )
     if not result.get("ok"):
+        if result.get("code") == DUPLICATE_CODE:
+            raise HTTPException(
+                status_code=409,
+                detail=duplicate_http_detail(
+                    document_id=result.get("document_id"),
+                    filename=result.get("filename") or file.filename,
+                    message=result.get("error"),
+                ),
+            )
         raise HTTPException(
             status_code=422, detail=result.get("error", "Ошибка индексации")
         )
@@ -116,6 +140,41 @@ async def kb_index_document(
         filename=result.get("filename"),
         chunks_count=result.get("chunks_count"),
     )
+
+
+class KbDuplicateCheckRequest(BaseModel):
+    content_hash: str
+    filename: Optional[str] = None
+    size: Optional[int] = None
+    agent_id: Optional[int] = None
+    knowledge_base_id: Optional[int] = None
+
+
+class KbDuplicateCheckResponse(BaseModel):
+    duplicate: bool
+    document_id: Optional[int] = None
+    filename: Optional[str] = None
+
+
+@router.post("/documents/duplicate-check", response_model=KbDuplicateCheckResponse)
+async def kb_duplicate_check(
+    body: KbDuplicateCheckRequest,
+    kb: KbService = Depends(get_kb_service),
+):
+    """Проверка дубликата до записи исходника в MinIO/PVC."""
+    out = await kb.check_duplicate(
+        content_hash=body.content_hash,
+        filename=body.filename,
+        size=body.size,
+        agent_id=body.agent_id,
+        knowledge_base_id=body.knowledge_base_id,
+    )
+    return KbDuplicateCheckResponse(
+        duplicate=bool(out.get("duplicate")),
+        document_id=out.get("document_id"),
+        filename=out.get("filename"),
+    )
+
 
 @router.get("/documents", response_model=List[KbDocumentItem])
 async def kb_list_documents(kb: KbService = Depends(get_kb_service)):
@@ -128,9 +187,11 @@ async def kb_list_documents(kb: KbService = Depends(get_kb_service)):
             created_at=d.get("created_at"),
             size=d.get("size"),
             file_type=d.get("file_type"),
+            metadata=d.get("metadata"),
         )
         for d in docs
     ]
+
 
 @router.delete("/documents/{document_id}")
 async def kb_delete_document(
@@ -142,6 +203,54 @@ async def kb_delete_document(
     if not out.get("ok"):
         raise HTTPException(status_code=404, detail="Документ не найден в Базе Знаний")
     return out
+
+
+@router.get("/documents/{document_id}")
+async def kb_get_document(
+    document_id: int,
+    kb: KbService = Depends(get_kb_service),
+):
+    """Метаданные одного KB-документа (для клонирования агента и т.п.)."""
+    info = await kb.get_document_info(document_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Документ не найден в Базе Знаний")
+    return info
+
+
+class KbCloneDocumentRequest(BaseModel):
+    agent_id: Optional[int] = None
+    knowledge_base_id: Optional[int] = None
+    owner_user_id: Optional[str] = None
+    uploaded_by: Optional[str] = None
+    minio_object: Optional[str] = None
+    minio_bucket: Optional[str] = None
+
+
+@router.post("/documents/{document_id}/clone")
+async def kb_clone_document(
+    document_id: int,
+    body: KbCloneDocumentRequest,
+    kb: KbService = Depends(get_kb_service),
+):
+    """Клон KB-документа с векторами (агент или база знаний, без повторной индексации)."""
+    out = await kb.clone_document(
+        document_id,
+        agent_id=body.agent_id,
+        knowledge_base_id=body.knowledge_base_id,
+        owner_user_id=body.owner_user_id,
+        uploaded_by=body.uploaded_by,
+        minio_object=body.minio_object,
+        minio_bucket=body.minio_bucket,
+    )
+    if not out.get("ok"):
+        err = out.get("error") or "clone_failed"
+        if err == "not_found":
+            raise HTTPException(
+                status_code=404, detail="Документ не найден в Базе Знаний"
+            )
+        raise HTTPException(status_code=500, detail=f"Не удалось клонировать документ: {err}")
+    return out
+
 
 @router.post("/search", response_model=KbSearchResponse)
 async def kb_search(
@@ -189,6 +298,7 @@ async def kb_search(
         trace=trace.to_dict() if body.debug_trace else None,
     )
 
+
 class KbReindexRequest(BaseModel):
     chunk_size: Optional[int] = None
     chunk_overlap: Optional[int] = None
@@ -201,10 +311,12 @@ class KbReindexRequest(BaseModel):
     embedding_model: Optional[str] = None
     embedding_provider: Optional[str] = None
 
+
 def _block_search_on_reindex() -> bool:
     """Отбивать ли поиск во время ГЛОБАЛЬНОГО реиндекса."""
     v = os.getenv("RAG_BLOCK_SEARCH_DURING_REINDEX", "true").strip().lower()
     return v in ("1", "true", "yes", "on")
+
 
 def _kb_reindex_key(owner_user_id: Optional[str], agent_id: Optional[int]) -> str:
     """Ключ очереди. Без фильтров — кластерный прогон, он эксклюзивный."""
@@ -216,6 +328,7 @@ def _kb_reindex_key(owner_user_id: Optional[str], agent_id: Optional[int]) -> st
     if owner:
         return entity_key("owner", owner)
     return GLOBAL_KEY
+
 
 async def _kb_reindex_bg(
     kb: KbService,
@@ -255,11 +368,16 @@ async def _kb_reindex_bg(
         gen,
         _job,
         meta={
-            "scope": "agent" if agent_id is not None else ("owner" if owner_user_id else "all"),
+            "scope": (
+                "agent"
+                if agent_id is not None
+                else ("owner" if owner_user_id else "all")
+            ),
             "entity_id": str(agent_id) if agent_id is not None else None,
             "owner_user_id": (owner_user_id or "").strip().lower() or None,
         },
     )
+
 
 @router.post("/reindex")
 async def kb_reindex(
@@ -292,6 +410,7 @@ async def kb_reindex(
         "document_ids": body.document_ids,
         "queue_key": _kb_reindex_key(body.owner_user_id, body.agent_id),
     }
+
 
 @router.get("/reindex/status")
 async def kb_reindex_status():

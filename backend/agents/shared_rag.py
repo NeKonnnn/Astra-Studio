@@ -2,9 +2,10 @@
 """Общий RAG цепочки и субагентов: база знаний головного агента - остальным.
 
 Переключатель «Общий RAG для цепочки и субагентов» в карточке головного
-агента (config.shared_chain_rag): его база знаний (kb_document_ids) доступна
-агентам цепочки (chain/runner.py) и всей ветке его субагентов
-(subagents/runner.py). Кому и чью базу давать - решается здесь, для обоих.
+агента (config.shared_chain_rag): его базы знаний (entity knowledge_base_ids
+и legacy kb_document_ids) доступны агентам цепочки (chain/runner.py) и всей
+ветке его субагентов (subagents/runner.py). Кому и чью базу давать -
+решается здесь, для обоих.
 """
 
 from __future__ import annotations
@@ -17,10 +18,10 @@ SHARED_RAG_KEY = "_shared_chain_rag_ids"
 
 
 def head_shared_kb_ids(head_profile: Dict[str, Any]) -> List[Any]:
-    """Документы, которыми головной агент делится с цепочкой и субагентами.
+    """Legacy document_id головного агента для shared RAG.
 
-    Пусто, если общий RAG у него выключен, поиск по документам выключен или
-    документов нет.
+    Пусто, если общий RAG выключен или legacy file_search выключен.
+    Entity knowledge bases разворачиваются асинхронно в chain/runner.
     """
     if not isinstance(head_profile, dict):
         return []
@@ -32,6 +33,30 @@ def head_shared_kb_ids(head_profile: Dict[str, Any]) -> List[Any]:
     if not isinstance(raw_ids, list):
         return []
     return list(raw_ids)
+
+
+def head_shared_knowledge_base_ids(head_profile: Dict[str, Any]) -> List[int]:
+    """Entity knowledge_base_ids головного для shared RAG."""
+    if not isinstance(head_profile, dict):
+        return []
+    if not head_profile.get("shared_chain_rag"):
+        return []
+    if not head_profile.get("knowledge_bases_enabled"):
+        return []
+    out: List[int] = []
+    for raw in head_profile.get("knowledge_base_ids") or []:
+        try:
+            kid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if kid > 0 and kid not in out:
+            out.append(kid)
+    return out
+
+
+def head_shares_chain_rag(head_profile: Dict[str, Any]) -> bool:
+    """Включён ли общий RAG цепочки у головного агента."""
+    return isinstance(head_profile, dict) and bool(head_profile.get("shared_chain_rag"))
 
 
 def accepts_parent_shared_rag(profile: Dict[str, Any]) -> bool:

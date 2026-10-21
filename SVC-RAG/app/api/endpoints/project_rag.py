@@ -23,12 +23,14 @@ from app.api.rag_common import (
     filters_body_to_domain,
 )
 from app.dependencies import get_project_rag_service
+from app.services.document_duplicate import DUPLICATE_CODE, duplicate_http_detail
 from app.services.hit_types import hit_cosine
 from app.services.project_rag_service import ProjectRagService
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter()
+
 
 class ProjectRagIndexResponse(BaseModel):
     ok: bool
@@ -38,6 +40,7 @@ class ProjectRagIndexResponse(BaseModel):
     project_id: Optional[str] = None
     error: Optional[str] = None
 
+
 class ProjectRagDocumentItem(BaseModel):
     id: int
     filename: str
@@ -45,6 +48,7 @@ class ProjectRagDocumentItem(BaseModel):
     created_at: Optional[str] = None
     size: Optional[int] = None
     file_type: Optional[str] = None
+
 
 class ProjectRagSearchRequest(RagSearchEvalBody):
     query: str
@@ -61,6 +65,7 @@ class ProjectRagSearchRequest(RagSearchEvalBody):
     reranker_model: Optional[str] = None
     reranker_provider: Optional[str] = None
 
+
 class ProjectRagSearchHit(BaseModel):
     content: str
     score: float
@@ -68,9 +73,11 @@ class ProjectRagSearchHit(BaseModel):
     chunk_index: Optional[int] = None
     cosine: Optional[float] = None
 
+
 class ProjectRagSearchResponse(BaseModel):
     hits: List[ProjectRagSearchHit]
     trace: Optional[Dict[str, Any]] = None
+
 
 @router.post("/projects/{project_id}/documents", response_model=ProjectRagIndexResponse)
 async def project_rag_upload(
@@ -109,6 +116,15 @@ async def project_rag_upload(
         provider=embedding_provider,
     )
     if not result.get("ok"):
+        if result.get("code") == DUPLICATE_CODE:
+            raise HTTPException(
+                status_code=409,
+                detail=duplicate_http_detail(
+                    document_id=result.get("document_id"),
+                    filename=result.get("filename") or file.filename,
+                    message=result.get("error"),
+                ),
+            )
         raise HTTPException(
             status_code=422, detail=result.get("error", "Ошибка индексации")
         )
@@ -119,6 +135,41 @@ async def project_rag_upload(
         chunks_count=result.get("chunks_count"),
         project_id=project_id,
     )
+
+
+class ProjectDuplicateCheckRequest(BaseModel):
+    content_hash: str
+    filename: Optional[str] = None
+    size: Optional[int] = None
+
+
+class ProjectDuplicateCheckResponse(BaseModel):
+    duplicate: bool
+    document_id: Optional[int] = None
+    filename: Optional[str] = None
+
+
+@router.post(
+    "/projects/{project_id}/documents/duplicate-check",
+    response_model=ProjectDuplicateCheckResponse,
+)
+async def project_rag_duplicate_check(
+    project_id: str,
+    body: ProjectDuplicateCheckRequest,
+    svc: ProjectRagService = Depends(get_project_rag_service),
+):
+    out = await svc.check_duplicate(
+        project_id=project_id,
+        content_hash=body.content_hash,
+        filename=body.filename,
+        size=body.size,
+    )
+    return ProjectDuplicateCheckResponse(
+        duplicate=bool(out.get("duplicate")),
+        document_id=out.get("document_id"),
+        filename=out.get("filename"),
+    )
+
 
 @router.get(
     "/projects/{project_id}/documents", response_model=List[ProjectRagDocumentItem]
@@ -140,6 +191,7 @@ async def project_rag_list(
         )
         for d in docs
     ]
+
 
 class ProjectDocumentChunkHit(BaseModel):
     content: str
@@ -170,9 +222,7 @@ async def project_rag_get_document_chunks(
         raise HTTPException(status_code=404, detail="Документ не найден в проекте")
     return ProjectDocumentChunksResponse(
         chunks=[
-            ProjectDocumentChunkHit(
-                content=c, document_id=doc_id, chunk_index=idx
-            )
+            ProjectDocumentChunkHit(content=c, document_id=doc_id, chunk_index=idx)
             for c, doc_id, idx in result
         ]
     )
@@ -190,6 +240,7 @@ async def project_rag_delete_document(
         raise HTTPException(status_code=404, detail="Документ не найден")
     return out
 
+
 @router.delete("/projects/{project_id}")
 async def project_rag_delete_project(
     project_id: str,
@@ -198,6 +249,7 @@ async def project_rag_delete_project(
     """Удалить все RAG-документы проекта (вызывается при удалении проекта)."""
     out = await svc.delete_by_project(project_id)
     return out
+
 
 @router.post("/projects/{project_id}/search", response_model=ProjectRagSearchResponse)
 async def project_rag_search(
@@ -246,6 +298,7 @@ async def project_rag_search(
         trace=trace.to_dict() if body.debug_trace else None,
     )
 
+
 class ProjectRagReindexRequest(BaseModel):
     chunk_size: Optional[int] = None
     chunk_overlap: Optional[int] = None
@@ -255,12 +308,16 @@ class ProjectRagReindexRequest(BaseModel):
     embedding_model: Optional[str] = None
     embedding_provider: Optional[str] = None
 
+
 def _block_search_on_reindex() -> bool:
     """Отбивать ли поиск во время ГЛОБАЛЬНОГО реиндекса."""
     v = os.getenv("RAG_BLOCK_SEARCH_DURING_REINDEX", "true").strip().lower()
     return v in ("1", "true", "yes", "on")
 
-def _project_reindex_key(owner_user_id: Optional[str], project_id: Optional[str]) -> str:
+
+def _project_reindex_key(
+    owner_user_id: Optional[str], project_id: Optional[str]
+) -> str:
     """Ключ очереди. Без фильтров — кластерный прогон, он эксклюзивный."""
     from app.services.reindex_queue import GLOBAL_KEY, entity_key
 
@@ -271,6 +328,7 @@ def _project_reindex_key(owner_user_id: Optional[str], project_id: Optional[str]
     if owner:
         return entity_key("owner", owner)
     return GLOBAL_KEY
+
 
 async def _project_reindex_all_bg(
     svc: ProjectRagService,
@@ -328,6 +386,7 @@ async def _project_reindex_all_bg(
         },
     )
 
+
 @router.post("/reindex")
 async def project_rag_reindex_all(
     body: ProjectRagReindexRequest,
@@ -359,6 +418,7 @@ async def project_rag_reindex_all(
         "queue_key": _project_reindex_key(body.owner_user_id, body.project_id),
     }
 
+
 @router.get("/reindex/status")
 async def project_rag_reindex_status():
     """Статус пересборки проектов.
@@ -372,5 +432,7 @@ async def project_rag_reindex_status():
     status = project_queue.status()
     active = status.get("active") or []
     single = active[0] if len(active) == 1 else {}
-    status["project_id"] = single.get("entity_id") if single.get("scope") == "project" else None
+    status["project_id"] = (
+        single.get("entity_id") if single.get("scope") == "project" else None
+    )
     return status

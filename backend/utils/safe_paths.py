@@ -15,8 +15,11 @@ _LOG_UNSAFE_CHARS = re.compile(r"[\r\n\x00]")
 
 
 def default_app_root() -> Path:
-    if Path("/app").is_dir():
-        return Path("/app")
+    # В контейнере код лежит в /app/backend; одного существования /app мало
+    # (на хосте Windows часто есть чужой F:\app).
+    container_root = Path("/app")
+    if container_root.is_dir() and (container_root / "backend").is_dir():
+        return container_root
     return Path(__file__).resolve().parent.parent.parent
 
 
@@ -33,20 +36,28 @@ def resolve_path_under_base(
 ) -> Optional[Path]:
     """
     Разрешает путь относительно base_dir и отклоняет выход за его пределы.
-    Компоненты "." и ".." в исходном пути запрещены.
+    Компоненты ``.`` и ``..`` в исходном пути запрещены.
     """
     text = str(raw_path).strip()
     if not text:
         return None
 
-    base = Path(base_dir).resolve() if base_dir is not None else default_app_root().resolve()
+    base = (
+        Path(base_dir).resolve()
+        if base_dir is not None
+        else default_app_root().resolve()
+    )
     candidate = Path(text).expanduser()
 
     if any(part in _UNSAFE_PATH_PARTS for part in candidate.parts):
         return None
 
     try:
-        resolved = candidate.resolve(strict=False) if candidate.is_absolute() else (base / candidate).resolve(strict=False)
+        resolved = (
+            candidate.resolve(strict=False)
+            if candidate.is_absolute()
+            else (base / candidate).resolve(strict=False)
+        )
     except (OSError, RuntimeError):
         return None
 
@@ -90,9 +101,20 @@ def default_logs_dir() -> Path:
     return _resolve_dir_from_env("BACKEND_LOG_DIR", base / "logs", base)
 
 
+def _prefer_docker_memory(base: Path) -> Path:
+    """/app/memory только если корень приложения реально /app (Docker), не в тестах."""
+    docker_root = Path("/app")
+    try:
+        if docker_root.is_dir() and base.resolve() == docker_root.resolve():
+            return Path("/app/memory")
+    except OSError:
+        pass
+    return base / "memory"
+
+
 def default_context_prompts_dir() -> Path:
     base = default_app_root()
-    preferred = Path("/app/memory") if Path("/app").is_dir() else base / "memory"
+    preferred = _prefer_docker_memory(base)
     return _resolve_dir_from_env("CONTEXT_PROMPTS_DIR", preferred, base)
 
 
@@ -126,10 +148,54 @@ def resolve_context_prompts_file_path(raw_path: Optional[str]) -> Optional[Path]
     return None
 
 
+def resolve_context_prompts_file_path_primary() -> Path:
+    """Writable-путь для context_prompts.json (Docker: /app/memory)."""
+    env_path = os.getenv("CONTEXT_PROMPTS_FILE", "").strip()
+    if env_path:
+        resolved = resolve_context_prompts_file_path(env_path)
+        if resolved is not None:
+            return resolved
+    return default_context_prompts_dir() / "context_prompts.json"
+
+
+def context_prompts_seed_paths() -> list[Path]:
+    """Read-only шаблоны и существующие файлы для первичной загрузки."""
+    backend_dir = Path(__file__).resolve().parent.parent
+    root_dir = backend_dir.parent
+    seeds: list[Path] = [
+        resolve_context_prompts_file_path_primary(),
+        default_context_prompts_dir() / "context_prompts.json",
+        root_dir / "context_prompts.json",
+        Path("/app/context_prompts.json"),
+        Path("/app/memory/context_prompts.json"),
+        Path(tempfile.gettempdir()) / "astrachat" / "context_prompts.json",
+    ]
+    unique: list[Path] = []
+    for path in seeds:
+        rp = path.resolve()
+        if rp not in unique:
+            unique.append(rp)
+    return unique
+
+
+def context_prompts_file_fallbacks(primary_path: Union[str, Path]) -> list[Path]:
+    primary = Path(primary_path).resolve()
+    fallbacks: list[Path] = [primary]
+    for path in (
+        default_context_prompts_dir() / "context_prompts.json",
+        Path(tempfile.gettempdir()) / "astrachat" / "context_prompts.json",
+        Path(os.getcwd()) / "memory" / "context_prompts.json",
+    ):
+        rp = path.resolve()
+        if rp not in fallbacks:
+            fallbacks.append(rp)
+    return fallbacks
+
+
 def default_llm_settings_dir() -> Path:
     """Writable-каталог для llm_settings.json (Docker: /app/memory)."""
     base = default_app_root()
-    preferred = Path("/app/memory") if Path("/app").is_dir() else base / "memory"
+    preferred = _prefer_docker_memory(base)
     return _resolve_dir_from_env("LLM_SETTINGS_DIR", preferred, base)
 
 
@@ -140,7 +206,9 @@ def resolve_llm_settings_file_path() -> Path:
     """
     env_path = os.getenv("LLM_SETTINGS_PATH", "").strip()
     if env_path:
-        resolved = resolve_path_under_base(env_path, default_app_root(), create_parent=True)
+        resolved = resolve_path_under_base(
+            env_path, default_app_root(), create_parent=True
+        )
         if resolved is not None:
             return resolved
     return default_llm_settings_dir() / "llm_settings.json"

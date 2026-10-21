@@ -12,6 +12,7 @@ from backend.mcp.registry import McpRegistry
 from backend.mcp.session_manager import McpSessionManager
 from backend.mcp.session_pool import McpSessionPool
 from backend.mcp.tool_adapter import qualify_tool_name
+from backend.mcp.transports.streamable_http import build_mcp_http_url
 from backend.mcp.tools_cache import McpToolsCache
 from backend.mcp.types import (
     McpAggregateStatus,
@@ -29,10 +30,13 @@ _platform: Optional["McpPlatformService"] = None
 
 
 class McpPlatformService:
+
     def __init__(self, settings: Optional[Settings] = None):
         self._settings = settings or get_settings()
         self._registry = McpRegistry(self._settings)
-        self._session_manager = McpSessionManager(self._settings, self._registry, pool=None)
+        self._session_manager = McpSessionManager(
+            self._settings, self._registry, pool=None
+        )
         self._pool: Optional[McpSessionPool] = None
         self._tools_cache: Optional[McpToolsCache] = None
         self._initialized = False
@@ -56,8 +60,7 @@ class McpPlatformService:
         self._tools_cache = McpToolsCache(self._registry.config.tools_cache_ttl_seconds)
         if self._registry.enabled and self._registry.config.session_pool_enabled:
             self._pool = McpSessionPool(
-                self._registry.config.pool,
-                connect_factory=self._pool_connect_factory,
+                self._registry.config.pool, connect_factory=self._pool_connect_factory
             )
             self._session_manager._pool = self._pool
             self._pool.start()
@@ -68,9 +71,38 @@ class McpPlatformService:
             from backend.mcp.credentials.store import ensure_indexes
 
             await ensure_indexes()
-        except Exception as exc:
-            log.warning("MCP credentials indexes skipped: %s", exc)
+        except Exception:
+            log.exception("MCP credentials indexes skipped")
         log.info("MCP platform initialized (enabled=%s)", self._registry.enabled)
+        if self._registry.enabled:
+            for srv in self._registry.list_servers():
+                if srv.transport == "stdio":
+                    log.debug(
+                        "MCP startup server=%s enabled=%s transport=stdio command=%s args=%s cwd=%s",
+                        srv.id,
+                        srv.enabled,
+                        srv.command,
+                        srv.args,
+                        srv.cwd,
+                    )
+                else:
+                    base = str(
+                        srv.base_url or ""
+                    ).strip() or self._settings.resolve_mcp_server_base_url(srv.id)
+                    health_path = str(srv.health_path or "/healthz").strip()
+                    if not health_path.startswith("/"):
+                        health_path = f"/{health_path}"
+                    log.debug(
+                        "MCP startup server=%s enabled=%s transport=%s base_url=%s mcp_url=%s health_url=%s "
+                        "pool_acquire_timeout=%ss",
+                        srv.id,
+                        srv.enabled,
+                        srv.transport,
+                        base,
+                        build_mcp_http_url(base, srv.base_path),
+                        f"{base.rstrip('/')}{health_path}",
+                        self._registry.config.pool.acquire_timeout_seconds,
+                    )
 
     async def shutdown(self) -> None:
         if self._pool:
@@ -82,10 +114,12 @@ class McpPlatformService:
     async def _pool_connect_factory(self, server_id: str, **kwargs) -> McpServerSession:
         return await self._session_manager.create_pooled_session(server_id, **kwargs)
 
-    def list_servers_public(self, context: Optional[McpCallContext] = None) -> List[Dict[str, Any]]:
+    def list_servers_public(
+        self, context: Optional[McpCallContext] = None
+    ) -> List[Dict[str, Any]]:
         items: List[Dict[str, Any]] = []
         for srv in self._registry.list_servers():
-            if context and not has_mcp_server_access(srv, context):
+            if context and (not has_mcp_server_access(srv, context)):
                 continue
             items.append(
                 {
@@ -136,7 +170,13 @@ class McpPlatformService:
         raw_name = self._resolve_raw_tool_name(server_id, tool_name)
         return await session.call_tool(raw_name, arguments or {})
 
-    async def get_aggregate_status(self, context: Optional[McpCallContext] = None) -> McpAggregateStatus:
+    async def get_aggregate_status(
+        self,
+        context: Optional[McpCallContext] = None,
+        *,
+        server_ids: Optional[List[str]] = None,
+        fetch_tools: bool = False,
+    ) -> McpAggregateStatus:
         if not self._registry.enabled:
             return McpAggregateStatus(
                 initialized=self._initialized,
@@ -146,13 +186,18 @@ class McpPlatformService:
                 tools_total=0,
                 message="MCP disabled",
             )
-        ctx = context or McpCallContext(user_id="system", username="system", is_admin=True)
+        ctx = context or McpCallContext(
+            user_id="system", username="system", is_admin=True
+        )
         servers_cfg = self._registry.list_enabled_servers()
+        if server_ids:
+            allowed = set(server_ids)
+            servers_cfg = [srv for srv in servers_cfg if srv.id in allowed]
         statuses: List[McpServerStatus] = []
         connected = 0
         tools_total = 0
         for srv in servers_cfg:
-            st = await self._probe_server_status(srv, ctx)
+            st = await self._probe_server_status(srv, ctx, fetch_tools=fetch_tools)
             statuses.append(st)
             if st.connected:
                 connected += 1
@@ -166,8 +211,22 @@ class McpPlatformService:
             servers=statuses,
         )
 
-    async def health(self, context: Optional[McpCallContext] = None) -> Dict[str, Any]:
-        agg = await self.get_aggregate_status(context)
+    async def get_server_status(
+        self, server_id: str, context: McpCallContext, *, fetch_tools: bool = False
+    ) -> McpServerStatus:
+        server = self._registry.require_server(server_id)
+        return await self._probe_server_status(server, context, fetch_tools=fetch_tools)
+
+    async def health(
+        self,
+        context: Optional[McpCallContext] = None,
+        *,
+        server_ids: Optional[List[str]] = None,
+        fetch_tools: bool = False,
+    ) -> Dict[str, Any]:
+        agg = await self.get_aggregate_status(
+            context, server_ids=server_ids, fetch_tools=fetch_tools
+        )
         pool_metrics = self._pool.get_metrics() if self._pool else {}
         return {
             "initialized": agg.initialized,
@@ -193,12 +252,16 @@ class McpPlatformService:
             "message": agg.message,
         }
 
-    async def verify_server(self, server_id: str, context: McpCallContext) -> McpVerifyResult:
-        server = self._registry.require_server(server_id)
+    async def verify_server(
+        self, server_id: str, context: McpCallContext
+    ) -> McpVerifyResult:
+        self._registry.require_server(server_id)
         started = time.perf_counter()
         mgr = McpSessionManager(self._settings, self._registry, pool=None)
         try:
-            session = await mgr.connect_server(server_id, context, use_pool=False, ephemeral=True)
+            session = await mgr.connect_server(
+                server_id, context, use_pool=False, ephemeral=True
+            )
             specs = await session.list_tools()
             latency = (time.perf_counter() - started) * 1000.0
             return McpVerifyResult(
@@ -209,13 +272,11 @@ class McpPlatformService:
                 tools=[s.get("name", "") for s in specs],
             )
         except Exception as exc:
+            log.exception("Ошибка операции")
             latency = (time.perf_counter() - started) * 1000.0
             log.warning("MCP verify failed server=%s: %s", server_id, exc)
             return McpVerifyResult(
-                server_id=server_id,
-                success=False,
-                latency_ms=latency,
-                error=str(exc),
+                server_id=server_id, success=False, latency_ms=latency, error=str(exc)
             )
         finally:
             await mgr.disconnect_all()
@@ -231,7 +292,6 @@ class McpPlatformService:
         server = self._registry.require_server(server_id)
         if not is_server_allowed(server, context):
             return []
-
         provider = None
         if server.credential_provider:
             from backend.mcp.credentials.base import get_credential_provider
@@ -250,7 +310,6 @@ class McpPlatformService:
             cached = await self._tools_cache.get_tools_indexed(server_id, fp)
             if cached is not None:
                 return filter_tools(cached, server=server, context=context)
-
         mgr = McpSessionManager(self._settings, self._registry, self._pool)
         try:
             session = await mgr.connect_server(
@@ -270,16 +329,12 @@ class McpPlatformService:
         for srv in self._registry.list_enabled_servers():
             try:
                 all_tools.extend(await self.list_tools_for_server(srv.id, context))
-            except Exception as exc:
-                log.warning("list_tools failed server=%s: %s", srv.id, exc)
+            except Exception:
+                log.exception("list_tools failed server=")
         return all_tools
 
     async def call_tool_debug(
-        self,
-        server_id: str,
-        tool_name: str,
-        arguments: dict,
-        context: McpCallContext,
+        self, server_id: str, tool_name: str, arguments: dict, context: McpCallContext
     ) -> Any:
         mgr = McpSessionManager(self._settings, self._registry, self._pool)
         try:
@@ -290,11 +345,7 @@ class McpPlatformService:
             await mgr.disconnect_all()
 
     async def list_resources_for_server(
-        self,
-        server_id: str,
-        context: McpCallContext,
-        *,
-        cursor: Optional[str] = None,
+        self, server_id: str, context: McpCallContext, *, cursor: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         server = self._registry.require_server(server_id)
         if not is_server_allowed(server, context):
@@ -307,21 +358,22 @@ class McpPlatformService:
             await mgr.disconnect_all()
 
     async def read_resource_for_server(
-        self,
-        server_id: str,
-        uri: str,
-        context: McpCallContext,
+        self, server_id: str, uri: str, context: McpCallContext
     ) -> Dict[str, Any]:
         server = self._registry.require_server(server_id)
         if not is_server_allowed(server, context):
             from backend.mcp.exceptions import McpServerNotFoundError
 
-            raise McpServerNotFoundError(f"Access denied for MCP server '{server_id}'")
+            msg = f"Access denied for MCP server '{server_id}'"
+            raise McpServerNotFoundError(msg)
         mgr = McpSessionManager(self._settings, self._registry, self._pool)
         try:
             session = await mgr.connect_server(server_id, context, ephemeral=True)
             raw = await session.read_resource(uri)
-            from backend.mcp.result_parser import parse_mcp_result_to_struct, parsed_to_api_dict
+            from backend.mcp.result_parser import (
+                parse_mcp_result_to_struct,
+                parsed_to_api_dict,
+            )
 
             parsed = parse_mcp_result_to_struct(raw)
             return {
@@ -341,9 +393,7 @@ class McpPlatformService:
 
     @asynccontextmanager
     async def request_sessions(
-        self,
-        server_ids: List[str],
-        context: McpCallContext,
+        self, server_ids: List[str], context: McpCallContext
     ) -> AsyncIterator[Dict[str, McpServerSession]]:
         mgr = McpSessionManager(self._settings, self._registry, self._pool)
         sessions = await mgr.connect_servers(server_ids, context)
@@ -364,7 +414,8 @@ class McpPlatformService:
                     name=name,
                     qualified_name=qname,
                     description=str(spec.get("description") or ""),
-                    parameters=spec.get("parameters") or {"type": "object", "properties": {}},
+                    parameters=spec.get("parameters")
+                    or {"type": "object", "properties": {}},
                     raw=spec,
                 )
             )
@@ -382,13 +433,15 @@ class McpPlatformService:
             return tool_name[len(prefix) :]
         return tool_name
 
-    async def _probe_server_status(self, server, context: McpCallContext) -> McpServerStatus:
+    async def _probe_server_status(
+        self, server, context: McpCallContext, *, fetch_tools: bool = False
+    ) -> McpServerStatus:
         from backend.mcp.credentials.base import get_credential_provider
 
         provider = get_credential_provider(server.credential_provider)
         metadata = await provider.health_metadata(server, context)
         started = time.perf_counter()
-        http_ok = await self._session_manager.probe_http_health(server)
+        http_ok, http_detail = await self._session_manager.probe_http_health(server)
         if not http_ok:
             return McpServerStatus(
                 server_id=server.id,
@@ -398,34 +451,46 @@ class McpPlatformService:
                 connected=False,
                 tools=0,
                 latency_ms=(time.perf_counter() - started) * 1000.0,
-                error="HTTP health check failed",
+                error=(
+                    f"HTTP health check failed: {http_detail}"
+                    if http_detail
+                    else "HTTP health check failed"
+                ),
                 metadata=metadata,
             )
-        try:
-            tools = await self.list_tools_for_server(server.id, context, ephemeral=True)
-            latency = (time.perf_counter() - started) * 1000.0
-            return McpServerStatus(
-                server_id=server.id,
-                display_name=server.display_name or server.id,
-                enabled=server.enabled,
-                transport=server.transport,
-                connected=True,
-                tools=len(tools),
-                latency_ms=latency,
-                metadata=metadata,
-            )
-        except Exception as exc:
-            return McpServerStatus(
-                server_id=server.id,
-                display_name=server.display_name or server.id,
-                enabled=server.enabled,
-                transport=server.transport,
-                connected=False,
-                tools=0,
-                latency_ms=(time.perf_counter() - started) * 1000.0,
-                error=str(exc),
-                metadata=metadata,
-            )
+        tools_count = 0
+        if fetch_tools:
+            try:
+                tools = await self.list_tools_for_server(
+                    server.id, context, ephemeral=True
+                )
+                tools_count = len(tools)
+            except Exception as exc:
+                log.exception("MCP status list_tools failed server=%s", server.id)
+                return McpServerStatus(
+                    server_id=server.id,
+                    display_name=server.display_name or server.id,
+                    enabled=server.enabled,
+                    transport=server.transport,
+                    connected=False,
+                    tools=0,
+                    latency_ms=(time.perf_counter() - started) * 1000.0,
+                    error=str(exc),
+                    metadata=metadata,
+                )
+        elif self._tools_cache:
+            tools_count = self._tools_cache.count_cached_tools(server.id)
+        latency = (time.perf_counter() - started) * 1000.0
+        return McpServerStatus(
+            server_id=server.id,
+            display_name=server.display_name or server.id,
+            enabled=server.enabled,
+            transport=server.transport,
+            connected=True,
+            tools=tools_count,
+            latency_ms=latency,
+            metadata=metadata,
+        )
 
 
 def get_mcp_platform() -> McpPlatformService:

@@ -25,9 +25,12 @@ export interface GalleryEntityCardProps {
   item: GalleryCardItem;
   isDarkMode: boolean;
   using?: boolean;
+  cloning?: boolean;
   useLabel?: string;
+  cloneLabel?: string;
   onOpen: () => void;
   onUse: () => void;
+  onClone?: () => void;
   onRate?: (rating: number) => void;
   onToggleBookmark?: () => void;
 }
@@ -37,9 +40,12 @@ export default function GalleryEntityCard({
   item,
   isDarkMode,
   using = false,
+  cloning = false,
   useLabel = 'Использовать',
+  cloneLabel = 'Клонировать',
   onOpen,
   onUse,
+  onClone,
   onRate,
   onToggleBookmark,
 }: GalleryEntityCardProps) {
@@ -142,17 +148,40 @@ export default function GalleryEntityCard({
         </Box>
       </CardContent>
 
-      <CardActions onClick={(e) => e.stopPropagation()}>
+      <CardActions
+        onClick={(e) => e.stopPropagation()}
+        sx={{
+          display: 'flex',
+          gap: 1,
+          px: 2,
+          pb: 2,
+          pt: 0,
+          flexWrap: 'wrap',
+        }}
+      >
         <Button
           size="small"
           startIcon={using ? <CircularProgress size={14} /> : <CopyIcon />}
           onClick={onUse}
-          disabled={using}
-          fullWidth
+          disabled={using || cloning}
+          fullWidth={!onClone}
           variant="contained"
+          sx={onClone ? { flex: 1, minWidth: 0 } : undefined}
         >
           {useLabel}
         </Button>
+        {onClone && (
+          <Button
+            size="small"
+            startIcon={cloning ? <CircularProgress size={14} /> : <CopyIcon />}
+            onClick={onClone}
+            disabled={using || cloning}
+            variant="outlined"
+            sx={{ flex: 1, minWidth: 0 }}
+          >
+            {cloneLabel}
+          </Button>
+        )}
       </CardActions>
     </Card>
   );

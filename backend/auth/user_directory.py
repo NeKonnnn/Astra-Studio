@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List, Optional
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
 from backend.settings.logging import get_logger
 
@@ -11,6 +12,27 @@ logger = get_logger(__name__)
 
 # Кэш ФИО по gpbu (логин один и тот же для LDAP и SSO)
 _full_name_cache: Dict[str, Optional[str]] = {}
+_SEARCH_CACHE_TTL_SEC = 90.0
+_SEARCH_CACHE_MAX = 256
+_search_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+
+
+def _search_cache_get(key: str) -> Optional[List[Dict[str, Any]]]:
+    row = _search_cache.get(key)
+    if not row:
+        return None
+    cached_at, users = row
+    if time.monotonic() - cached_at > _SEARCH_CACHE_TTL_SEC:
+        _search_cache.pop(key, None)
+        return None
+    return users
+
+
+def _search_cache_put(key: str, users: List[Dict[str, Any]]) -> None:
+    if len(_search_cache) >= _SEARCH_CACHE_MAX:
+        oldest_key = min(_search_cache, key=lambda k: _search_cache[k][0])
+        _search_cache.pop(oldest_key, None)
+    _search_cache[key] = (time.monotonic(), users)
 
 
 async def resolve_full_names(user_ids: List[str]) -> Dict[str, Optional[str]]:
@@ -35,7 +57,10 @@ async def resolve_full_names(user_ids: List[str]) -> Dict[str, Optional[str]]:
         return result
 
     try:
-        from backend.auth.ldap_auth import fetch_ldap_user_profile, is_ldap_enabled
+        from backend.auth.ldap_auth import (
+            fetch_ldap_user_profiles_bulk,
+            is_ldap_enabled,
+        )
     except Exception:  # pragma: no cover
         for uid in to_lookup:
             result[uid] = None
@@ -48,14 +73,14 @@ async def resolve_full_names(user_ids: List[str]) -> Dict[str, Optional[str]]:
 
     def _bulk() -> Dict[str, Optional[str]]:
         out: Dict[str, Optional[str]] = {}
+        try:
+            profiles = fetch_ldap_user_profiles_bulk(to_lookup)
+        except Exception:
+            logger.exception("Ошибка пакетного резолва ФИО по gpbu")
+            profiles = {}
         for uid in to_lookup:
-            name: Optional[str] = None
-            try:
-                profile = fetch_ldap_user_profile(uid)
-                if profile:
-                    name = profile.get("full_name") or None
-            except Exception:
-                name = None
+            profile = profiles.get(uid.lower())
+            name = profile.get("full_name") if profile else None
             out[uid] = name
         return out
 
@@ -92,7 +117,9 @@ async def enrich_items_author_full_names(items: List[Any]) -> None:
 
     lower_map = {k.lower(): v for k, v in name_map.items()}
     for item in items:
-        aid = (getattr(item, "author_id", None) or getattr(item, "author_name", None) or "")
+        aid = (
+            getattr(item, "author_id", None) or getattr(item, "author_name", None) or ""
+        )
         key = str(aid).strip()
         name = name_map.get(key)
         if name is None and key:
@@ -103,12 +130,18 @@ async def enrich_items_author_full_names(items: List[Any]) -> None:
             pass
 
 
-async def search_directory_users(query: str, limit: int = 10) -> List[Dict[str, Any]]:
+async def search_directory_users(
+    query: str, limit: int = 10, *, for_share: bool = False
+) -> List[Dict[str, Any]]:
     """Поиск пользователей по gpbu / ФИО / email через LDAP."""
     q = (query or "").strip()
     if len(q) < 2:
         return []
     limit = max(1, min(int(limit or 10), 20))
+    cache_key = f"{q.casefold()}:{limit}:share={int(for_share)}"
+    cached = _search_cache_get(cache_key)
+    if cached is not None:
+        return cached
 
     try:
         from backend.auth.ldap_auth import is_ldap_enabled, search_ldap_users
@@ -119,7 +152,10 @@ async def search_directory_users(query: str, limit: int = 10) -> List[Dict[str, 
         return []
 
     try:
-        return await asyncio.to_thread(search_ldap_users, q, limit)
+        hits = await asyncio.to_thread(search_ldap_users, q, limit, for_share=for_share)
     except Exception:
         logger.exception("Ошибка LDAP search users q=%s", q)
         return []
+
+    _search_cache_put(cache_key, hits)
+    return hits

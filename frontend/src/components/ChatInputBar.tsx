@@ -29,8 +29,6 @@ import ToolsIcon from '../icons/ToolsIcon';
 import ComposerExpandIcon from '../icons/ComposerExpandIcon';
 import ComposerCollapseIcon from '../icons/ComposerCollapseIcon';
 import { formatFileSize } from '../utils/inlineImage';
-import { getApiUrl, API_ENDPOINTS, getAuthFetchHeaders } from '../config/api';
-import { prepareSegmentForStt } from '../utils/dictationAudio';
 import InlineAttachmentsList from './InlineAttachmentsList';
 import InlineDocAttachmentChip, {
   InlineAttachUploadSpinner,
@@ -139,21 +137,12 @@ const iconButtonSx = (isDark: boolean, isClassic: boolean) => ({
   borderRadius: isClassic ? '8px' : '50%',
   p: 0,
   '&:active': { transform: 'none' },
-  // Сенсорные экраны: визуально кнопка 36 px, но область касания расширена до 44 px
-  // (псевдоэлемент не меняет размеры и расчёт выравнивания блока под «Инструменты»).
-  '@media (pointer: coarse)': {
-    position: 'relative',
-    '&::after': { content: '""', position: 'absolute', inset: -4 },
-  },
 });
 
 const CHAT_INPUT_CONTRAST_KEY = 'chat_input_contrast';
 const CHAT_INPUT_COLOR_KEY = 'chat_input_color';
 const CHAT_INPUT_CONTRAST_DEFAULT = 35;
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
-
-/** Ширина оболочки композера (px), ниже которой кнопки уходят под поле ввода. */
-const COMPOSER_NARROW_SHELL_PX = 480;
 
 export default function ChatInputBar({
   value,
@@ -277,22 +266,11 @@ export default function ChatInputBar({
 
   const isClassic = styleVariant === 'classic';
   const [isDictating, setIsDictating] = useState(false);
-  const [isDictationProcessing, setIsDictationProcessing] = useState(false);
   const [dictationPreview, setDictationPreview] = useState('');
   const [waveLevels, setWaveLevels] = useState<number[]>(() => Array.from({ length: 72 }, () => 0.1));
+  const recognitionRef = useRef<any>(null);
+  const keepRunningRef = useRef(false);
   const dictationBaseTextRef = useRef('');
-  const dictationSessionTextRef = useRef('');
-  const skipDictationProcessingRef = useRef(false);
-  const dictationSegmentQueueRef = useRef<Blob[]>([]);
-  const dictationQueueProcessingRef = useRef(false);
-  const dictationSegmentPreparingRef = useRef(0);
-  const dictationSegmentTimerRef = useRef<number | null>(null);
-  const dictationStreamRef = useRef<MediaStream | null>(null);
-  const dictationRecorderOptionsRef = useRef<{ mimeType: string } | undefined>(undefined);
-  const dictationFinalizingRef = useRef(false);
-  const isDictatingRef = useRef(false);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const recordedMimeTypeRef = useRef('audio/webm');
   const audioStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -301,6 +279,8 @@ export default function ChatInputBar({
   const noiseFloorRef = useRef(0.004);
   const speakingRef = useRef(false);
   const silenceFramesRef = useRef(0);
+  const finalTranscriptRef = useRef('');
+  const interimTranscriptRef = useRef('');
   const [chatInputContrast, setChatInputContrast] = useState<number>(() => {
     if (typeof window === 'undefined') return CHAT_INPUT_CONTRAST_DEFAULT;
     const raw = Number(localStorage.getItem(CHAT_INPUT_CONTRAST_KEY));
@@ -312,10 +292,14 @@ export default function ChatInputBar({
     return localStorage.getItem(CHAT_INPUT_COLOR_KEY) || '';
   });
 
+  const speechCtor =
+    typeof window !== 'undefined'
+      ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+      : null;
   const canUseDictation =
+    Boolean(speechCtor) &&
     typeof navigator !== 'undefined' &&
-    Boolean(navigator.mediaDevices?.getUserMedia) &&
-    typeof MediaRecorder !== 'undefined';
+    Boolean(navigator.mediaDevices?.getUserMedia);
 
   const concatText = (base: string, addition: string): string => {
     const left = base.trim();
@@ -344,215 +328,31 @@ export default function ChatInputBar({
     setWaveLevels(Array.from({ length: 72 }, () => 0.1));
   };
 
-  const DICTATION_SEGMENT_MS = 2500;
-  const DICTATION_MIN_SEGMENT_BYTES = 100;
-
-  const resetDictationState = () => {
-    if (dictationSegmentTimerRef.current !== null) {
-      window.clearTimeout(dictationSegmentTimerRef.current);
-      dictationSegmentTimerRef.current = null;
-    }
-    dictationSessionTextRef.current = '';
-    dictationSegmentQueueRef.current = [];
-    dictationQueueProcessingRef.current = false;
-    dictationSegmentPreparingRef.current = 0;
-    dictationFinalizingRef.current = false;
-    isDictatingRef.current = false;
-    dictationStreamRef.current = null;
-    dictationRecorderOptionsRef.current = undefined;
-    setDictationPreview('');
-    setIsDictating(false);
-    setIsDictationProcessing(false);
-    mediaRecorderRef.current = null;
-  };
-
-  const appendDictationText = (text: string) => {
-    const piece = text.trim();
-    if (!piece) return;
-    dictationSessionTextRef.current = concatText(dictationSessionTextRef.current, piece);
-    setDictationPreview(dictationSessionTextRef.current);
-    onChange(concatText(dictationBaseTextRef.current, dictationSessionTextRef.current));
-  };
-
-  const recognizeDictationSegment = async (blob: Blob): Promise<string> => {
-    const filename = blob.type.includes('wav') ? 'dictation.wav' : 'dictation.webm';
-    const formData = new FormData();
-    formData.append('audio_file', blob, filename);
-    const response = await fetch(getApiUrl(API_ENDPOINTS.VOICE_RECOGNIZE), {
-      method: 'POST',
-      headers: getAuthFetchHeaders(),
-      body: formData,
-    });
-    if (!response.ok) return '';
-    const result = await response.json();
-    if (!result.success) return '';
-    return (result.text ?? '').trim();
-  };
-
-  const processDictationSegmentQueue = async () => {
-    if (dictationQueueProcessingRef.current) return;
-    dictationQueueProcessingRef.current = true;
-    try {
-      while (dictationSegmentQueueRef.current.length > 0 && !skipDictationProcessingRef.current) {
-        const blob = dictationSegmentQueueRef.current.shift();
-        if (!blob) continue;
-        if (!dictationSessionTextRef.current) {
-          setDictationPreview('Распознаю...');
-        }
-        try {
-          const text = await recognizeDictationSegment(blob);
-          if (text) {
-            appendDictationText(text);
-          }
-        } catch {
-          if (!dictationSessionTextRef.current) {
-            setDictationPreview('Ошибка распознавания');
-          }
-        }
-      }
-    } finally {
-      dictationQueueProcessingRef.current = false;
-    }
-  };
-
-  const enqueueDictationSegment = (blob: Blob) => {
-    if (skipDictationProcessingRef.current) return;
-    dictationSegmentPreparingRef.current += 1;
-    void (async () => {
-      try {
-        const payload = await prepareSegmentForStt(blob);
-        if (!payload || skipDictationProcessingRef.current) return;
-        dictationSegmentQueueRef.current.push(payload);
-        void processDictationSegmentQueue();
-      } finally {
-        dictationSegmentPreparingRef.current = Math.max(0, dictationSegmentPreparingRef.current - 1);
-      }
-    })();
-  };
-
-  const waitForDictationQueue = (): Promise<void> =>
-    new Promise((resolve) => {
-      const tick = () => {
-        if (
-          !dictationQueueProcessingRef.current &&
-          dictationSegmentPreparingRef.current === 0 &&
-          dictationSegmentQueueRef.current.length === 0
-        ) {
-          resolve();
-          return;
-        }
-        window.setTimeout(tick, 80);
-      };
-      window.setTimeout(resolve, 120000);
-      tick();
-    });
-
-  const stopDictationSegmentTimer = () => {
-    if (dictationSegmentTimerRef.current !== null) {
-      window.clearTimeout(dictationSegmentTimerRef.current);
-      dictationSegmentTimerRef.current = null;
-    }
-  };
-
-  const finalizeDictation = async () => {
-    setIsDictationProcessing(true);
-    await waitForDictationQueue();
-    stopWave();
-    resetDictationState();
-  };
-
-  const startDictationSegment = () => {
-    const stream = dictationStreamRef.current;
-    if (!stream || skipDictationProcessingRef.current || dictationFinalizingRef.current) return;
-
-    const recorder = dictationRecorderOptionsRef.current
-      ? new MediaRecorder(stream, dictationRecorderOptionsRef.current)
-      : new MediaRecorder(stream);
-
-    recorder.ondataavailable = (event) => {
-      if (event.data.size >= DICTATION_MIN_SEGMENT_BYTES) {
-        enqueueDictationSegment(event.data);
-      }
-    };
-
-    recorder.onstop = () => {
-      stopDictationSegmentTimer();
-      mediaRecorderRef.current = null;
-
-      if (skipDictationProcessingRef.current) {
-        stopWave();
-        onChange(dictationBaseTextRef.current);
-        resetDictationState();
-        return;
-      }
-
-      if (dictationFinalizingRef.current) {
-        void finalizeDictation();
-        return;
-      }
-
-      if (isDictatingRef.current) {
-        startDictationSegment();
-      }
-    };
-
-    recorder.onerror = () => {
-      skipDictationProcessingRef.current = true;
-      isDictatingRef.current = false;
-      stopDictationSegmentTimer();
-      if (recorder.state !== 'inactive') {
-        try {
-          recorder.stop();
-        } catch {
-          stopWave();
-          onChange(dictationBaseTextRef.current);
-          resetDictationState();
-        }
-      }
-    };
-
-    mediaRecorderRef.current = recorder;
-    recorder.start();
-    dictationSegmentTimerRef.current = window.setTimeout(() => {
-      if (recorder.state === 'recording') {
-        recorder.stop();
-      }
-    }, DICTATION_SEGMENT_MS);
-  };
-
   const stopDictation = (cancel: boolean) => {
-    if (isDictationProcessing) return;
-
-    if (cancel) {
-      skipDictationProcessingRef.current = true;
-      isDictatingRef.current = false;
-      dictationFinalizingRef.current = false;
-      setIsDictating(false);
-      stopDictationSegmentTimer();
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-        mediaRecorderRef.current.stop();
-      } else {
-        stopWave();
-        onChange(dictationBaseTextRef.current);
-        resetDictationState();
+    keepRunningRef.current = false;
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.onresult = null;
+        recognitionRef.current.onerror = null;
+        recognitionRef.current.onend = null;
+        recognitionRef.current.stop();
+      } catch {
+        // noop
       }
-      return;
+      recognitionRef.current = null;
     }
-
-    skipDictationProcessingRef.current = false;
-    dictationFinalizingRef.current = true;
-    isDictatingRef.current = false;
+    stopWave();
+    if (cancel) {
+      onChange(dictationBaseTextRef.current);
+    }
+    setDictationPreview('');
+    finalTranscriptRef.current = '';
+    interimTranscriptRef.current = '';
     setIsDictating(false);
-    stopDictationSegmentTimer();
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
-      return;
-    }
-
-    void finalizeDictation();
   };
 
-  const setupWaveVisualization = (stream: MediaStream) => {
+  const startWave = async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     audioStreamRef.current = stream;
     const Ctx = (window as any).AudioContext || (window as any).webkitAudioContext;
     const audioCtx = new Ctx();
@@ -575,6 +375,7 @@ export default function ChatInputBar({
         sumSquares += centered * centered;
       }
       const rms = Math.sqrt(sumSquares / Math.max(1, data.length));
+      // Адаптивный шумовой пол: подстраивается к фоновой тишине/микрошуму микрофона.
       if (!speakingRef.current) {
         noiseFloorRef.current = noiseFloorRef.current * 0.97 + rms * 0.03;
       }
@@ -592,6 +393,7 @@ export default function ChatInputBar({
       const voiceLevel = clamp((rms - noiseFloorRef.current - 0.001) * 100, 0, 1);
       const speaking = speakingRef.current && voiceLevel > 0.015;
 
+      // Паттерн справа налево только во время речи.
       if (speaking) wavePhaseRef.current += 0.22;
       const phase = wavePhaseRef.current;
       const next = new Array<number>(bars).fill(0).map((_, index) => {
@@ -610,57 +412,66 @@ export default function ChatInputBar({
   };
 
   const startDictation = async () => {
-    if (!canUseDictation || isDictating || isDictationProcessing || inputDisabled || voiceDisabled) return;
+    if (!canUseDictation || isDictating || inputDisabled || voiceDisabled) return;
+    try {
+      await startWave();
+    } catch {
+      return;
+    }
+
+    const recognition = new speechCtor();
+    recognition.lang = 'ru-RU';
+    recognition.interimResults = true;
+    recognition.continuous = true;
 
     dictationBaseTextRef.current = value;
-    dictationSessionTextRef.current = '';
-    skipDictationProcessingRef.current = false;
-    dictationFinalizingRef.current = false;
+    finalTranscriptRef.current = '';
+    interimTranscriptRef.current = '';
+    setDictationPreview('');
+    keepRunningRef.current = true;
+    setIsDictating(true);
 
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      });
-      dictationStreamRef.current = stream;
-      setupWaveVisualization(stream);
-
-      const preferredMimeTypes = [
-        'audio/webm;codecs=opus',
-        'audio/webm',
-        'audio/mp4',
-        'audio/ogg;codecs=opus',
-      ];
-      let selectedOptions: { mimeType: string } | undefined;
-      for (const mimeType of preferredMimeTypes) {
-        if (MediaRecorder.isTypeSupported(mimeType)) {
-          selectedOptions = { mimeType };
-          break;
-        }
+    recognition.onresult = (event: any) => {
+      let interim = '';
+      let finalAppend = '';
+      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+        const text = event.results[i]?.[0]?.transcript ?? '';
+        if (!text) continue;
+        if (event.results[i].isFinal) finalAppend += ` ${text}`;
+        else interim += ` ${text}`;
       }
 
-      recordedMimeTypeRef.current = selectedOptions?.mimeType ?? 'audio/webm';
-      dictationRecorderOptionsRef.current = selectedOptions;
-      isDictatingRef.current = true;
-      setDictationPreview('');
-      setIsDictating(true);
-      startDictationSegment();
+      if (finalAppend.trim()) finalTranscriptRef.current = concatText(finalTranscriptRef.current, finalAppend);
+      interimTranscriptRef.current = interim.trim();
+      const merged = concatText(finalTranscriptRef.current, interimTranscriptRef.current);
+      setDictationPreview(merged);
+      onChange(concatText(dictationBaseTextRef.current, merged));
+    };
+
+    recognition.onerror = () => {
+      stopDictation(false);
+    };
+
+    recognition.onend = () => {
+      if (!keepRunningRef.current) return;
+      try {
+        recognition.start();
+      } catch {
+        stopDictation(false);
+      }
+    };
+
+    recognitionRef.current = recognition;
+    try {
+      recognition.start();
     } catch {
-      stopWave();
-      resetDictationState();
+      stopDictation(false);
     }
   };
 
   useEffect(() => {
     return () => {
-      skipDictationProcessingRef.current = true;
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-        try {
-          mediaRecorderRef.current.stop();
-        } catch {
-          // noop
-        }
-      }
-      stopWave();
+      stopDictation(false);
     };
   }, []);
 
@@ -732,20 +543,6 @@ export default function ChatInputBar({
   const CHARS_FIRST_LINE = 100;   // примерно столько символов влезает в одну строку (шрифт 0.875rem, кнопки по бокам)
   const CHARS_SINGLE_BACK = 100;  // обратно в одну строку только когда короче (гистерезис)
   const [compactMultiline, setCompactMultiline] = useState(false);
-  /**
-   * Колонка узкая (планшет, обе боковые панели открыты): в одну строку с кнопками плейсхолдер
-   * ломался по слогу на строку. Узкая оболочка → кнопки под полем, поле на всю ширину.
-   */
-  const [narrowShell, setNarrowShell] = useState(false);
-  useEffect(() => {
-    const node = skillAnchorRef.current;
-    if (!node || typeof ResizeObserver === 'undefined') return undefined;
-    const apply = () => setNarrowShell(node.getBoundingClientRect().width < COMPOSER_NARROW_SHELL_PX);
-    apply();
-    const ro = new ResizeObserver(apply);
-    ro.observe(node);
-    return () => ro.disconnect();
-  }, [isClassic]);
   /** Как в ChatGPT: развернуть поле ввода, когда текст упёрся в maxRows */
   const [composerExpanded, setComposerExpanded] = useState(false);
   const [showExpandToggle, setShowExpandToggle] = useState(false);
@@ -872,7 +669,7 @@ export default function ChatInputBar({
   }, [composerExpanded]);
 
   const expandToggleBtn =
-    showExpandToggle && !isDictating && !isDictationProcessing ? (
+    showExpandToggle && !isDictating ? (
       <Tooltip title={composerExpanded ? 'Свернуть' : 'Развернуть'} placement="left">
         <IconButton
           size="small"
@@ -976,7 +773,6 @@ export default function ChatInputBar({
       <span>
         <IconButton
           size="small"
-          aria-label="Инструменты"
           onClick={onSettingsClick}
           disabled={settingsDisabled}
           sx={{
@@ -1054,7 +850,6 @@ export default function ChatInputBar({
       <span>
         <IconButton
           size="small"
-          aria-label="Отправить"
           onClick={onSendClick}
           disabled={sendDisabled}
           sx={{
@@ -1108,18 +903,15 @@ export default function ChatInputBar({
     </Tooltip>
   ) : null;
 
-  const dictationActive = isDictating || isDictationProcessing;
-
   const dictationBtn = canUseDictation ? (
-    <Tooltip title={isDictationProcessing ? 'Распознаю...' : isDictating ? 'Остановить диктовку' : 'Диктовка в поле ввода'}>
+    <Tooltip title={isDictating ? 'Остановить диктовку' : 'Диктовка в поле ввода'}>
       <IconButton
         size="small"
         onClick={() => {
-          if (isDictationProcessing) return;
           if (isDictating) stopDictation(false);
           else void startDictation();
         }}
-        disabled={voiceDisabled || inputDisabled || isDictationProcessing}
+        disabled={voiceDisabled || inputDisabled}
         sx={{
           color: isDictating ? 'white' : isDarkMode ? 'rgba(255, 255, 255, 0.7)' : 'rgba(0, 0, 0, 0.7)',
           bgcolor: isDictating ? 'primary.main' : 'transparent',
@@ -1144,20 +936,19 @@ export default function ChatInputBar({
 
   const rightActions = (
     <>
-      {dictationActive ? null : reportBtn}
-      {dictationActive ? null : stopOrSendBtn}
+      {isDictating ? null : reportBtn}
+      {isDictating ? null : stopOrSendBtn}
       {contextCounter}
-      {dictationActive ? null : voiceBtn}
+      {isDictating ? null : voiceBtn}
       {dictationBtn}
     </>
   );
 
-  const dictationPanel = dictationActive ? (
+  const dictationPanel = isDictating ? (
     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minHeight: 42, width: '100%' }}>
       <IconButton
         size="small"
         onClick={() => stopDictation(true)}
-        disabled={isDictationProcessing}
         sx={{
           ...iconButtonSx(isDarkMode, isClassic),
           color: isDarkMode ? 'rgba(255,255,255,0.92)' : 'rgba(0,0,0,0.78)',
@@ -1171,7 +962,7 @@ export default function ChatInputBar({
           variant="body2"
           sx={{ color: isDarkMode ? 'white' : '#1f1f1f', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', mb: 0.5 }}
         >
-          {dictationPreview || (isDictationProcessing ? 'Распознаю...' : 'Слушаю...')}
+          {dictationPreview || 'Слушаю...'}
         </Typography>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1px', height: 14, width: '100%' }}>
           {waveLevels.map((level, idx) => (
@@ -1199,14 +990,9 @@ export default function ChatInputBar({
       <IconButton
         size="small"
         onClick={() => stopDictation(false)}
-        disabled={isDictationProcessing}
         sx={{ ...iconButtonSx(isDarkMode, isClassic), color: 'white', bgcolor: 'primary.main', '&:hover': { bgcolor: 'primary.dark' } }}
       >
-        {isDictationProcessing ? (
-          <CircularProgress size={16} sx={{ color: 'white' }} />
-        ) : (
-          <CheckIcon sx={{ fontSize: '1.1rem' }} />
-        )}
+        <CheckIcon sx={{ fontSize: '1.1rem' }} />
       </IconButton>
     </Box>
   ) : null;
@@ -1379,7 +1165,7 @@ export default function ChatInputBar({
           {filesSection}
           {uploadingSection}
           {inputSuggestions}
-          {dictationActive ? (
+          {isDictating ? (
             dictationPanel
           ) : (
             <TextField
@@ -1450,11 +1236,10 @@ export default function ChatInputBar({
 
   // ─── КОМПАКТНЫЙ стиль: 1 строка — кнопки по бокам; со 2-й строки — кнопки снизу ─
   // Один TextField всегда в DOM: при смене compactMultiline меняется только order и обёртка кнопок, фокус и перенос по ширине сохраняются
-  const stackedLayout = compactMultiline || composerExpanded || narrowShell;
   const textFieldSx = {
     minWidth: 0,
-    flex: compactMultiline || narrowShell ? undefined : 1,
-    order: compactMultiline || narrowShell ? 0 : 1,
+    flex: compactMultiline ? undefined : 1,
+    order: compactMultiline ? 0 : 1,
     '& .MuiOutlinedInput-root': {
       bgcolor: 'transparent',
       border: 'none',
@@ -1495,15 +1280,15 @@ export default function ChatInputBar({
       <Box
         sx={{
           display: 'flex',
-          flexDirection: stackedLayout ? 'column' : 'row',
-          alignItems: stackedLayout ? 'stretch' : 'center',
+          flexDirection: compactMultiline || composerExpanded ? 'column' : 'row',
+          alignItems: compactMultiline || composerExpanded ? 'stretch' : 'center',
           gap: 0.5,
           flexWrap: 'nowrap',
           minHeight: 40,
         }}
       >
         {/* Один TextField на всё время — не переключаем разметку через два разных инпута, чтобы не терять фокус и курсор */}
-        {dictationActive ? (
+        {isDictating ? (
           <Box sx={{ width: '100%' }}>{dictationPanel}</Box>
         ) : (
           <TextField
@@ -1523,11 +1308,11 @@ export default function ChatInputBar({
             variant="outlined"
             size="small"
             disabled={inputDisabled}
-            fullWidth={stackedLayout}
+            fullWidth={compactMultiline || composerExpanded}
             sx={textFieldSx}
           />
         )}
-        {dictationActive ? null : stackedLayout ? (
+        {isDictating ? null : compactMultiline || composerExpanded ? (
           <Box sx={{ order: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'nowrap' }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25 }}>
               {attachBtn}

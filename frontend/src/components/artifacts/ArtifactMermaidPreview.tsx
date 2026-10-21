@@ -25,7 +25,7 @@ interface Props {
 const MERMAID_INIT = {
   startOnLoad: false,
   suppressErrorRendering: true,
-  securityLevel: 'loose' as const,
+  securityLevel: 'strict' as const,
   // Только theme base уважает themeVariables (pie1..N, plotColorPalette).
   // default/neutral подставляют свою палитру и игнорируют цвета пользователя.
   theme: 'base' as const,

@@ -19,9 +19,10 @@ from typing import List
 
 import httpx
 
-from .base import LLMProviderConfig, ModelInfo, ProviderCapabilities, ProviderHealth
-from .openai_compat import OpenAICompatProvider
 from backend.settings.logging import get_logger
+
+from .base import ModelInfo, ProviderCapabilities, ProviderHealth
+from .openai_compat import OpenAICompatProvider
 
 logger = get_logger(__name__)
 
@@ -31,13 +32,12 @@ class OllamaProvider(OpenAICompatProvider):
 
     HEALTH_PATH: str = "/api/version"
     HEALTH_FALLBACK_TO_MODELS: bool = True
-
     _capabilities = ProviderCapabilities(
         hot_swap=False,
-        multi_loaded=True,  # Ollama держит модели в RAM пока не выгрузит.
+        multi_loaded=True,
         native_chat_api=True,
         streaming=True,
-        vision=True,  # llava/bakllava через Ollama работают
+        vision=True,
     )
 
     async def health(self) -> ProviderHealth:
@@ -45,33 +45,45 @@ class OllamaProvider(OpenAICompatProvider):
         try:
             async with httpx.AsyncClient(timeout=self._short_timeout()) as client:
                 response = await client.get(
-                    f"{self.base_url}{self.HEALTH_PATH}",
-                    headers=self._headers(),
+                    f"{self.base_url}{self.HEALTH_PATH}", headers=self._headers()
                 )
                 if response.status_code == 200:
-                    try:
-                        payload = response.json() or {}
-                    except Exception:
-                        payload = {}
+                    payload = self._decode_health_json(
+                        response, url=f"{self.base_url}{self.HEALTH_PATH}"
+                    )
+                    if payload is None:
+                        if self.HEALTH_FALLBACK_TO_MODELS:
+                            return await self._health_via_models(client)
+                        return ProviderHealth(
+                            healthy=False,
+                            error=f"health returned non-JSON: {(response.text or '')[:200]}",
+                        )
                     return ProviderHealth(healthy=True, raw=payload)
-                if response.status_code in (404, 405) and self.HEALTH_FALLBACK_TO_MODELS:
+                if (
+                    response.status_code in (404, 405)
+                    and self.HEALTH_FALLBACK_TO_MODELS
+                ):
                     return await self._health_via_models(client)
                 return ProviderHealth(
                     healthy=False,
                     error=f"HTTP {response.status_code}: {response.text[:200]}",
                 )
-        except Exception as e:
+        except (httpx.HTTPError, OSError) as e:
+            logger.warning("[%s] health check failed: %s", self.id, e)
             return ProviderHealth(healthy=False, error=str(e))
 
     async def list_models(self) -> List[ModelInfo]:
         """``GET /api/tags`` — нативный список моделей Ollama."""
         try:
             async with httpx.AsyncClient(timeout=self._short_timeout()) as client:
-                response = await client.get(f"{self.base_url}/api/tags", headers=self._headers())
+                response = await client.get(
+                    f"{self.base_url}/api/tags", headers=self._headers()
+                )
                 if response.status_code != 200:
                     logger.warning(
                         "[%s:ollama] /api/tags HTTP %s, fallback на OpenAI /v1/models",
-                        self.id, response.status_code,
+                        self.id,
+                        response.status_code,
                     )
                     return await super().list_models()
                 data = response.json() or {}
@@ -99,8 +111,8 @@ class OllamaProvider(OpenAICompatProvider):
                     )
                 )
             return items
-        except Exception as e:
-            logger.error("[%s:ollama] list_models error: %s", self.id, e)
+        except Exception:
+            logger.exception("[:ollama] list_models error")
             return await super().list_models()
 
     async def ensure_model_loaded(self, model_id: str) -> bool:
@@ -113,14 +125,16 @@ class OllamaProvider(OpenAICompatProvider):
             return False
         try:
             models = await self.list_models()
-        except Exception as e:
-            logger.warning("[%s:ollama] list_models error: %s", self.id, e)
+        except Exception:
+            logger.exception("[:ollama] list_models error")
             return False
         for m in models:
             if m.model_id == mid:
                 return True
         logger.warning(
             "[%s:ollama] модель %r не установлена. Выполните `ollama pull %s` на сервере.",
-            self.id, mid, mid,
+            self.id,
+            mid,
+            mid,
         )
         return False

@@ -1,18 +1,27 @@
 import React from 'react';
 import { Box, Chip } from '@mui/material';
 
-export type GalleryHubTab = 'agents' | 'skills' | 'plugins';
+export type GalleryHubTab = 'agents' | 'skills' | 'plugins' | 'knowledge-bases';
 
 export const GALLERY_HUB_TABS: Array<{ id: GalleryHubTab; label: string }> = [
   { id: 'agents', label: 'Агенты' },
   { id: 'skills', label: 'Skills' },
   { id: 'plugins', label: 'Плагины' },
+  { id: 'knowledge-bases', label: 'База знаний' },
 ];
 
 export function parseGalleryHubTab(raw: string | null | undefined): GalleryHubTab {
   const v = String(raw || '').trim().toLowerCase();
-  if (v === 'agents' || v === 'skills' || v === 'plugins') {
-    return v;
+  if (
+    v === 'agents' ||
+    v === 'skills' ||
+    v === 'plugins' ||
+    v === 'knowledge-bases' ||
+    v === 'knowledge_bases' ||
+    v === 'kb'
+  ) {
+    if (v === 'knowledge_bases' || v === 'kb') return 'knowledge-bases';
+    return v as GalleryHubTab;
   }
   // legacy ?tab=prompts → агенты
   return 'agents';

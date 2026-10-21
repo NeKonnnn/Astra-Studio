@@ -128,7 +128,7 @@ interface RAGSettingsProps {
    * Зафиксированный скоуп (без переключателя «Настройки для»).
    * Используется в конструкторе агента (scope=agent) и в проектах (scope=project).
    */
-  lockedScope?: 'project' | 'agent';
+  lockedScope?: 'project' | 'agent' | 'kb';
   /** ID конкретного проекта или агента — настройки изолированы по сущности. */
   entityId?: string | number | null;
   /** Название проекта/агента для отладочных логов. */
@@ -160,18 +160,21 @@ interface RAGSettingsProps {
 }
 
 function buildEntityQuery(
-  scope: 'project' | 'agent',
+  scope: 'project' | 'agent' | 'kb',
   entityId?: string | number | null,
 ): string {
   if (entityId == null || entityId === '') return '';
   if (scope === 'project') {
     return `&project_id=${encodeURIComponent(String(entityId))}`;
   }
+  if (scope === 'kb') {
+    return `&knowledge_base_id=${encodeURIComponent(String(entityId))}`;
+  }
   return `&agent_id=${encodeURIComponent(String(entityId))}`;
 }
 
 function buildEntityBody(
-  scope: 'project' | 'agent',
+  scope: 'project' | 'agent' | 'kb',
   entityId?: string | number | null,
   entityName?: string,
 ): Record<string, string | number> {
@@ -179,6 +182,8 @@ function buildEntityBody(
   if (entityId == null || entityId === '') return body;
   if (scope === 'project') {
     body.project_id = String(entityId);
+  } else if (scope === 'kb') {
+    body.knowledge_base_id = Number(entityId);
   } else {
     body.agent_id = Number(entityId);
   }
@@ -188,7 +193,7 @@ function buildEntityBody(
 }
 
 function notifyEntitySettingsApplied(
-  scope: 'project' | 'agent',
+  scope: 'project' | 'agent' | 'kb',
   resolvedEntityId: string | number | null | undefined,
   name?: string,
 ): void {
@@ -258,7 +263,7 @@ export default function RAGSettings({
   /** Может ли текущий пользователь менять настройки этой сущности (роль с сервера). */
   const [canEdit, setCanEdit] = useState(true);
   /** Для каждого стора показываются и сохраняются настройки: проекты | агенты */
-  const [projectsAgentsScope, setProjectsAgentsScope] = useState<'project' | 'agent'>(
+  const [projectsAgentsScope, setProjectsAgentsScope] = useState<'project' | 'agent' | 'kb'>(
     lockedScope ?? 'project'
   );
   const isInitializedRef = useRef(false);
@@ -1342,8 +1347,13 @@ export default function RAGSettings({
           variant="caption"
           sx={{ color: mutedCaptionColor, textAlign: 'center', px: 1, pt: 0.5 }}
         >
-          Настройки задаёт владелец. Вам они видны, чтобы понимать, как этот
-          {projectsAgentsScope === 'project' ? ' проект' : ' агент'} ищет по документам.
+          Настройки задаёт владелец. Вам они видны, чтобы понимать, как
+          {projectsAgentsScope === 'project'
+            ? ' этот проект'
+            : projectsAgentsScope === 'kb'
+              ? ' эта база знаний'
+              : ' этот агент'}{' '}
+          ищет по документам.
         </Typography>
       )}
     </Box>
@@ -1352,7 +1362,11 @@ export default function RAGSettings({
   if (isPanel) {
     const resolvedTitle =
       panelTitle ??
-      (lockedScope === 'project' ? 'Настройки РАГ для проектов' : 'Настройки РАГ для агента');
+      (lockedScope === 'project'
+        ? 'Настройки РАГ для проектов'
+        : lockedScope === 'kb'
+          ? 'Настройки РАГ для базы знаний'
+          : 'Настройки РАГ для агента');
     const panelBg = isDarkMode ? getSidebarPanelBackground() : undefined;
     const headerBorder = isDarkMode ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(0,0,0,0.08)';
     const headerColor = isDarkMode ? 'white' : 'rgba(0,0,0,0.87)';

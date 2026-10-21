@@ -50,10 +50,11 @@
   "scripts": {
     "copy-presentation-assets": "node scripts/copy-presentation-assets.js",
     "prestart": "node scripts/copy-monaco-assets.js && node scripts/copy-presentation-assets.js",
-    "start": "react-scripts start",
+    "start": "craco start",
     "prebuild": "node scripts/copy-monaco-assets.js && node scripts/copy-presentation-assets.js",
-    "build": "react-scripts build",
-    "test": "react-scripts test",
+    "build": "craco build",
+    "typecheck": "tsc --noEmit",
+    "test": "craco test",
     "eject": "react-scripts eject"
   },
   "eslintConfig": {

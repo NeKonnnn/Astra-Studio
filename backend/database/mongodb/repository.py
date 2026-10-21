@@ -101,11 +101,7 @@ class ConversationRepository:
             logger.error(f"Ошибка при получении диалога: {e}")
             return None
 
-    async def add_message(
-        self, 
-        conversation_id: str, 
-        message: Message
-    ) -> bool:
+    async def add_message(self, conversation_id: str, message: Message) -> bool:
         """
         Добавление сообщения в диалог
 
@@ -118,21 +114,36 @@ class ConversationRepository:
         """
         try:
             collection = self._get_collection()
-
-            await collection.update_one(
+            result = await collection.update_one(
                 {"conversation_id": conversation_id},
                 {
                     "$push": {"messages": message.model_dump()},
-                    "$set": {"updated_at": datetime.utcnow()}
-                }
+                    "$set": {"updated_at": datetime.utcnow()},
+                },
             )
-
+            if result.matched_count == 0:
+                logger.warning(
+                    f"Диалог {conversation_id} не найден: сообщение не добавлено"
+                )
+                return False
             logger.debug(f"Добавлено сообщение в диалог: {conversation_id}")
+            from backend.settings.cef_logger.storage_audit import log_mongo_success
+
+            log_mongo_success(
+                "MongoDB.updateOne(conversations.$push)", request_uuid=conversation_id
+            )
             return True
-            
         except Exception as e:
-            logger.error(f"Ошибка при добавлении сообщения: {e}")
+            from backend.settings.cef_logger.storage_audit import log_mongo_failure
+
+            log_mongo_failure(
+                "MongoDB.updateOne(conversations.$push)",
+                str(e),
+                request_uuid=conversation_id,
+            )
+            logger.exception("Ошибка при добавлении сообщения")
             return False
+
 
     async def update_message(
         self,
@@ -367,9 +378,7 @@ class ConversationRepository:
             return []
 
     async def update_conversation(
-        self, 
-        conversation_id: str, 
-        updates: Dict[str, Any]
+        self, conversation_id: str, updates: Dict[str, Any]
     ) -> bool:
         """
         Обновление диалога
@@ -383,19 +392,30 @@ class ConversationRepository:
         """
         try:
             collection = self._get_collection()
-            updates["updated_at"] = datetime.utcnow()
-
-            await collection.update_one(
-                {"conversation_id": conversation_id},
-                {"$set": updates}
+            # Не мутируем словарь вызывающего кода.
+            set_fields = {**updates, "updated_at": datetime.utcnow()}
+            result = await collection.update_one(
+                {"conversation_id": conversation_id}, {"$set": set_fields}
             )
-
+            if result.matched_count == 0:
+                logger.warning(f"Диалог {conversation_id} не найден: обновление пропущено")
+                return False
             logger.debug(f"Обновлен диалог: {conversation_id}")
-            return True
+            from backend.settings.cef_logger.storage_audit import log_mongo_success
 
+            log_mongo_success(
+                "MongoDB.updateOne(conversations)", request_uuid=conversation_id
+            )
+            return True
         except Exception as e:
-            logger.error(f"Ошибка при обновлении диалога: {e}")
+            from backend.settings.cef_logger.storage_audit import log_mongo_failure
+
+            log_mongo_failure(
+                "MongoDB.updateOne(conversations)", str(e), request_uuid=conversation_id
+            )
+            logger.exception("Ошибка при обновлении диалога")
             return False
+
 
     async def delete_conversation(self, conversation_id: str) -> bool:
         """
@@ -409,14 +429,26 @@ class ConversationRepository:
         """
         try:
             collection = self._get_collection()
-            await collection.delete_one({"conversation_id": conversation_id})
-
+            result = await collection.delete_one({"conversation_id": conversation_id})
+            if result.deleted_count == 0:
+                logger.warning(f"Диалог {conversation_id} не найден: удалять нечего")
+                return False
             logger.info(f"Удален диалог: {conversation_id}")
-            return True
+            from backend.settings.cef_logger.storage_audit import log_mongo_success
 
+            log_mongo_success(
+                "MongoDB.deleteOne(conversations)", request_uuid=conversation_id
+            )
+            return True
         except Exception as e:
-            logger.error(f"Ошибка при удалении диалога: {e}")
+            from backend.settings.cef_logger.storage_audit import log_mongo_failure
+
+            log_mongo_failure(
+                "MongoDB.deleteOne(conversations)", str(e), request_uuid=conversation_id
+            )
+            logger.exception("Ошибка при удалении диалога")
             return False
+
 
     async def delete_user_conversations(self, user_id: str) -> int:
         """Удаление всех диалогов пользователя. Возвращает количество удалённых."""
@@ -508,20 +540,41 @@ class ConversationRepository:
             logger.error(f"Ошибка при удалении диалогов проекта {project_id}: {e}")
             return 0
 
-    async def set_conversation_project(self, conversation_id: str, project_id: Optional[str]) -> bool:
+    async def set_conversation_project(
+        self, conversation_id: str, project_id: Optional[str]
+    ) -> bool:
         """Установить/сбросить привязку диалога к проекту."""
         try:
             collection = self._get_collection()
-            await collection.update_one(
+            result = await collection.update_one(
                 {"conversation_id": conversation_id},
                 {"$set": {"project_id": project_id, "updated_at": datetime.utcnow()}},
             )
+            if result.matched_count == 0:
+                logger.warning(f"Диалог {conversation_id} не найден: project_id не изменён")
+                return False
+            from backend.settings.cef_logger.storage_audit import log_mongo_success
+
+            log_mongo_success(
+                "MongoDB.updateOne(conversations.project_id)",
+                request_uuid=conversation_id,
+            )
             return True
         except Exception as e:
-            logger.error(f"Ошибка при обновлении project_id диалога {conversation_id}: {e}")
+            from backend.settings.cef_logger.storage_audit import log_mongo_failure
+
+            log_mongo_failure(
+                "MongoDB.updateOne(conversations.project_id)",
+                str(e),
+                request_uuid=conversation_id,
+            )
+            logger.exception("Ошибка при обновлении project_id диалога")
             return False
 
-    async def remove_last_message(self, conversation_id: str, role: Optional[str] = None) -> bool:
+
+    async def remove_last_message(
+        self, conversation_id: str, role: Optional[str] = None
+    ) -> bool:
         """
         Удаление последнего сообщения из диалога
 
@@ -534,49 +587,86 @@ class ConversationRepository:
         """
         try:
             collection = self._get_collection()
-
-            # Получаем текущий разговор
             conversation = await self.get_conversation(conversation_id)
             if not conversation or not conversation.messages:
                 logger.warning(f"Диалог {conversation_id} не найден или пуст")
                 return False
-
-            # Если указана роль, ищем последнее сообщение с этой ролью
             if role:
-                # Находим индекс последнего сообщения с указанной ролью
                 last_index = -1
                 for i in range(len(conversation.messages) - 1, -1, -1):
                     if conversation.messages[i].role == role:
                         last_index = i
                         break
-
                 if last_index == -1:
-                    logger.warning(f"Сообщение с ролью '{role}' не найдено в диалоге {conversation_id}")
+                    logger.warning(
+                        f"Сообщение с ролью '{role}' не найдено в диалоге {conversation_id}"
+                    )
                     return False
-
-                # Удаляем сообщение по индексу
                 message_to_remove = conversation.messages[last_index]
-                await collection.update_one(
-                    {"conversation_id": conversation_id},
+                # Удаляем ровно один элемент по индексу: $pull по message_id уносил
+                # бы все сообщения с одинаковым id (например, после регенерации).
+                # Условие на message_id по индексу защищает от гонки с параллельной правкой.
+                result = await collection.update_one(
                     {
-                        "$pull": {"messages": {"message_id": message_to_remove.message_id}},
-                        "$set": {"updated_at": datetime.utcnow()}
-                    }
+                        "conversation_id": conversation_id,
+                        f"messages.{last_index}.message_id": message_to_remove.message_id,
+                    },
+                    [
+                        {
+                            "$set": {
+                                "messages": {
+                                    "$concatArrays": [
+                                        {"$slice": ["$messages", last_index]},
+                                        {
+                                            "$slice": [
+                                                "$messages",
+                                                last_index + 1,
+                                                {"$size": "$messages"},
+                                            ]
+                                        },
+                                    ]
+                                },
+                                "updated_at": datetime.utcnow(),
+                            }
+                        }
+                    ],
                 )
-                logger.info(f"Удалено последнее сообщение с ролью '{role}' из диалога {conversation_id}")
+                if result.matched_count == 0:
+                    logger.warning(
+                        f"Диалог {conversation_id} изменился во время удаления сообщения"
+                    )
+                    return False
+                logger.debug(
+                    f"Удалено последнее сообщение с ролью '{role}' из диалога {conversation_id}"
+                )
             else:
-                # Удаляем последнее сообщение независимо от роли
                 await collection.update_one(
                     {"conversation_id": conversation_id},
                     {
                         "$pop": {"messages": 1},
-                        "$set": {"updated_at": datetime.utcnow()}
-                    }
+                        "$set": {"updated_at": datetime.utcnow()},
+                    },
                 )
-                logger.info(f"Удалено последнее сообщение из диалога {conversation_id}")
+                logger.debug(
+                    f"Удалено последнее сообщение из диалога {conversation_id}"
+                )
+            from backend.settings.cef_logger.storage_audit import log_mongo_success
 
+            method = (
+                "MongoDB.updateOne(conversations.messages.$slice)"
+                if role
+                else "MongoDB.updateOne(conversations.$pop)"
+            )
+            log_mongo_success(method, request_uuid=conversation_id)
             return True
-            
         except Exception as e:
-            logger.error(f"Ошибка при удалении последнего сообщения: {e}")
+            from backend.settings.cef_logger.storage_audit import log_mongo_failure
+
+            log_mongo_failure(
+                "MongoDB.updateOne(conversations.messages)",
+                str(e),
+                request_uuid=conversation_id,
+            )
+            logger.exception("Ошибка при удалении последнего сообщения")
             return False
+

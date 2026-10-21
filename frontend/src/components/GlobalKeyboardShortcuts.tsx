@@ -16,6 +16,7 @@ import {
   type HotkeyActionId,
 } from '../constants/hotkeys';
 import { useHotkeyBindings } from '../hooks/useHotkeyBindings';
+import { prepareNewChatSettings } from '../utils/newChatSettings';
 
 const ACTION_EVENTS: Partial<Record<HotkeyActionId, string>> = {
   searchChats: ASTRA_FOCUS_CHAT_SEARCH,
@@ -64,10 +65,16 @@ export default function GlobalKeyboardShortcuts() {
         if (action.id === 'newChat') {
           const s = stateRef.current;
           const cur = s.chats.find((c) => c.id === s.currentChatId) ?? null;
-          if (cur && !chatIsListedInAllChatsSection(cur)) {
+          if (
+            cur &&
+            !chatIsListedInAllChatsSection(cur) &&
+            !s.loadingChatIds.includes(cur.id) &&
+            !cur.messages.some((m) => m.isStreaming)
+          ) {
             deleteChat(cur.id);
           }
           const id = createChat();
+          prepareNewChatSettings(cur?.id, id);
           setCurrentChat(id);
           navigate('/');
           return;

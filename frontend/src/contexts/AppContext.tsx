@@ -191,6 +191,8 @@ export interface Project {
   iconColor?: string;
   memory: 'default' | 'project-only';
   instructions: string;
+  knowledgeBasesEnabled?: boolean;
+  knowledgeBaseIds?: number[];
   workspacePath?: string;
   createdAt: string;
   updatedAt: string;

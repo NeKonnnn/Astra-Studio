@@ -12,7 +12,9 @@ ToolCallingMode = Literal["native_openai_tools", "prompt_json_fc", "langgraph_ag
 def resolve_tool_calling_mode(provider: LLMProvider) -> ToolCallingMode:
     from backend.settings.config import get_settings
 
-    global_mode = str(get_settings().mcp.tool_calling_mode_default or "auto").strip().lower()
+    global_mode = (
+        str(get_settings().mcp.tool_calling_mode_default or "auto").strip().lower()
+    )
     if global_mode in ("native_openai_tools", "prompt_json_fc", "langgraph_agent"):
         return global_mode  # type: ignore[return-value]
 
