@@ -8,6 +8,7 @@ from app.database.connection import PostgreSQLConnection
 from app.database.fts import (
     build_fts_or_query,
     ensure_fts_columns,
+    escape_like,
     fts_where_and_rank,
     query_has_searchable_content,
     substring_where_and_rank,
@@ -299,7 +300,7 @@ class KbDocumentRepository:
         async with await self.db.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT id, filename, content, metadata, created_at, updated_at
+                SELECT id, filename, metadata, created_at, updated_at
                 FROM kb_documents
                 WHERE LOWER(TRIM(COALESCE(metadata->>'owner_user_id', ''))) = $1
                 ORDER BY created_at DESC
@@ -315,7 +316,10 @@ class KbDocumentRepository:
                 Document(
                     id=row["id"],
                     filename=row["filename"],
-                    content=row["content"],
+                    # Текст тут не нужен: метод зовёт только reindex_all, а
+                    # он берёт id и metadata. Сам текст достаёт заново
+                    # reindex_document по id. См. Document.content.
+                    content=None,
                     metadata=meta or {},
                     created_at=row["created_at"],
                     updated_at=row["updated_at"],
@@ -330,7 +334,7 @@ class KbDocumentRepository:
         async with await self.db.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT id, filename, content, metadata, created_at, updated_at
+                SELECT id, filename, metadata, created_at, updated_at
                 FROM kb_documents
                 WHERE id = ANY($1::int[])
                 ORDER BY created_at DESC
@@ -346,7 +350,7 @@ class KbDocumentRepository:
                 Document(
                     id=row["id"],
                     filename=row["filename"],
-                    content=row["content"],
+                    content=None,  # текст здесь не нужен, см. Document.content.
                     metadata=meta or {},
                     created_at=row["created_at"],
                     updated_at=row["updated_at"],
@@ -366,7 +370,9 @@ class KbDocumentRepository:
             return None
         from datetime import datetime, timezone
 
-        now = datetime.now(timezone.utc)
+        # Колонки created_at/updated_at — TIMESTAMP WITHOUT TIME ZONE;
+        # aware-datetime ломает asyncpg (DataError).
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         return await self.create_document(
             Document(
                 filename=src.filename,
@@ -380,7 +386,9 @@ class KbDocumentRepository:
     async def delete_document(self, document_id: int) -> bool:
         try:
             async with await self.db.acquire() as conn:
-                await conn.execute("DELETE FROM kb_documents WHERE id = $1", document_id)
+                await conn.execute(
+                    "DELETE FROM kb_documents WHERE id = $1", document_id
+                )
             from app.core.cef_logger.storage_audit import log_postgres_success
 
             log_postgres_success(
@@ -400,17 +408,33 @@ class KbDocumentRepository:
             )
             raise
 
-    async def find_document_ids_by_filename(self, name_or_stem: str, limit: int = 10) -> List[int]:
-        """Поиск document_id по имени файла через ILIKE. См. project_rag_repository."""
+    async def find_document_ids_by_filename(
+        self,
+        name_or_stem: str,
+        limit: int = 10,
+        document_ids: Optional[List[int]] = None,
+    ) -> List[int]:
+        """Поиск document_id по имени файла через ILIKE. См. project_rag_repository.
+
+        ``document_ids`` (документы агента) ограничивает область поиска ДО ``LIMIT``:
+        иначе документ нужного агента вытесняется десятью чужими с похожим именем
+        (BUG-RAG-33). Пустой список — «ничего не разрешено» (пустой результат).
+        """
         needle = (name_or_stem or "").strip()
         if not needle:
             return []
+        sql = "SELECT id FROM kb_documents WHERE filename ILIKE $1"
+        params: List[Any] = [f"%{escape_like(needle)}%"]
+        if document_ids is not None:
+            allowed = [int(i) for i in document_ids if i is not None]
+            if not allowed:
+                return []
+            params.append(allowed)
+            sql += f" AND id = ANY(${len(params)}::int[])"
+        params.append(limit)
+        sql += f" ORDER BY updated_at DESC LIMIT ${len(params)}"
         async with await self.db.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT id FROM kb_documents WHERE filename ILIKE $1 ORDER BY updated_at DESC LIMIT $2",
-                f"%{needle}%",
-                limit,
-            )
+            rows = await conn.fetch(sql, *params)
         return [int(r["id"]) for r in rows]
 
 
@@ -426,7 +450,7 @@ class KbVectorRepository:
         from app.database.embedding_schema import resolve_vector_table
 
         return await resolve_vector_table(conn, self.base_table, self.embedding_dim)
-            
+
     async def _all_tables(self, conn) -> list:
         """Все таблицы стора: у документа бывают вектора сразу в нескольких."""
         from app.database.embedding_schema import list_vector_tables
@@ -434,7 +458,7 @@ class KbVectorRepository:
         return await list_vector_tables(conn, self.base_table)
 
     def _cast(self) -> str:
-        """vector или halfvec — по размерности (halfvec с 2001, см. B2a)."""
+        """vector или halfvec - по размерности (halfvec с 2001, см. B2a)."""
         from app.database.embedding_schema import vector_cast
 
         return vector_cast(self.embedding_dim)
@@ -462,7 +486,9 @@ class KbVectorRepository:
         flat = []
         for i, (doc_id, idx, emb, content, meta) in enumerate(values):
             base = i * 5
-            placeholders.append(f"(${base+1}, ${base+2}, ${base+3}, ${base+4}, ${base+5}::jsonb)")
+            placeholders.append(
+                f"(${base+1}, ${base+2}, ${base+3}, ${base+4}, ${base+5}::jsonb)"
+            )
             flat.extend([doc_id, idx, emb, content, meta])
         doc_id0 = vectors[0].document_id
         try:
@@ -544,7 +570,7 @@ class KbVectorRepository:
             fn = (filters.filename_contains or "").strip()
             if fn:
                 clauses.append(f"d.filename ILIKE ${pi}")
-                params.append(f"%{fn}%")
+                params.append(f"%{escape_like(fn)}%")
                 pi += 1
         where_sql = " AND ".join(clauses) if clauses else "TRUE"
         params.append(limit)
@@ -556,7 +582,7 @@ class KbVectorRepository:
             await apply_ann_search_settings(conn)
             from_sql = f"{table} v {join_sql}".strip()
             q = f"""
-                SELECT v.id, v.document_id, v.chunk_index, v.embedding::text, v.content,
+                SELECT v.id, v.document_id, v.chunk_index, v.content,
                        v.metadata,
                        1 - (v.embedding <=> $1::{cast}) as similarity
                 FROM {from_sql}
@@ -567,7 +593,7 @@ class KbVectorRepository:
             rows = await conn.fetch(q, *params)
         result = []
         for row in rows:
-            emb = [float(x.strip()) for x in row["embedding"].strip("[]").split(",")]
+            emb = None  # вектор из БД не тянем, см. DocumentVector.embedding
             meta = row["metadata"]
             if isinstance(meta, str):
                 meta = json.loads(meta) if meta else {}
@@ -594,7 +620,7 @@ class KbVectorRepository:
         document_ids: Optional[List[int]] = None,
         filters: Optional[DocumentVectorSearchFilters] = None,
     ) -> List[Tuple[DocumentVector, float]]:
-        """FTS-поиск через OR-``to_tsquery`` (russian + simple). См. ``app.database.fts``.
+        """FTS-поиск через OR-to_tsquery (russian + simple). См. app.database.fts.
 
         Важно: используется OR-семантика вместо AND. Это повышает recall
         для перечислительных/meta-запросов («в каких документах упоминается X»),
@@ -607,7 +633,9 @@ class KbVectorRepository:
         if q_or is None:
             return []
 
-        where_fts, rank_fts, _used = fts_where_and_rank(vectors_alias="v", first_placeholder_idx=1)
+        where_fts, rank_fts, _used = fts_where_and_rank(
+            vectors_alias="v", first_placeholder_idx=1
+        )
         params: List[Any] = [q_or, q_or]
         pi = 3
 
@@ -635,7 +663,7 @@ class KbVectorRepository:
             fn = (filters.filename_contains or "").strip()
             if fn:
                 clauses.append(f"d.filename ILIKE ${pi}")
-                params.append(f"%{fn}%")
+                params.append(f"%{escape_like(fn)}%")
                 pi += 1
         where_sql = " AND ".join(clauses)
         params.append(limit)
@@ -643,7 +671,7 @@ class KbVectorRepository:
             table = await self._table(conn)
             from_sql = f"{table} v {join_sql}".strip()
             q = f"""
-                SELECT v.id, v.document_id, v.chunk_index, v.embedding::text, v.content,
+                SELECT v.id, v.document_id, v.chunk_index, v.content,
                        v.metadata,
                        {rank_fts} AS lexical_score
                 FROM {from_sql}
@@ -654,7 +682,7 @@ class KbVectorRepository:
             rows = await conn.fetch(q, *params)
         out: List[Tuple[DocumentVector, float]] = []
         for row in rows:
-            emb = [float(x.strip()) for x in row["embedding"].strip("[]").split(",")]
+            emb = None  # вектор из БД не тянем, см. DocumentVector.embedding
             meta = row["metadata"]
             if isinstance(meta, str):
                 meta = json.loads(meta) if meta else {}
@@ -704,7 +732,7 @@ class KbVectorRepository:
         async with await self.db.acquire() as conn:
             table = await self._table(conn)
             q = f"""
-                SELECT v.id, v.document_id, v.chunk_index, v.embedding::text, v.content,
+                SELECT v.id, v.document_id, v.chunk_index, v.content,
                        v.metadata,
                        {rank_sub} AS lexical_score
                 FROM {table} v
@@ -715,7 +743,7 @@ class KbVectorRepository:
             rows = await conn.fetch(q, *params)
         out: List[Tuple[DocumentVector, float]] = []
         for row in rows:
-            emb = [float(x.strip()) for x in row["embedding"].strip("[]").split(",")]
+            emb = None  # вектор из БД не тянем, см. DocumentVector.embedding
             meta = row["metadata"]
             if isinstance(meta, str):
                 meta = json.loads(meta) if meta else {}
@@ -734,7 +762,9 @@ class KbVectorRepository:
             )
         return out
 
-    async def get_chunk_contents_by_indices(self, document_id: int, chunk_indices: List[int]) -> Dict[int, str]:
+    async def get_chunk_contents_by_indices(
+        self, document_id: int, chunk_indices: List[int]
+    ) -> Dict[int, str]:
         if not chunk_indices:
             return {}
         uniq = sorted({int(i) for i in chunk_indices if i is not None and int(i) >= 0})
@@ -742,7 +772,7 @@ class KbVectorRepository:
             return {}
         out: Dict[int, str] = {}
         async with await self.db.acquire() as conn:
-            # Документ мог индексироваться разными моделями — ищем, где он есть.
+            # Документ мог индексироваться разными моделями - ищем, где он есть.
             for t in await self._all_tables(conn):
                 rows = await conn.fetch(
                     f"""
@@ -762,7 +792,7 @@ class KbVectorRepository:
         async with await self.db.acquire() as conn:
             for t in await self._all_tables(conn):
                 rows = await conn.fetch(
-                    "SELECT id, document_id, chunk_index, embedding::text, content, "
+                    "SELECT id, document_id, chunk_index, content, "
                     f"metadata FROM {t} WHERE document_id = $1 ORDER BY chunk_index",
                     document_id,
                 )
@@ -770,7 +800,7 @@ class KbVectorRepository:
                     break
         out = []
         for row in rows:
-            emb = [float(x.strip()) for x in row["embedding"].strip("[]").split(",")]
+            emb = None  # вектор из БД не тянем, см. DocumentVector.embedding
             meta = row["metadata"]
             if isinstance(meta, str):
                 meta = json.loads(meta) if meta else {}
@@ -815,21 +845,26 @@ class KbVectorRepository:
     async def delete_vectors_by_document(self, document_id: int) -> bool:
         """Чистит вектора документа во ВСЕХ таблицах.
         Иначе при смене модели старые вектора остались бы в таблице прежней
-        размерности навсегда — и всплывали бы в поиске у тех, кто на той модели.
+        размерности навсегда - и всплывали бы в поиске у тех, кто на той модели.
         """
         try:
             n_deleted = 0
             async with await self.db.acquire() as conn:
-                for t in await self._all_tables(conn):
-                    row = await conn.fetchrow(
-                        f"SELECT COUNT(*) AS c FROM {t} WHERE document_id = $1",
-                        document_id,
-                    )
-                    n_deleted += int(row["c"] if row and row.get("c") is not None else 0)
-                    await conn.execute(
-                        f"DELETE FROM {t} WHERE document_id = $1",
-                        document_id,
-                    )
+                # Все таблицы размерностей — одной транзакцией: либо вектора удалены везде,
+                # либо нигде (BUG-RAG-32).
+                async with conn.transaction():
+                    for t in await self._all_tables(conn):
+                        row = await conn.fetchrow(
+                            f"SELECT COUNT(*) AS c FROM {t} WHERE document_id = $1",
+                            document_id,
+                        )
+                        n_deleted += int(
+                            row["c"] if row and row.get("c") is not None else 0
+                        )
+                        await conn.execute(
+                            f"DELETE FROM {t} WHERE document_id = $1",
+                            document_id,
+                        )
 
             from app.core.cef_logger.storage_audit import log_postgres_success
 
@@ -837,7 +872,9 @@ class KbVectorRepository:
 
             ctx = get_embed_log_context() or {}
             op_part = f" op={ctx.get('operation')}" if ctx.get("operation") else ""
-            file_part = f" file={str(ctx.get('filename'))[:120]}" if ctx.get("filename") else ""
+            file_part = (
+                f" file={str(ctx.get('filename'))[:120]}" if ctx.get("filename") else ""
+            )
 
             log_postgres_success(
                 f"PostgreSQL.delete(kb_vectors) document_id={document_id} n_deleted={n_deleted}{op_part}{file_part}",
@@ -851,7 +888,9 @@ class KbVectorRepository:
 
             ctx = get_embed_log_context() or {}
             op_part = f" op={ctx.get('operation')}" if ctx.get("operation") else ""
-            file_part = f" file={str(ctx.get('filename'))[:120]}" if ctx.get("filename") else ""
+            file_part = (
+                f" file={str(ctx.get('filename'))[:120]}" if ctx.get("filename") else ""
+            )
 
             log_postgres_failure(
                 f"PostgreSQL.delete(kb_vectors) document_id={document_id}{op_part}{file_part}",
@@ -868,7 +907,9 @@ class KbVectorRepository:
             if not tables:
                 return []
             union = " UNION ".join(f"SELECT document_id FROM {t}" for t in tables)
-            rows = await conn.fetch(f"SELECT DISTINCT document_id FROM ({union}) ORDER BY document_id")
+            rows = await conn.fetch(
+                f"SELECT DISTINCT document_id FROM ({union}) ORDER BY document_id"
+            )
         return [r["document_id"] for r in rows]
 
     async def get_all_contents_for_bm25(
@@ -908,7 +949,9 @@ class KbVectorRepository:
 
         async with await self.db.acquire() as conn:
             table = await self._table(conn)
-            logger.debug("BM25 store: table=%r repr_bytes=%r", table, table.encode("utf-8"))
+            logger.debug(
+                "BM25 store: table=%r repr_bytes=%r", table, table.encode("utf-8")
+            )
             if document_ids:
                 where = "WHERE v.document_id = ANY($1::int[])"
                 params = [[int(d) for d in document_ids if d is not None]]
@@ -936,13 +979,15 @@ class KbVectorRepository:
                 chunk_count=chunk_count,
             )
 
-    async def get_vector_by_document_and_chunk(self, document_id: int, chunk_index: int) -> Optional[DocumentVector]:
+    async def get_vector_by_document_and_chunk(
+        self, document_id: int, chunk_index: int
+    ) -> Optional[DocumentVector]:
         """Точечный запрос одного вектора по (document_id, chunk_index)."""
         row = None
         async with await self.db.acquire() as conn:
             for t in await self._all_tables(conn):
                 row = await conn.fetchrow(
-                    "SELECT id, document_id, chunk_index, embedding::text, content, "
+                    "SELECT id, document_id, chunk_index, content, "
                     f"metadata FROM {t} WHERE document_id = $1 AND chunk_index = $2",
                     document_id,
                     chunk_index,
@@ -951,7 +996,7 @@ class KbVectorRepository:
                     break
         if not row:
             return None
-        emb = [float(x.strip()) for x in row["embedding"].strip("[]").split(",")]
+        emb = None  # вектор из БД не тянем, см. DocumentVector.embedding
         meta = row["metadata"]
         if isinstance(meta, str):
             meta = json.loads(meta) if meta else {}

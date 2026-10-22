@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { getApiUrl, getAuthFetchHeaders } from '../config/api';
+import { authFetch, getApiUrl } from '../config/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useAppContext } from '../contexts/AppContext';
 import {
@@ -20,11 +20,14 @@ export function useImageCreations(limit = 500) {
   );
 
   const loadCreations = useCallback(async () => {
+    if (!token) {
+      setApiItems([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
-      const r = await fetch(getApiUrl(`/api/image-generation/creations?limit=${limit}`), {
-        headers: getAuthFetchHeaders(),
-      });
+      const r = await authFetch(getApiUrl(`/api/image-generation/creations?limit=${limit}`));
       if (!r.ok) throw new Error(String(r.status));
       const data = await r.json();
       setApiItems(Array.isArray(data.items) ? data.items : []);
@@ -33,7 +36,7 @@ export function useImageCreations(limit = 500) {
     } finally {
       setLoading(false);
     }
-  }, [limit]);
+  }, [limit, token]);
 
   useEffect(() => {
     void loadCreations();

@@ -1,4 +1,4 @@
-import { getApiUrl, getAuthFetchHeaders } from '../config/api';
+import { authFetch, getApiUrl, getAuthFetchHeaders } from '../config/api';
 
 type RagPromptSaveResult = { ok: true } | { ok: false; message: string };
 
@@ -20,7 +20,7 @@ async function saveEntityRagSystemPrompt(opts: {
     body.project_id = opts.entityId;
   }
 
-  const response = await fetch(getApiUrl('/api/rag/settings'), {
+  const response = await authFetch(getApiUrl('/api/rag/settings'), {
     method: 'PUT',
     headers: getAuthFetchHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body),

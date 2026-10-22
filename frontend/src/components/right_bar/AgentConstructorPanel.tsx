@@ -53,7 +53,7 @@ import {
   ExpandMore as ExpandMoreIcon,
 } from '@mui/icons-material';
 import AgentIcon from '../../icons/AgentIcon';
-import { getApiUrl, API_ENDPOINTS, getAuthFetchHeaders } from '../../config/api';
+import { authFetch, getApiUrl, API_ENDPOINTS, getAuthFetchHeaders } from '../../config/api';
 import { useAuth } from '../../contexts/AuthContext';
 import { useAppActions } from '../../contexts/AppContext';
 import { useRagReindexStatus } from '../../contexts/RagReindexStatusContext';
@@ -551,7 +551,7 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
       const headers: HeadersInit = tokenRef.current
         ? { Authorization: `Bearer ${tokenRef.current}` }
         : {};
-      const resp = await fetch(getApiUrl(`/api/agents/${agentId}`), { headers });
+      const resp = await authFetch(getApiUrl(`/api/agents/${agentId}`), { headers });
       if (!resp.ok) {
         showNotificationRef.current('error', 'Не удалось открыть агента в конструкторе');
         return;
@@ -569,9 +569,11 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
 
   const loadModels = useCallback(async () => {
     try {
+      // Как в AgentSelector: JWT + cookie client binding, иначе 401 и пустой каталог
+      // → UI откатывается на заглушку OpenAI/Local без моделей.
       const [catalogResp, providersResp] = await Promise.all([
-        fetch(getApiUrl('/api/models/available')),
-        fetch(getApiUrl('/api/llm-providers?include_health=false')),
+        authFetch(getApiUrl('/api/models/available')),
+        authFetch(getApiUrl('/api/llm-providers?include_health=false')),
       ]);
       if (catalogResp.ok) {
         const data = await catalogResp.json();
@@ -606,10 +608,7 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
 
   const loadUserModelSettings = useCallback(async () => {
     try {
-      const headers: HeadersInit = tokenRef.current
-        ? { Authorization: `Bearer ${tokenRef.current}` }
-        : {};
-      const resp = await fetch(getApiUrl('/api/models/settings'), { headers });
+      const resp = await authFetch(getApiUrl('/api/models/settings'));
       if (!resp.ok) return;
       const data = await resp.json();
       if (data && typeof data === 'object') {
@@ -624,7 +623,7 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
     if (!options?.silent) setIsLoadingKb(true);
     try {
       const url = getApiUrl(API_ENDPOINTS.KB_DOCUMENTS_LIST);
-      const resp = await fetch(url, { headers: getAuthFetchHeaders() });
+      const resp = await authFetch(url, { headers: getAuthFetchHeaders() });
       if (!resp.ok) return;
       const data = await resp.json();
       const raw = (data.documents || data || []) as Array<Record<string, unknown>>;
@@ -668,13 +667,13 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         };
-        const getResp = await fetch(getApiUrl(`/api/agents/${agentId}`), { headers });
+        const getResp = await authFetch(getApiUrl(`/api/agents/${agentId}`), { headers });
         if (!getResp.ok) return;
         const agent = (await getResp.json()) as Agent;
         const cfg = { ...(agent.config || {}) };
         cfg.kb_document_ids = ids;
         cfg.file_search_enabled = true;
-        await fetch(getApiUrl(`/api/agents/${agentId}`), {
+        await authFetch(getApiUrl(`/api/agents/${agentId}`), {
           method: 'PUT',
           headers,
           body: JSON.stringify({ config: cfg }),
@@ -728,7 +727,7 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
         const headers: HeadersInit = tokenRef.current
           ? { Authorization: `Bearer ${tokenRef.current}` }
           : {};
-        const resp = await fetch(`${getApiUrl(API_ENDPOINTS.SKILLS)}/list?limit=100`, { headers });
+        const resp = await authFetch(`${getApiUrl(API_ENDPOINTS.SKILLS)}/list?limit=100`, { headers });
         if (!resp.ok) return;
         const data = await resp.json();
         setAvailableSkills(
@@ -751,7 +750,7 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
         const headers: HeadersInit = tokenRef.current
           ? { Authorization: `Bearer ${tokenRef.current}` }
           : {};
-        const resp = await fetch(
+        const resp = await authFetch(
           `${getApiUrl(API_ENDPOINTS.KNOWLEDGE_BASES)}/list?limit=100`,
           { headers },
         );
@@ -1011,7 +1010,7 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
       (needServerEmb || needServerRer || needServerFlag || ragDraft == null)
     ) {
       try {
-        const resp = await fetch(
+        const resp = await authFetch(
           getApiUrl(`/api/rag/settings?scope=agent&agent_id=${selectedAgentId}`),
           { headers: getAuthFetchHeaders() },
         );
@@ -1114,7 +1113,7 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
       formData.append('agent_id', String(selectedAgentId));
       try {
         const url = getApiUrl(API_ENDPOINTS.KB_DOCUMENTS_UPLOAD);
-        const resp = await fetch(url, {
+        const resp = await authFetch(url, {
           method: 'POST',
           headers: getAuthFetchHeaders(),
           body: formData,
@@ -1197,7 +1196,7 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
   const handleKbDelete = async (docId: number) => {
     try {
       const url = `${getApiUrl(API_ENDPOINTS.KB_DOCUMENTS_DELETE)}/${docId}`;
-      const resp = await fetch(url, { method: 'DELETE' });
+      const resp = await authFetch(url, { method: 'DELETE' });
       // Ответ проверяем до правки списков и до persist.
       if (!resp.ok) {
         const detail = await resp.json().then(d => d?.detail).catch(() => null);
@@ -1326,7 +1325,7 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
         ? getApiUrl(`/api/agents/${selectedAgentId}`)
         : getApiUrl('/api/agents');
       const method = isEdit ? 'PUT' : 'POST';
-      const resp = await fetch(url, {
+      const resp = await authFetch(url, {
         method,
         headers: {
           'Content-Type': 'application/json',
@@ -1461,7 +1460,7 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
     const nextPublic = !agent.is_public;
     setIsPublishing(true);
     try {
-      const resp = await fetch(getApiUrl(`/api/agents/${selectedAgentId}`), {
+      const resp = await authFetch(getApiUrl(`/api/agents/${selectedAgentId}`), {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -1495,7 +1494,7 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
     if (!window.confirm(`Удалить агента «${name}»?`)) return;
     try {
       const url = getApiUrl(`/api/agents/${selectedAgentId}`);
-      const resp = await fetch(url, {
+      const resp = await authFetch(url, {
         method: 'DELETE',
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });

@@ -186,9 +186,13 @@ async def ensure_fts_columns(conn: Connection, table_name: str) -> None:
             # Поднимаем уровень с debug → warning: эта ошибка на живом корпусе
             # приводит к «молча отключённому» keyword-поиску, один из главных
             # источников «ничего не найдено» в RAG.
-            logger.warning("ensure_fts_columns(%s): колонка %s не создана: %s", table, col_name, e)
+            logger.warning(
+                "ensure_fts_columns(%s): колонка %s не создана: %s", table, col_name, e
+            )
 
-    await conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_tsv_ru_gin ON {table} USING gin (content_tsv_ru)")
+    await conn.execute(
+        f"CREATE INDEX IF NOT EXISTS idx_{table}_tsv_ru_gin ON {table} USING gin (content_tsv_ru)"
+    )
     await conn.execute(
         f"CREATE INDEX IF NOT EXISTS idx_{table}_tsv_simple_gin ON {table} USING gin (content_tsv_simple)"
     )
@@ -258,7 +262,9 @@ def build_fts_or_query(text: str) -> Optional[str]:
 # - Последовательности заглавных букв длиной 2..6 (аббревиатуры: ОФЗ, НДС, НК, KPI).
 # - Числа длиной >= 4 (даты, коды: 2025, 44-ФЗ).
 _PROPERNOUN_RE = re.compile(
-    r"(?:(?<!\w)[А-ЯЁA-Z][а-яёa-z]{1,}\b)" r"|(?:(?<!\w)[А-ЯЁA-Z]{2,6}\b)" r"|(?:(?<!\w)\d{4,}\b)"
+    r"(?:(?<!\w)[А-ЯЁA-Z][а-яёa-z]{1,}\b)"
+    r"|(?:(?<!\w)[А-ЯЁA-Z]{2,6}\b)"
+    r"|(?:(?<!\w)\d{4,}\b)"
 )
 
 # Слова на заглавную, которые НЕ считаем именами собственными даже если стоят в начале.
@@ -398,17 +404,27 @@ def extract_filenames(text: str) -> List[str]:
         return []
     found: List[str] = []
     seen = set()
+    quoted_spans: List[Tuple[int, int]] = []
     for m in _QUOTED_FILENAME_RE.finditer(text):
+        quoted_spans.append(m.span())
         name = m.group(1).strip()
         if name and name.lower() not in seen:
             seen.add(name.lower())
             found.append(name)
     for m in _FILENAME_RE.finditer(text):
+        # Хвост имени в кавычках («Годовой отчёт 2024.pdf» -> «2024.pdf») — не отдельный файл.
+        if any(s <= m.start() < e for s, e in quoted_spans):
+            continue
         name = m.group(1).strip().strip(".,;:!?)")
         if name and name.lower() not in seen:
             seen.add(name.lower())
             found.append(name)
     return found
+
+
+def escape_like(value: str) -> str:
+    """Экранирует обратный слэш, ``%`` и ``_`` для LIKE/ILIKE (escape PostgreSQL по умолчанию — обратный слэш)."""
+    return str(value).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def substring_where_and_rank(
@@ -440,7 +456,7 @@ def substring_where_and_rank(
         pi = first_placeholder_idx + i
         conds.append(f"{alias}.content ILIKE ${pi}")
         weights.append(f"(CASE WHEN {alias}.content ILIKE ${pi} THEN 1 ELSE 0 END)")
-        prepared.append(f"%{tok}%")
+        prepared.append(f"%{escape_like(tok)}%")
     where_clause = "(" + " OR ".join(conds) + ")"
     rank_expr = "(" + " + ".join(weights) + ")::float"
     return where_clause, rank_expr, len(tokens), prepared

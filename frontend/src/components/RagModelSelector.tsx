@@ -22,7 +22,7 @@ import {
 } from '@mui/icons-material';
 import { useAppActions } from '../contexts/AppContext';
 import { useRagReindexStatus } from '../contexts/RagReindexStatusContext';
-import { getApiUrl, getAuthFetchHeaders } from '../config/api';
+import { authFetch, getApiUrl, getAuthFetchHeaders } from '../config/api';
 import {
   getDropdownItemSx,
   getDropdownChevronSx,
@@ -167,7 +167,7 @@ export default function RagModelSelector({
             : scope === 'kb'
               ? `&knowledge_base_id=${encodeURIComponent(String(resolvedEntityId))}`
               : `&agent_id=${encodeURIComponent(String(resolvedEntityId))}`;
-      const response = await fetch(
+      const response = await authFetch(
         getApiUrl(`/api/rag/models?type=${kind}&scope=${scope}${entityQuery}`),
         { headers: getAuthFetchHeaders() },
       );
@@ -286,7 +286,7 @@ export default function RagModelSelector({
     try {
       setIsSelecting(true);
       setLoadingModelPath(modelPath);
-      const response = await fetch(getApiUrl('/api/rag/models/select'), {
+      const response = await authFetch(getApiUrl('/api/rag/models/select'), {
         method: 'POST',
         headers: getAuthFetchHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ model_type: kind, model_path: modelPath, scope }),

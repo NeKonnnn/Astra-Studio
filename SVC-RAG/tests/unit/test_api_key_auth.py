@@ -24,11 +24,40 @@ def _request(headers: list[tuple[bytes, bytes]] | None = None) -> Request:
     )
 
 
-async def test_without_env_key_auth_is_noop(monkeypatch):
+async def test_without_env_key_is_fail_closed(monkeypatch):
+    """BUG-RAG-01: без SVC_RAG_API_KEY доступ закрыт (503), а не открыт."""
     monkeypatch.delenv("SVC_RAG_API_KEY", raising=False)
     monkeypatch.delenv("RAG_API_KEY", raising=False)
+    monkeypatch.delenv("RAG_ALLOW_INSECURE_NO_AUTH", raising=False)
     assert get_svc_rag_api_key() == ""
+    with pytest.raises(HTTPException) as exc:
+        await require_svc_rag_api_key(_request())
+    assert exc.value.status_code == 503
+
+
+async def test_without_env_key_explicit_insecure_flag_is_noop(monkeypatch):
+    monkeypatch.delenv("SVC_RAG_API_KEY", raising=False)
+    monkeypatch.delenv("RAG_API_KEY", raising=False)
+    monkeypatch.setenv("RAG_ALLOW_INSECURE_NO_AUTH", "1")
     await require_svc_rag_api_key(_request())
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", "no", "off"])
+async def test_falsy_insecure_flag_does_not_open_access(monkeypatch, value):
+    monkeypatch.delenv("SVC_RAG_API_KEY", raising=False)
+    monkeypatch.delenv("RAG_API_KEY", raising=False)
+    monkeypatch.setenv("RAG_ALLOW_INSECURE_NO_AUTH", value)
+    with pytest.raises(HTTPException) as exc:
+        await require_svc_rag_api_key(_request())
+    assert exc.value.status_code == 503
+
+
+async def test_insecure_flag_does_not_bypass_a_configured_key(monkeypatch):
+    monkeypatch.setenv("SVC_RAG_API_KEY", "secret-rag")
+    monkeypatch.setenv("RAG_ALLOW_INSECURE_NO_AUTH", "1")
+    with pytest.raises(HTTPException) as exc:
+        await require_svc_rag_api_key(_request())
+    assert exc.value.status_code == 401
 
 
 async def test_missing_header_is_401(monkeypatch):

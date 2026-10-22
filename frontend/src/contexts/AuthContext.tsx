@@ -419,7 +419,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (error: any) {
       const detail = error.response?.data?.detail;
       const parsed = parseLoginErrorDetail(detail);
-      const missingRole = isMissingRoleLoginError(detail, parsed.message);
+      const missingRole = isMissingRoleLoginError(detail, parsed.message, error.response?.status);
       if (error.response?.status === 401) {
         throw new AuthLoginError(missingRole ? MISSING_ROLE_LOGIN_MESSAGE : parsed.message, {
           remainingAttempts: parsed.remainingAttempts,

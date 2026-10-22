@@ -338,21 +338,20 @@ async def test_memory_bm25_store_whole_table_fingerprint(mdocs, mvecs):
     assert (await mvecs.bm25_store_load("memory:all:4"))[1] is None
 
 
-async def test_memory_lookups_ignore_other_dimension_tables_known_issue(
+async def test_memory_lookups_scan_all_dimension_tables(
     pg_connection, mdocs, mvecs
 ):
-    """Известная проблема: ``get_vector_by_document_and_chunk``,
-    ``get_vectors_by_document`` и ``get_chunk_contents_by_indices`` в memory
-    смотрят только таблицу своей размерности, а в kb/project — во все (там это
-    сделано именно для случая смены модели). Чанки документа, проиндексированного
-    прежней моделью, для parent-document expansion «пропадают»."""
+    """BUG-RAG-05: ``get_vector_by_document_and_chunk``, ``get_vectors_by_document``
+    и ``get_chunk_contents_by_indices`` в memory, как в kb/project, смотрят во все
+    таблицы размерностей: чанки документа, проиндексированного прежней моделью,
+    находятся для parent-document expansion."""
     a = await _mdoc(mdocs)
     other = MemoryRagVectorRepository(pg_connection, embedding_dim=6)
     await other.create_tables()
     await other.create_vectors_batch([_vec(a, 0, [1, 0, 0, 0, 0, 0], "шесть")])
-    assert await mvecs.get_vector_by_document_and_chunk(a, 0) is None
-    assert await mvecs.get_vectors_by_document(a) == []
-    assert await mvecs.get_chunk_contents_by_indices(a, [0]) == {}
+    assert (await mvecs.get_vector_by_document_and_chunk(a, 0)).content == "шесть"
+    assert [v.content for v in await mvecs.get_vectors_by_document(a)] == ["шесть"]
+    assert await mvecs.get_chunk_contents_by_indices(a, [0]) == {0: "шесть"}
     assert (await other.get_vector_by_document_and_chunk(a, 0)).content == "шесть"
     # удаление, наоборот, чистит все таблицы
     assert await mvecs.delete_vectors_by_document(a) is True

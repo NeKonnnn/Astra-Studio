@@ -237,7 +237,7 @@ class TestSaveAndDelete:
         conn = FakeConn(execute_result="DELETE 3")
 
         assert await store.delete_by_prefix(conn, "kb:agent_5:") == 3
-        assert conn.executed[0][1] == ("kb:agent_5:%",)
+        assert conn.executed[0][1] == ("kb:agent\\_5:%",)
 
     @pytest.mark.parametrize(("result", "expected"), [("DELETE 0", 0), ("DELETE", 0), ("", 0)])
     async def test_delete_counts(self, result, expected):
@@ -246,10 +246,10 @@ class TestSaveAndDelete:
     async def test_delete_errors_give_zero(self):
         assert await store.delete_by_prefix(FakeConn(execute_error=RuntimeError("x")), "p") == 0
 
-    async def test_like_wildcards_in_the_prefix_are_not_escaped_known_issue(self):
-        # «_» и «%» в имени сущности работают как шаблон LIKE: префикс «kb:agent_5:» заденет и «kb:agentX5:».
+    async def test_like_wildcards_in_the_prefix_are_escaped(self):
+        # BUG-RAG-08: «_» и «%» в имени сущности — литералы, «kb:agent_5:» не заденет «kb:agentX5:».
         conn = FakeConn()
 
-        await store.delete_by_prefix(conn, "kb:agent_5:")
+        await store.delete_by_prefix(conn, "kb:agent_5:%\\")
 
-        assert conn.executed[0][1] == ("kb:agent_5:%",)  # без экранирования
+        assert conn.executed[0][1] == ("kb:agent\\_5:\\%\\\\%",)

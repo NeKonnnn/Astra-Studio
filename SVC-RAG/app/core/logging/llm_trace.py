@@ -66,7 +66,7 @@ def log_llm_request(
             purpose,
             url,
         )
-    logger.info(
+    logger.debug(
         "[LLM→] rid=%s purpose=%s POST %s model=%r timeout=%ss auth=%s params=%s",
         request_id,
         purpose,
@@ -90,7 +90,7 @@ def log_llm_response(
     finish_reason: Optional[str] = None,
 ) -> None:
     """Строка ПОСЛЕ успешного ответа: статус, тайминг, что пришло."""
-    logger.info(
+    logger.debug(
         "[LLM←] rid=%s purpose=%s status=%s latency=%.3fs content_chars=%s choices=%s finish=%s",
         request_id,
         purpose,

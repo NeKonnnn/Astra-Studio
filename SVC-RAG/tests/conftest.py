@@ -9,6 +9,7 @@ import pytest
 _TEST_CONFIG = Path(__file__).resolve().parent / "fixtures" / "config.test.yml"
 if _TEST_CONFIG.is_file():
     os.environ["CONFIG_PATH"] = str(_TEST_CONFIG)
+os.environ.setdefault("RAG_ALLOW_INSECURE_NO_AUTH", "1")
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 

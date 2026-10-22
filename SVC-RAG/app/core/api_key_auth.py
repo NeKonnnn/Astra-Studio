@@ -1,19 +1,30 @@
 """Общий секрет backend↔svc-rag (X-API-Key / Bearer).
 
-Пока ``SVC_RAG_API_KEY`` (или ``RAG_API_KEY``) не задан — доступ открыт
-(сетевая изоляция). После задания ключа все маршруты, кроме health,
-требуют совпадения заголовка.
+Fail-closed: пока ``SVC_RAG_API_KEY`` (или ``RAG_API_KEY``) не задан, все
+маршруты, кроме health, отвечают 503 (сервис не настроен). Работа без ключа
+возможна только по явному разрешению ``RAG_ALLOW_INSECURE_NO_AUTH=1``
+(тесты / локальная разработка). После задания ключа все маршруты, кроме
+health, требуют совпадения заголовка.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import secrets
-from typing import Optional
 
 from fastapi import HTTPException, Request, status
 
+logger = logging.getLogger(__name__)
+
 _ENV_NAMES = ("SVC_RAG_API_KEY", "RAG_API_KEY")
+_INSECURE_ENV = "RAG_ALLOW_INSECURE_NO_AUTH"
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def insecure_no_auth_allowed() -> bool:
+    """Явное разрешение работать без ключа (только dev/tests)."""
+    return (os.getenv(_INSECURE_ENV) or "").strip().lower() in _TRUTHY
 
 
 def get_svc_rag_api_key() -> str:
@@ -35,10 +46,21 @@ def _extract_provided_key(request: Request) -> str:
 
 
 async def require_svc_rag_api_key(request: Request) -> None:
-    """Зависимость FastAPI: при заданном ключе отклоняет чужие запросы."""
+    """Зависимость FastAPI: без ключа — отказ (fail-closed), с ключом — сверка."""
     expected = get_svc_rag_api_key()
     if not expected:
-        return
+        if insecure_no_auth_allowed():
+            return
+        logger.error(
+            "SVC-RAG: SVC_RAG_API_KEY не задан, запрос %s отклонён "
+            "(для dev/tests: %s=1)",
+            request.url.path,
+            _INSECURE_ENV,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="SVC-RAG: ключ доступа не настроен (SVC_RAG_API_KEY)",
+        )
     provided = _extract_provided_key(request)
     if not provided or not secrets.compare_digest(provided, expected):
         raise HTTPException(

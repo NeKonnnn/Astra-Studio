@@ -208,13 +208,19 @@ class AgentRepository:
             logger.exception("Ошибка при создании агента")
             return None
 
-    async def get_agent(self, agent_id: int, user_id: Optional[str] = None) -> Optional[AgentWithTags]:
+    async def get_agent(
+        self,
+        agent_id: int,
+        user_id: Optional[str] = None,
+        is_admin: bool = False,
+    ) -> Optional[AgentWithTags]:
         """
         Получение агента по ID с тегами и рейтингом
 
         Args:
             agent_id: ID агента
             user_id: ID пользователя (для получения его оценки)
+            is_admin: LDAP/Keycloak admin — полный доступ (my_permission=owner)
 
         Returns:
             Агент с тегами и рейтингом или None
@@ -256,6 +262,8 @@ class AgentRepository:
                 is_bookmarked = False
                 is_shared_with_me = False
                 my_permission = None
+                if is_admin:
+                    my_permission = AGENT_PERMISSION_OWNER
                 if user_id:
                     normalized_user_id = user_id.strip().lower() if user_id else user_id
                     rating_row = await conn.fetchrow(
@@ -286,12 +294,13 @@ class AgentRepository:
                         normalized_user_id,
                     )
                     is_shared_with_me = share_row is not None
-                    if (agent_row["author_id"] or "").strip().lower() == normalized_user_id:
-                        my_permission = AGENT_PERMISSION_OWNER
-                    elif share_row is not None:
-                        my_permission = normalize_permission(share_row["permission"])
-                    elif agent_row["is_public"]:
-                        my_permission = AGENT_PERMISSION_VIEWER
+                    if my_permission is None:
+                        if (agent_row["author_id"] or "").strip().lower() == normalized_user_id:
+                            my_permission = AGENT_PERMISSION_OWNER
+                        elif share_row is not None:
+                            my_permission = normalize_permission(share_row["permission"])
+                        elif agent_row["is_public"]:
+                            my_permission = AGENT_PERMISSION_VIEWER
                 config = (
                     agent_row["config"]
                     if isinstance(agent_row["config"], dict)
@@ -329,13 +338,19 @@ class AgentRepository:
             logger.exception("Ошибка при получении агента")
             return None
 
-    async def get_agents(self, filters: AgentFilters, user_id: Optional[str] = None) -> Tuple[List[AgentWithTags], int]:
+    async def get_agents(
+        self,
+        filters: AgentFilters,
+        user_id: Optional[str] = None,
+        is_admin: bool = False,
+    ) -> Tuple[List[AgentWithTags], int]:
         """
         Получение списка агентов с фильтрацией
 
         Args:
             filters: Фильтры для поиска
             user_id: ID пользователя (для получения его оценок)
+            is_admin: LDAP/Keycloak admin — все агенты (включая приватные)
 
         Returns:
             Кортеж (список агентов, общее количество)
@@ -343,9 +358,13 @@ class AgentRepository:
         try:
             async with await self.db_connection.acquire() as conn:
                 if getattr(filters, "author_only", False) and filters.author_id:
-                    where_conditions = ["a.author_id = $1"]
+                    where_conditions = ["LOWER(TRIM(a.author_id)) = LOWER(TRIM($1))"]
                     params = [filters.author_id]
                     param_num = 2
+                elif is_admin:
+                    where_conditions = ["TRUE"]
+                    params = []
+                    param_num = 1
                 else:
                     where_conditions = ["a.is_public = true"]
                     params = []
@@ -444,6 +463,8 @@ WHERE {where_clause}{rating_filter}
                     is_bookmarked = False
                     is_shared_with_me = False
                     my_permission = None
+                    if is_admin:
+                        my_permission = AGENT_PERMISSION_OWNER
                     if user_id:
                         normalized_user_id = user_id.strip().lower() if user_id else user_id
                         rating_row = await conn.fetchrow(
@@ -474,12 +495,13 @@ WHERE {where_clause}{rating_filter}
                             normalized_user_id,
                         )
                         is_shared_with_me = share_row is not None
-                        if (row["author_id"] or "").strip().lower() == normalized_user_id:
-                            my_permission = AGENT_PERMISSION_OWNER
-                        elif share_row is not None:
-                            my_permission = normalize_permission(share_row["permission"])
-                        elif row["is_public"]:
-                            my_permission = AGENT_PERMISSION_VIEWER
+                        if my_permission is None:
+                            if (row["author_id"] or "").strip().lower() == normalized_user_id:
+                                my_permission = AGENT_PERMISSION_OWNER
+                            elif share_row is not None:
+                                my_permission = normalize_permission(share_row["permission"])
+                            elif row["is_public"]:
+                                my_permission = AGENT_PERMISSION_VIEWER
                     config = row["config"] if isinstance(row["config"], dict) else json.loads(row["config"] or "{}")
                     tools = row["tools"] if isinstance(row["tools"], list) else json.loads(row["tools"] or "[]")
                     agent = AgentWithTags(
@@ -510,26 +532,36 @@ WHERE {where_clause}{rating_filter}
             logger.exception("Ошибка при получении списка агентов")
             return ([], 0)
 
-    async def update_agent(self, agent_id: int, agent_data: AgentUpdate, author_id: str) -> bool:
+    async def update_agent(
+        self,
+        agent_id: int,
+        agent_data: AgentUpdate,
+        author_id: str,
+        is_admin: bool = False,
+    ) -> bool:
         """
-        Обновление агента (автор-владелец или редактор).
+        Обновление агента (автор-владелец, редактор или LDAP/Keycloak admin).
 
         Args:
             agent_id: ID агента
             agent_data: Новые данные
             author_id: ID пользователя, выполняющего изменение (для проверки прав)
+            is_admin: полный доступ как у владельца
 
         Returns:
             True если успешно, False в случае ошибки
         """
         try:
             author_id = author_id.strip().lower() if author_id else author_id
-            permission = await self.get_user_permission(agent_id, author_id)
-            if permission not in (AGENT_PERMISSION_OWNER, AGENT_PERMISSION_EDITOR):
-                logger.warning(
-                    f"Попытка редактирования без прав: user={author_id}, agent={agent_id}, perm={permission}"
-                )
-                return False
+            if is_admin:
+                permission = AGENT_PERMISSION_OWNER
+            else:
+                permission = await self.get_user_permission(agent_id, author_id)
+                if permission not in (AGENT_PERMISSION_OWNER, AGENT_PERMISSION_EDITOR):
+                    logger.warning(
+                        f"Попытка редактирования без прав: user={author_id}, agent={agent_id}, perm={permission}"
+                    )
+                    return False
             async with await self.db_connection.acquire() as conn:
                 update_fields = []
                 params = []
@@ -688,13 +720,16 @@ WHERE id = ${param_num}
             logger.exception("Не удалось проверить принадлежность kb_document_ids")
             return []
 
-    async def delete_agent(self, agent_id: int, author_id: str) -> bool:
+    async def delete_agent(
+        self, agent_id: int, author_id: str, is_admin: bool = False
+    ) -> bool:
         """
-        Удаление агента (только автор может удалить)
+        Удаление агента (автор или LDAP/Keycloak admin).
 
         Args:
             agent_id: ID агента
             author_id: ID автора (для проверки прав)
+            is_admin: разрешить удаление чужого агента
 
         Returns:
             True если успешно, False в случае ошибки
@@ -708,8 +743,12 @@ WHERE id = ${param_num}
                     """,
                     agent_id,
                 )
-                if author_check != author_id:
-                    logger.warning(f"Попытка удаления чужого агента: user={author_id}, agent={agent_id}")
+                if not author_check:
+                    return False
+                if not is_admin and author_check != author_id:
+                    logger.warning(
+                        f"Попытка удаления чужого агента: user={author_id}, agent={agent_id}"
+                    )
                     return False
                 await conn.execute("DELETE FROM agents WHERE id = $1", agent_id)
                 logger.info(f"Удалён агент: {agent_id}")

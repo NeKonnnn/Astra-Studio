@@ -12,13 +12,19 @@ import {
   KeyboardArrowDown as KeyboardArrowDownIcon,
 } from '@mui/icons-material';
 import { useAppActions } from '../contexts/AppContext';
-import { getApiUrl } from '../config/api';
+import { authFetch, getApiUrl } from '../config/api';
 import { MENU_BORDER_RADIUS_PX } from '../constants/menuStyles';
 import {
   isValidSelectedModelPath,
   LAST_SELECTED_MODEL_PATH_STORAGE_KEY,
 } from '../utils/modelThinking';
 import { MODEL_PATH_CHANGED_EVENT } from '../utils/contextTokens';
+import {
+  ensureSelectedModelWeights,
+  MODEL_WEIGHTS_ENSURE_EVENT,
+  type ModelWeightsEnsureDetail,
+} from '../utils/applyAgentServer';
+import { useAuth } from '../contexts/AuthContext';
 
 
 interface Model {
@@ -79,11 +85,12 @@ export default function ModelSelector({ isDarkMode, onModelSelect }: ModelSelect
   const open = Boolean(anchorEl);
   
   const { showNotification } = useAppActions();
+  const { token } = useAuth();
 
   const loadModels = useCallback(async () => {
     try {
       setIsLoading(true);
-      const response = await fetch(getApiUrl('/api/models'));
+      const response = await authFetch(getApiUrl('/api/models'));
       if (response.ok) {
         const data = await response.json();
         setAvailableModels(data.models || []);
@@ -97,7 +104,7 @@ export default function ModelSelector({ isDarkMode, onModelSelect }: ModelSelect
 
   const loadCurrentModel = useCallback(async () => {
     try {
-      const response = await fetch(getApiUrl('/api/models/current'));
+      const response = await authFetch(getApiUrl('/api/models/current'));
       if (response.ok) {
         const data = await response.json();
         
@@ -130,6 +137,25 @@ export default function ModelSelector({ isDarkMode, onModelSelect }: ModelSelect
     return () => window.removeEventListener('astrachatAgentStatusChanged', onAgentStatusChanged);
   }, [loadModels, loadCurrentModel]);
 
+  useEffect(() => {
+    const onEnsure = (e: Event) => {
+      const detail = (e as CustomEvent<ModelWeightsEnsureDetail>).detail;
+      if (!detail?.path) return;
+      setIsLoadingModel(detail.phase === 'start');
+    };
+    window.addEventListener(MODEL_WEIGHTS_ENSURE_EVENT, onEnsure);
+    return () => window.removeEventListener(MODEL_WEIGHTS_ENSURE_EVENT, onEnsure);
+  }, []);
+
+  useEffect(() => {
+    if (!token) return;
+    const path =
+      (typeof selectedModelPath === 'string' && selectedModelPath) ||
+      (localStorage.getItem(LAST_SELECTED_MODEL_PATH_STORAGE_KEY) || '');
+    if (!isValidSelectedModelPath(path)) return;
+    void ensureSelectedModelWeights(token, path);
+  }, [token, selectedModelPath]);
+
   const handleClick = (event: React.MouseEvent<HTMLElement>) => {
     setAnchorEl(event.currentTarget);
   };
@@ -139,50 +165,33 @@ export default function ModelSelector({ isDarkMode, onModelSelect }: ModelSelect
   };
 
   const handleModelSelect = async (modelPath: string) => {
-    if (modelPath === selectedModelPath) {
-      handleClose();
-      return;
-    }
-    
+    const sameAsSelected = modelPath === selectedModelPath;
     try {
-      // Спиннер до ответа backend: веса реально подтянуты в llm-svc.
-      setIsLoadingModel(true);
       handleClose();
-      
-      const response = await fetch(getApiUrl('/api/models/load'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model_path: modelPath }),
-      });
-      // Сразу снимаем спиннер по факту ответа (веса уже на бэке).
-      setIsLoadingModel(false);
-
-      if (response.ok) {
-        const data = await response.json();
-        if (data.success) {
-          setSelectedModelPath(modelPath);
-          localStorage.setItem(LAST_SELECTED_MODEL_PATH_STORAGE_KEY, modelPath);
-          window.dispatchEvent(
-            new CustomEvent(MODEL_PATH_CHANGED_EVENT, { detail: { path: modelPath } }),
-          );
-          await loadCurrentModel();
-          showNotification('success', 'Модель успешно загружена!');
-          if (onModelSelect) {
-            onModelSelect(modelPath);
-          }
-        } else {
-          throw new Error(data.message || 'Не удалось загрузить модель');
-        }
-      } else {
-        throw new Error('Ошибка загрузки модели');
+      if (!token) {
+        throw new Error('Нет токена авторизации');
       }
+      const result = await ensureSelectedModelWeights(token, modelPath, { force: true });
+      if (!(result.ok && !('pending' in result && result.pending))) {
+        throw new Error(
+          ('message' in result && result.message) || 'Не удалось загрузить модель',
+        );
+      }
+      setSelectedModelPath(modelPath);
+      localStorage.setItem(LAST_SELECTED_MODEL_PATH_STORAGE_KEY, modelPath);
+      window.dispatchEvent(
+        new CustomEvent(MODEL_PATH_CHANGED_EVENT, { detail: { path: modelPath } }),
+      );
+      await loadCurrentModel();
+      showNotification(
+        'success',
+        sameAsSelected ? 'Веса модели перезагружены' : 'Модель успешно загружена!',
+      );
+      onModelSelect?.(modelPath);
     } catch (err: any) {
       showNotification('error', `Ошибка загрузки модели: ${err.message || err}`);
-    } finally {
-      setIsLoadingModel(false);
     }
   };
-
   const getCurrentModelName = () => {
     const modelPath = currentModel?.path || selectedModelPath;
     if (!isValidSelectedModelPath(modelPath)) {

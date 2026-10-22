@@ -153,14 +153,15 @@ async def test_delete_by_prefix(pg_connection, repos):
         assert await store.delete_by_prefix(conn, "kb:agent_5:") == 0
 
 
-async def test_delete_by_prefix_underscore_wildcard_known_issue(pg_connection, repos):
-    """``_`` в LIKE — любой символ: префикс ``kb:agent_5:`` задевает и ``kb:agentX5:``."""
+async def test_delete_by_prefix_underscore_is_literal(pg_connection, repos):
+    """BUG-RAG-08: ``_`` в префиксе — литерал: ``kb:agent_5:`` не задевает ``kb:agentX5:``."""
     await _add_doc(repos)
     vectors = repos[1]
     fp, _ = await vectors.bm25_store_load("k")
     await vectors.bm25_store_save("kb:agentX5:384", fp, b"x", 1)
     async with await pg_connection.acquire() as conn:
-        assert await store.delete_by_prefix(conn, "kb:agent_5:") == 1
+        assert await store.delete_by_prefix(conn, "kb:agent_5:") == 0
+        assert await conn.fetchval("SELECT COUNT(*) FROM bm25_index_store WHERE cache_key = 'kb:agentX5:384'") == 1
 
 
 async def test_stale_entries_dropped_on_first_use(pg_connection, repos):

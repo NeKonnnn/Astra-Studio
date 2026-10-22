@@ -10,7 +10,7 @@ import { Check as CheckIcon, Search as SearchIcon } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useAppContext } from '../contexts/AppContext';
-import { getApiUrl, API_ENDPOINTS } from '../config/api';
+import { authFetch, getApiUrl, API_ENDPOINTS } from '../config/api';
 import {
   getDropdownItemSx,
   MENU_ACTION_TEXT_SIZE,
@@ -71,7 +71,7 @@ export default function ChatGearKnowledgeBasesPanel({
     try {
       const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
       const view = subtab === 'gallery' ? 'public' : 'created';
-      const resp = await fetch(
+      const resp = await authFetch(
         `${getApiUrl(API_ENDPOINTS.KNOWLEDGE_BASES)}/list?limit=100&view_option=${view}`,
         { headers },
       );

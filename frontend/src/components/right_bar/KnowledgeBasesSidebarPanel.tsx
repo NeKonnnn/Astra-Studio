@@ -41,11 +41,12 @@ import {
 } from '@mui/icons-material';
 import ShareKnowledgeBaseDialog from '../ShareKnowledgeBaseDialog';
 import RagFilesSearchField from '../RagFilesSearchField';
+import RagUploadingFileThumb from '../RagUploadingFileThumb';
 import type { SxProps, Theme } from '@mui/material/styles';
 import { useAuth } from '../../contexts/AuthContext';
 import { useAppActions } from '../../contexts/AppContext';
 import { useFeatureAccess } from '../../hooks/useFeatureAccess';
-import { getApiUrl, API_ENDPOINTS } from '../../config/api';
+import { authFetch, getApiUrl, API_ENDPOINTS } from '../../config/api';
 import {
   ASTRA_OPEN_KNOWLEDGE_BASES_SIDEBAR,
   ASTRA_OPEN_KNOWLEDGE_BASES_SIDEBAR_ID_KEY,
@@ -77,6 +78,15 @@ import {
   listKbFolderEntries,
   normalizeRelativePath,
 } from '../../utils/kbFolderBrowser';
+import { filterByRagFilenameQuery } from '../../utils/ragFilesSearch';
+import {
+  RAG_UPLOAD_CONCURRENCY,
+  commitRagUploadUiUpdate,
+  createRagPendingUploads,
+  mapWithConcurrency,
+  removeRagPendingUploads,
+  type RagPendingUpload,
+} from '../../utils/ragPendingUpload';
 
 function getFileIconBg(filename: string): string {
   const ext = filename.split('.').pop()?.toLowerCase() || '';
@@ -260,6 +270,7 @@ export default function KnowledgeBasesSidebarPanel({
   const [isSaving, setIsSaving] = useState(false);
   const [isPublishing, setIsPublishing] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [pendingUploads, setPendingUploads] = useState<RagPendingUpload[]>([]);
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const [showRagSettings, setShowRagSettings] = useState(false);
   const [ragDraft, setRagDraft] = useState<EntityRagDraft | null>(null);
@@ -294,6 +305,11 @@ export default function KnowledgeBasesSidebarPanel({
   );
   const visibleFiles = hasActiveFileSearch ? searchMatchedDocs : folderListing.files;
   const visibleFolders = hasActiveFileSearch ? [] : folderListing.folders;
+  const visiblePendingUploads = useMemo(
+    () => filterByRagFilenameQuery(pendingUploads, fileSearchQuery),
+    [pendingUploads, fileSearchQuery],
+  );
+  const totalFiles = docs.length + pendingUploads.length;
   const pathSegments = useMemo(() => {
     const n = normalizeRelativePath(currentFolderPath);
     return n ? n.split('/') : [];
@@ -322,7 +338,7 @@ export default function KnowledgeBasesSidebarPanel({
       let page = 1;
       let pages = 1;
       while (page <= pages) {
-        const resp = await fetch(
+        const resp = await authFetch(
           `${getApiUrl(API_ENDPOINTS.KNOWLEDGE_BASES)}/list?limit=${pageSize}&page=${page}`,
           { headers },
         );
@@ -346,7 +362,7 @@ export default function KnowledgeBasesSidebarPanel({
     async (kbId: number) => {
       try {
         const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
-        const resp = await fetch(getApiUrl(API_ENDPOINTS.KB_DOCUMENTS_LIST), { headers });
+        const resp = await authFetch(getApiUrl(API_ENDPOINTS.KB_DOCUMENTS_LIST), { headers });
         if (!resp.ok) {
           setDocs([]);
           return;
@@ -423,7 +439,7 @@ export default function KnowledgeBasesSidebarPanel({
   const loadKbById = useCallback(
     async (kbId: number) => {
       try {
-        const resp = await fetch(`${getApiUrl(API_ENDPOINTS.KNOWLEDGE_BASES)}/${kbId}`, {
+        const resp = await authFetch(`${getApiUrl(API_ENDPOINTS.KNOWLEDGE_BASES)}/${kbId}`, {
           headers: authHeaders(),
         });
         if (!resp.ok) {
@@ -482,7 +498,7 @@ export default function KnowledgeBasesSidebarPanel({
     setIsSaving(true);
     try {
       if (selectedId === 'new') {
-        const resp = await fetch(`${getApiUrl(API_ENDPOINTS.KNOWLEDGE_BASES)}/create`, {
+        const resp = await authFetch(`${getApiUrl(API_ENDPOINTS.KNOWLEDGE_BASES)}/create`, {
           method: 'POST',
           headers: authHeaders(),
           body: JSON.stringify({
@@ -509,7 +525,7 @@ export default function KnowledgeBasesSidebarPanel({
         await loadList();
         openExisting(created);
       } else {
-        const resp = await fetch(`${getApiUrl(API_ENDPOINTS.KNOWLEDGE_BASES)}/${selectedId}`, {
+        const resp = await authFetch(`${getApiUrl(API_ENDPOINTS.KNOWLEDGE_BASES)}/${selectedId}`, {
           method: 'PUT',
           headers: authHeaders(),
           body: JSON.stringify({
@@ -545,7 +561,7 @@ export default function KnowledgeBasesSidebarPanel({
     setIsPublishing(true);
     try {
       const next = !Boolean(detailMeta?.is_public || form.is_public);
-      const resp = await fetch(`${getApiUrl(API_ENDPOINTS.KNOWLEDGE_BASES)}/${selectedId}`, {
+      const resp = await authFetch(`${getApiUrl(API_ENDPOINTS.KNOWLEDGE_BASES)}/${selectedId}`, {
         method: 'PUT',
         headers: authHeaders(),
         body: JSON.stringify({ is_public: next }),
@@ -575,7 +591,7 @@ export default function KnowledgeBasesSidebarPanel({
       return;
     }
     try {
-      const resp = await fetch(`${getApiUrl(API_ENDPOINTS.KNOWLEDGE_BASES)}/${selectedId}`, {
+      const resp = await authFetch(`${getApiUrl(API_ENDPOINTS.KNOWLEDGE_BASES)}/${selectedId}`, {
         method: 'DELETE',
         headers: authHeaders(),
       });
@@ -596,12 +612,16 @@ export default function KnowledgeBasesSidebarPanel({
       showNotification('warning', 'Сначала создайте и сохраните базу знаний');
       return;
     }
+    // FileList — live: обнулять value input до конца async нельзя.
     const list = Array.from(files || []);
     if (!list.length) return;
+    const pendingEntries = createRagPendingUploads(list);
+    setPendingUploads((prev) => [...prev, ...pendingEntries]);
     setIsUploading(true);
     let ok = 0;
     try {
-      for (const file of list) {
+      await mapWithConcurrency(list, RAG_UPLOAD_CONCURRENCY, async (file, index) => {
+        const pendingId = pendingEntries[index]?.clientId;
         const fd = new FormData();
         fd.append('file', file);
         fd.append('knowledge_base_id', String(selectedId));
@@ -611,18 +631,31 @@ export default function KnowledgeBasesSidebarPanel({
         if (rel) fd.append('relative_path', normalizeRelativePath(rel));
         const headers: HeadersInit = {};
         if (token) headers.Authorization = `Bearer ${token}`;
-        const resp = await fetch(getApiUrl(API_ENDPOINTS.KB_DOCUMENTS_UPLOAD), {
-          method: 'POST',
-          headers,
-          body: fd,
-        });
-        if (resp.ok) {
-          ok += 1;
-        } else {
-          const t = await resp.text().catch(() => '');
-          showNotification('error', t || `Не удалось загрузить ${file.name}`);
+        try {
+          const resp = await authFetch(getApiUrl(API_ENDPOINTS.KB_DOCUMENTS_UPLOAD), {
+            method: 'POST',
+            headers,
+            body: fd,
+          });
+          if (resp.ok) {
+            ok += 1;
+          } else {
+            const t = await resp.text().catch(() => '');
+            showNotification('error', t || `Не удалось загрузить ${file.name}`);
+          }
+        } catch (e) {
+          showNotification(
+            'error',
+            e instanceof Error ? e.message : `Ошибка загрузки ${file.name}`,
+          );
+        } finally {
+          if (pendingId) {
+            commitRagUploadUiUpdate(() => {
+              setPendingUploads((prev) => removeRagPendingUploads(prev, [pendingId]));
+            });
+          }
         }
-      }
+      });
       if (ok) {
         showNotification(
           'success',
@@ -635,6 +668,7 @@ export default function KnowledgeBasesSidebarPanel({
       }
     } finally {
       setIsUploading(false);
+      setPendingUploads([]);
       if (fileInputRef.current) fileInputRef.current.value = '';
       if (dirInputRef.current) dirInputRef.current.value = '';
     }
@@ -644,7 +678,7 @@ export default function KnowledgeBasesSidebarPanel({
     if (typeof selectedId !== 'number' || readOnly) return;
     try {
       const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
-      const resp = await fetch(
+      const resp = await authFetch(
         `${getApiUrl(API_ENDPOINTS.KB_DOCUMENTS_DELETE)}/${docId}`,
         { method: 'DELETE', headers },
       );
@@ -896,19 +930,12 @@ export default function KnowledgeBasesSidebarPanel({
                 if (e.target.files?.length) void uploadFiles(e.target.files);
               }}
             />
-            {isUploading && (
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-                <CircularProgress size={14} />
-                <Typography sx={{ fontSize: '0.75rem', opacity: 0.7 }}>Загрузка…</Typography>
-              </Box>
-            )}
-
-            {docs.length > 0 && (
+            {totalFiles > 0 && (
               <Box sx={{ mb: 1, minWidth: 0, width: '100%' }}>
                 <RagFilesSearchField
                   value={fileSearchQuery}
                   onChange={setFileSearchQuery}
-                  totalCount={docs.length}
+                  totalCount={totalFiles}
                   variant="sidebar"
                   size="small"
                 />
@@ -922,7 +949,7 @@ export default function KnowledgeBasesSidebarPanel({
                       mb: 0.25,
                     }}
                   >
-                    {visibleFiles.length} из {docs.length}
+                    {visiblePendingUploads.length + visibleFiles.length} из {totalFiles}
                   </Typography>
                 )}
               </Box>
@@ -988,7 +1015,7 @@ export default function KnowledgeBasesSidebarPanel({
               </Box>
             )}
 
-            {visibleFiles.length > 0 ? (
+            {visiblePendingUploads.length > 0 || visibleFiles.length > 0 ? (
               <Box
                 sx={{
                   display: 'grid',
@@ -998,6 +1025,40 @@ export default function KnowledgeBasesSidebarPanel({
                   width: '100%',
                 }}
               >
+                {visiblePendingUploads.map((pending) => (
+                  <Box key={pending.clientId} sx={fileCardSx}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 0, pr: 2 }}>
+                      <RagUploadingFileThumb
+                        filename={pending.filename}
+                        size={32}
+                        isDarkMode={isDarkMode}
+                      />
+                      <Box sx={{ minWidth: 0, flex: 1 }}>
+                        <Typography
+                          variant="caption"
+                          noWrap
+                          component="span"
+                          sx={{
+                            color: fileNameColor,
+                            fontSize: '0.68rem',
+                            display: 'block',
+                            fontWeight: 500,
+                            lineHeight: 1.3,
+                          }}
+                          title={pending.filename}
+                        >
+                          {shortFileName(pending.filename, 16)}
+                        </Typography>
+                        <Typography
+                          variant="caption"
+                          sx={{ color: fileTypeColor, fontSize: '0.62rem', lineHeight: 1.2 }}
+                        >
+                          {getFileTypeLabel(pending.filename)}
+                        </Typography>
+                      </Box>
+                    </Box>
+                  </Box>
+                ))}
                 {visibleFiles.map((doc) => {
                   const displayName = basenameOf(getDocRelativePath(doc)) || doc.filename;
                   return (
@@ -1062,7 +1123,7 @@ export default function KnowledgeBasesSidebarPanel({
                   );
                 })}
               </Box>
-            ) : docs.length === 0 ? (
+            ) : docs.length === 0 && pendingUploads.length === 0 ? (
               <Typography sx={{ fontSize: '0.75rem', opacity: 0.55, py: 1 }}>
                 Пока нет документов
               </Typography>
@@ -1074,8 +1135,7 @@ export default function KnowledgeBasesSidebarPanel({
               <Typography sx={{ fontSize: '0.72rem', color: fileMutedColor, py: 0.5 }}>
                 Папка пуста
               </Typography>
-            ) : null}
-          </>
+            ) : null}          </>
         )}
       </Box>
 

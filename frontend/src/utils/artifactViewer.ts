@@ -22,7 +22,46 @@ export function sourceLabelForArtifactType(type: string): string {
   return 'код';
 }
 
-function wrapCenteredSvg(svg: string, title: string): string {
+const UNSAFE_URL_RE = /^\s*(?:javascript|vbscript|data\s*:\s*text\/html)/i;
+const UNSAFE_SVG_TAGS = ['script', 'iframe', 'object', 'embed', 'meta', 'base'];
+
+/**
+ * Очистка SVG перед вставкой в документ viewer-вкладки (BUG-FE-04):
+ * удаляет `<script>`/`<iframe>`/`<object>`/`<embed>`, `on*`-обработчики и `javascript:`-ссылки.
+ * `<foreignObject>` и стили сохраняются — на них держатся подписи mermaid.
+ * HTML-артефакты намеренно НЕ очищаются: они интерактивны (скрипты, презентации), безопасность
+ * для них обеспечивается изоляцией `artifact-viewer.html` / sandbox iframe.
+ */
+export function sanitizeSvgMarkup(svg: string): string {
+  const raw = String(svg || '');
+  if (!raw) return '';
+  if (typeof DOMParser === 'undefined') {
+    return raw
+      .replace(/<\s*(script|iframe|object|embed)\b[\s\S]*?(?:<\/\s*\1\s*>|$)/gi, '')
+      .replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+  }
+  const doc = new DOMParser().parseFromString(raw, 'text/html');
+  UNSAFE_SVG_TAGS.forEach((tag) => {
+    doc.querySelectorAll(tag).forEach((el) => el.remove());
+  });
+  doc.body.querySelectorAll('*').forEach((el) => {
+    Array.from(el.attributes).forEach((attr) => {
+      const name = attr.name.toLowerCase();
+      if (name.startsWith('on')) {
+        el.removeAttribute(attr.name);
+      } else if (
+        (name === 'href' || name === 'xlink:href' || name === 'src' || name === 'action') &&
+        UNSAFE_URL_RE.test(attr.value)
+      ) {
+        el.removeAttribute(attr.name);
+      }
+    });
+  });
+  return doc.body.innerHTML;
+}
+
+function wrapCenteredSvg(rawSvg: string, title: string): string {
+  const svg = sanitizeSvgMarkup(rawSvg);
   return `<!DOCTYPE html>
 <html lang="ru">
 <head>

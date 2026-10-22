@@ -207,6 +207,26 @@ class TestRequest:
         ROUTER.get(url("/kb/reindex/status")).respond(200, json={"reindexing": False})
         assert await client._request("GET", "/kb/reindex/status") == {"reindexing": False}
 
+    async def test_svc_rag_api_key_sent_as_x_api_key(self, client, monkeypatch):
+        """Без X-API-Key svc-rag (ключ задан) отвечает 401 на reindex/status."""
+        monkeypatch.setenv("SVC_RAG_API_KEY", "dev-svc-rag-key")
+        monkeypatch.delenv("RAG_API_KEY", raising=False)
+        route = ROUTER.get(url("/kb/reindex/status")).respond(
+            200, json={"reindexing": False}
+        )
+        assert await client._request("GET", "/kb/reindex/status") == {"reindexing": False}
+        assert route.calls.last.request.headers["x-api-key"] == "dev-svc-rag-key"
+
+    async def test_svc_rag_api_key_absent_omits_header(self, client, monkeypatch):
+        monkeypatch.delenv("SVC_RAG_API_KEY", raising=False)
+        monkeypatch.delenv("RAG_API_KEY", raising=False)
+        rc.RagClient._warned_missing_svc_rag_key = False
+        route = ROUTER.get(url("/kb/reindex/status")).respond(
+            200, json={"reindexing": False}
+        )
+        await client._request("GET", "/kb/reindex/status")
+        assert "x-api-key" not in route.calls.last.request.headers
+
     async def test_model_header_is_forwarded(self, client, monkeypatch):
         from backend.settings.cef_logger import cef_audit_context as ctx
 

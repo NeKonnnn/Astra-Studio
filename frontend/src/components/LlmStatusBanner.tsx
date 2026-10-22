@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { getApiUrl } from '../config/api';
+import { authFetch, getApiUrl } from '../config/api';
 import { getSettings, initSettings } from '../settings';
 import { STATUS_TOAST_AUTO_DISMISS_MS } from '../constants/statusToast';
 import StatusToast from './StatusToast';
@@ -42,7 +42,8 @@ export default function LlmStatusBanner() {
           console.info(`[LLM_STATUS_POLL] /api/llm/status tick interval=${pollIntervalSeconds}s delta=${deltaSec}s`);
         }
         try {
-          const res = await fetch(getApiUrl('/api/llm/status'));
+          // JWT + cookie client binding (иначе 401 на cross-origin).
+          const res = await authFetch(getApiUrl('/api/llm/status'));
           if (!res.ok) return;
           const data = await res.json();
           if (data.use_llm_svc === true && data.connected === false) {

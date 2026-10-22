@@ -25,7 +25,7 @@ import {
 import { getSidebarPanelBackground } from '../../constants/sidebarPanelColor';
 import { useAppActions } from '../../contexts/AppContext';
 import { useRagReindexStatus } from '../../contexts/RagReindexStatusContext';
-import { getApiUrl, getAuthFetchHeaders } from '../../config/api';
+import { authFetch, getApiUrl, getAuthFetchHeaders } from '../../config/api';
 import ClampedNumberField from '../ClampedNumberField';
 import {
   fetchRagEntityDefaults,
@@ -330,7 +330,7 @@ export default function RAGSettings({
       if (!ok) return false;
     }
     const resolvedEntityId = await resolveEntityId();
-    const response = await fetch(getApiUrl('/api/rag/models/select'), {
+    const response = await authFetch(getApiUrl('/api/rag/models/select'), {
       method: 'POST',
       headers: getAuthFetchHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
@@ -412,7 +412,7 @@ export default function RAGSettings({
       setIsLoading(true);
       const resolvedEntityId = await resolveEntityId();
       const entityQuery = buildEntityQuery(projectsAgentsScope, resolvedEntityId);
-      const response = await fetch(
+      const response = await authFetch(
         getApiUrl(`/api/rag/settings?scope=${projectsAgentsScope}${entityQuery}`),
         { headers: getAuthFetchHeaders() },
       );
@@ -572,7 +572,7 @@ export default function RAGSettings({
         if (!applied) return false;
       }
 
-      const response = await fetch(getApiUrl('/api/rag/settings'), {
+      const response = await authFetch(getApiUrl('/api/rag/settings'), {
         method: 'PUT',
         headers: getAuthFetchHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
@@ -635,7 +635,7 @@ export default function RAGSettings({
     // создана, либо не трогалась. Возвращаем дефолты кластера в форму.
     if (draft) {
       try {
-        const response = await fetch(getApiUrl(`/api/rag/settings?scope=${projectsAgentsScope}`), {
+        const response = await authFetch(getApiUrl(`/api/rag/settings?scope=${projectsAgentsScope}`), {
           headers: getAuthFetchHeaders(),
         });
         if (!response.ok) throw new Error(`defaults ${response.status}`);
@@ -667,7 +667,7 @@ export default function RAGSettings({
     try {
       const resolvedEntityId = await resolveEntityId();
       const entityQuery = buildEntityQuery(projectsAgentsScope, resolvedEntityId);
-      const response = await fetch(getApiUrl(`/api/rag/settings/reset?scope=${projectsAgentsScope}${entityQuery}`), {
+      const response = await authFetch(getApiUrl(`/api/rag/settings/reset?scope=${projectsAgentsScope}${entityQuery}`), {
         method: 'POST',
         headers: getAuthFetchHeaders(),
       });

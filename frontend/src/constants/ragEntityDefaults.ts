@@ -1,4 +1,4 @@
-import { getApiUrl, getAuthFetchHeaders } from '../config/api';
+import { authFetch, getApiUrl, getAuthFetchHeaders } from '../config/api';
 
 /** Дефолтные модели РАГ для проектов/агентов с backend (ConfigMap / ENV). */
 export type RagEntityModelDefaults = {
@@ -23,7 +23,7 @@ export async function fetchRagEntityDefaults(
   if (!loadPromise) {
     loadPromise = (async () => {
       try {
-        const resp = await fetch(getApiUrl(`/api/rag/settings?scope=${scope}`), {
+        const resp = await authFetch(getApiUrl(`/api/rag/settings?scope=${scope}`), {
           headers: getAuthFetchHeaders(),
         });
         if (!resp.ok) {

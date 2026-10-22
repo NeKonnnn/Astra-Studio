@@ -21,7 +21,7 @@ import {
   ExpandMore as ExpandMoreIcon,
   Check as CheckIcon,
 } from '@mui/icons-material';
-import { getApiUrl } from '../config/api';
+import { authFetch, getApiUrl } from '../config/api';
 import { useAuth } from '../contexts/AuthContext';
 import {
   directoryUserOptionLabel,
@@ -134,7 +134,7 @@ export default function ShareKnowledgeBaseDialog({
     setLoading(true);
     setError(null);
     try {
-      const resp = await fetch(getApiUrl(`/api/knowledge-bases/${kbId}/shares`), {
+      const resp = await authFetch(getApiUrl(`/api/knowledge-bases/${kbId}/shares`), {
         headers: authHeaders(),
       });
       if (!resp.ok) {
@@ -207,7 +207,7 @@ export default function ShareKnowledgeBaseDialog({
 
   const applyShare = useCallback(
     async (usernames: string[], perm: SharePermission): Promise<ShareApiResponse> => {
-      const resp = await fetch(getApiUrl(`/api/knowledge-bases/${kbId}/share`), {
+      const resp = await authFetch(getApiUrl(`/api/knowledge-bases/${kbId}/share`), {
         method: 'POST',
         headers: authHeaders(),
         body: JSON.stringify({ usernames, permission: perm }),
@@ -281,7 +281,7 @@ export default function ShareKnowledgeBaseDialog({
     setError(null);
     setSuccess(null);
     try {
-      const resp = await fetch(
+      const resp = await authFetch(
         getApiUrl(`/api/knowledge-bases/${kbId}/share/${encodeURIComponent(userId)}`),
         { method: 'DELETE', headers: authHeaders() },
       );

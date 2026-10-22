@@ -20,7 +20,7 @@ class HealthResponse(BaseModel):
     embedding_model: Optional[str] = None
     reranker_provider: str = "native"
     reranker_model: Optional[str] = None
-    embedding_routing: Dict[str, Any] = Field(default_factory=dict)
+    embedding_routing: Optional[Dict[str, Any]] = Field(default=None)
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -58,7 +58,8 @@ async def health():
 
         routing = routing_overview()
     except Exception:
-        routing = {"models": [], "clients": [], "repos": []}
+        # Не ломаем /health из-за диагностики роутинга (тест + prod).
+        routing = None
     return HealthResponse(
         status=status,
         rag_models=rag_ok,

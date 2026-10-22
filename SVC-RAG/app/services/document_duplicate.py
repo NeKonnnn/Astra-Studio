@@ -17,10 +17,11 @@ def duplicate_index_result(
     *,
     document_id: Optional[int] = None,
     filename: Optional[str] = None,
+    message: Optional[str] = None,
 ) -> Dict[str, Any]:
     return {
         "ok": False,
-        "error": DUPLICATE_MESSAGE,
+        "error": message or DUPLICATE_MESSAGE,
         "code": DUPLICATE_CODE,
         "document_id": document_id,
         "filename": filename,

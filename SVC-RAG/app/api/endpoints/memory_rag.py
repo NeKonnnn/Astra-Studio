@@ -2,6 +2,7 @@
 from typing import Any, Dict, List, Optional
 
 import asyncio
+import os
 
 from fastapi import (
     APIRouter,
@@ -249,12 +250,18 @@ async def memory_rag_reindex_status():
     return {"reindexing": _memory_reindex_lock.locked()}
 
 
+def _block_search_on_reindex() -> bool:
+    """Отбивать ли поиск во время реиндекса (как в kb/project, BUG-RAG-19)."""
+    v = os.getenv("RAG_BLOCK_SEARCH_DURING_REINDEX", "true").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
 @router.post("/search", response_model=MemoryRagSearchResponse)
 async def memory_rag_search(
     body: MemoryRagSearchRequest,
     svc: MemoryRagService = Depends(get_memory_rag_service),
 ):
-    if _memory_reindex_lock.locked():
+    if _block_search_on_reindex() and _memory_reindex_lock.locked():
         raise HTTPException(
             status_code=409,
             detail="Идёт переиндексация Библиотеки — поиск временно недоступен",

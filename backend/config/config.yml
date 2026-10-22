@@ -383,6 +383,19 @@ urls:
   mcp_websearch_service_port: "http://localhost:8013"
   mcp_websearch_service_docker: "http://mcp-websearch:3000"
 
+# FEATURE-FLAG (тумблеры микросервисов; ENV *_SERVICE_ENABLED перекрывает)
+# Без секции / при false — require_service() → «в разработке».
+# rag требует postgresql (см. backend/settings/service_toggles.py _REQUIRES).
+microservices_enabled:
+  stt: true
+  tts: true
+  diarization: true
+  rag: true
+  rag_models: true
+  agents: true
+  minio: true
+  postgresql: true
+
 # ========================================================
 # ПЛАГИНЫ (HTTP-микросервисы в галерее / конструкторе агентов)
 # ========================================================

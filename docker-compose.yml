@@ -9,6 +9,8 @@ services:
     gpus: all
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
+      # 27B Q8 (~30 ГБ) на CPU: дефолт 600с не хватает; backend httpx = 2400с.
+      - LLM_MODEL_LOAD_TIMEOUT=${LLM_MODEL_LOAD_TIMEOUT:-1800}
     deploy:
       resources:
         reservations:
@@ -44,6 +46,9 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       # RTX 50xx: образ на PyTorch 2.7 + CUDA 12.8. Временный обход без GPU: COMFYUI_FORCE_CPU=1
       - COMFYUI_FORCE_CPU=${COMFYUI_FORCE_CPU:-0}
+      # Разрешить UI/iframe из AstraChat (иначе ComfyUI → HTTP 403 при несовпадении Origin/Host)
+      - COMFYUI_ENABLE_CORS_HEADER=${COMFYUI_ENABLE_CORS_HEADER:-1}
+      - COMFYUI_CORS_HEADER=${COMFYUI_CORS_HEADER:-*}
     volumes:
       - ./models/comfyui:/app/ComfyUI/models
       - comfyui_output:/app/ComfyUI/output
@@ -150,6 +155,7 @@ services:
       - "8000:8000"
     volumes:
       - ./memory:/app/memory
+      - F:/test_CLI:/workspaces/test_CLI
       - ./uploads:/app/uploads  # Директория для загруженных документов
       - ./backend:/app  # Полное монтирование для работы импортов
       - ./models:/app/models:ro  # Монтирование локальных моделей (эмбеддинги и др.)
@@ -204,8 +210,31 @@ services:
       - MINIO_MEMORY_RAG_BUCKET_NAME=${MINIO_MEMORY_RAG_BUCKET_NAME:-astrachat-memory-rag}
       # RAG (SVC-RAG) URL для backend/rag_client.py
       - SVC_RAG_URL=http://svc-rag:8000/v1
+      # Общий секрет backend↔svc-rag (X-API-Key). Без него svc-rag fail-closed → 503.
+      - SVC_RAG_API_KEY=${SVC_RAG_API_KEY:-dev-svc-rag-key}
+      - RAG_MODELS_SERVICE_URL=${RAG_MODELS_SERVICE_URL:-http://rag-models:8000}
+      # FEATURE-FLAG: без true require_service("rag") → «в разработке» (нужен и postgresql)
+      - RAG_SERVICE_ENABLED=${RAG_SERVICE_ENABLED:-true}
+      - RAG_MODELS_SERVICE_ENABLED=${RAG_MODELS_SERVICE_ENABLED:-true}
+      - POSTGRESQL_SERVICE_ENABLED=${POSTGRESQL_SERVICE_ENABLED:-true}
+      # Поиск в чате: не держать UI «думает…» 4+ мин на cold MiniCPM/CPU
+      - SVC_RAG_SEARCH_READ_TIMEOUT=${SVC_RAG_SEARCH_READ_TIMEOUT:-90}
+      - MINIO_SERVICE_ENABLED=${MINIO_SERVICE_ENABLED:-true}
+      - AGENTS_SERVICE_ENABLED=${AGENTS_SERVICE_ENABLED:-true}
+      - STT_SERVICE_ENABLED=${STT_SERVICE_ENABLED:-true}
+      - TTS_SERVICE_ENABLED=${TTS_SERVICE_ENABLED:-true}
+      - DIARIZATION_SERVICE_ENABLED=${DIARIZATION_SERVICE_ENABLED:-true}
+      # Служебные LLM-вызовы RAG (HyDE/multi-query/judge): гасить мышление, min max_tokens
+      - LLM_SERVICE_DISABLE_THINKING=${LLM_SERVICE_DISABLE_THINKING:-true}
+      - LLM_SERVICE_MIN_MAX_TOKENS=${LLM_SERVICE_MIN_MAX_TOKENS:-1024}
+      - RAG_MEMORY_ENABLED=${RAG_MEMORY_ENABLED:-true}
+      - RAG_TYPOS_MIN_SIMILARITY=${RAG_TYPOS_MIN_SIMILARITY:-0.6}
       # ComfyUI в compose: бэкенд ходит на сервис comfyui (перекрывает comfyui_base_url из YAML при генерации картинок)
       - IMAGE_GEN_COMFYUI_URL=http://comfyui:8188
+      # MCP Open-WebSearch: в Docker — HTTP к контейнеру mcp-websearch (stdio/npx только для локальной разработки)
+      - MCP_SERVER_WEBSEARCH_TRANSPORT=${MCP_SERVER_WEBSEARCH_TRANSPORT:-streamable-http}
+      - MCP_SERVER_WEBSEARCH_BASE_PATH=/mcp
+      - MCP_SERVER_WEBSEARCH_HEALTH_PATH=/mcp
     depends_on:
       comfyui:
         condition: service_started
@@ -225,6 +254,25 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      mcp-websearch:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - astrachat-network
+
+  # MCP Open-WebSearch — веб-поиск для LLM (https://github.com/Aas-ee/open-webSearch)
+  mcp-websearch:
+    image: ghcr.io/aas-ee/open-web-search:latest
+    container_name: astrachat-mcp-websearch
+    ports:
+      - "8013:3000"
+    environment:
+      NODE_ENV: production
+      DEFAULT_SEARCH_ENGINE: duckduckgo
+      ALLOWED_SEARCH_ENGINES: duckduckgo,bing,exa,brave
+      ENABLE_CORS: "true"
+      CORS_ORIGIN: "*"
+    command: ["node", "build/index.js"]
     restart: unless-stopped
     networks:
       - astrachat-network
@@ -264,15 +312,31 @@ services:
       - ./SVC-RAG/config:/app/config:ro
     environment:
       - CONFIG_PATH=/app/config/config.yml
+      - DOCKER_ENV=true
+      # Тот же секрет, что у astrachat-backend (иначе reindex/status и RAG → 503).
+      - SVC_RAG_API_KEY=${SVC_RAG_API_KEY:-dev-svc-rag-key}
       # URL сервиса моделей (RAG-MODELS)
       - RAG_MODELS_URL=http://rag-models:8000
+      # Лимит пассажей в LLM-реранкер (MiniCPM на CPU иначе минуты на запрос)
+      - RAG_RERANK_INPUT_CAP=${RAG_RERANK_INPUT_CAP:-16}
+      - RAG_RERANK_TOP_K=${RAG_RERANK_TOP_K:-12}
+      # Параллельные embed-батчи (POST /embeddings)
+      - RAG_MODELS_CLIENT_EMBED_CONCURRENCY=${RAG_MODELS_CLIENT_EMBED_CONCURRENCY:-4}
+      - RAG_EMBED_GUARDRAIL_ISOLATE=${RAG_EMBED_GUARDRAIL_ISOLATE:-1}
+      # ANN: hnsw | ivfflat (свап без переиндексации данных)
+      - RAG_VECTOR_INDEX_METHOD=${RAG_VECTOR_INDEX_METHOD:-hnsw}
+      - RAG_VECTOR_IVFFLAT_LISTS=${RAG_VECTOR_IVFFLAT_LISTS:-100}
+      - RAG_VECTOR_IVFFLAT_PROBES=${RAG_VECTOR_IVFFLAT_PROBES:-10}
+      - RAG_VECTOR_HNSW_M=${RAG_VECTOR_HNSW_M:-16}
+      - RAG_VECTOR_HNSW_EF_CONSTRUCTION=${RAG_VECTOR_HNSW_EF_CONSTRUCTION:-64}
+      - RAG_VECTOR_HNSW_EF_SEARCH=${RAG_VECTOR_HNSW_EF_SEARCH:-40}
       # PostgreSQL (общая БД с backend)
       - POSTGRES_HOST=${POSTGRES_HOST:-postgresql}
       - POSTGRES_PORT=${POSTGRES_PORT:-5432}
       - POSTGRES_DB=${POSTGRES_DB:-astrachat}
       - POSTGRES_USER=${POSTGRES_USER:-admin}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-password}
-      - RAG_EMBEDDING_DIM=384
+      - RAG_EMBEDDING_DIM=1536
       # OCR и LLM сервисы (для OCR PDF/картинок и L2-суммаризации)
       - SVC_OCR_URL=http://ocr-service:8000
       - SVC_LLM_URL=http://llm-service:8000
@@ -343,11 +407,17 @@ services:
     volumes:
       - postgresql_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-admin} -d ${POSTGRES_DB:-astrachat}"]
+      # pg_isready может быть green ещё в recovery — дополнительно проверяем SELECT 1
+      # и что инстанс не в recovery (без 1/0: иначе healthcheck засоряет лог ERROR).
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $${POSTGRES_USER:-admin} -d $${POSTGRES_DB:-astrachat} && psql -U $${POSTGRES_USER:-admin} -d $${POSTGRES_DB:-astrachat} -tAc \"SELECT NOT pg_is_in_recovery()\" | grep -qx t",
+        ]
       interval: 10s
       timeout: 10s
-      retries: 20
-      start_period: 30s
+      retries: 30
+      start_period: 60s
     restart: unless-stopped
     networks:
       - astrachat-network

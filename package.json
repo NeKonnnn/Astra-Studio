@@ -1,0 +1,30 @@
+{
+  "name": "astrachat-web",
+  "version": "1.0.0",
+  "description": "AstraChat Web Interface - Full stack application",
+  "scripts": {
+    "start": "concurrently \"npm run start:backend\" \"npm run start:frontend\"",
+    "start:backend": "cd .. && .\\myvenv\\Scripts\\activate && python backend\\main.py",
+    "start:frontend": "cd frontend && npm start",
+    "dev": "concurrently \"npm run start:backend\" \"npm run start:frontend\" --kill-others-on-fail",
+    "install:all": "npm install && cd frontend && npm install",
+    "build": "cd frontend && npm run build",
+    "build:backend": "echo 'Backend не требует сборки'",
+    "test": "cd frontend && npm test",
+    "clean": "rimraf frontend/build frontend/node_modules node_modules"
+  },
+  "devDependencies": {
+    "concurrently": "^7.6.0",
+    "rimraf": "^5.0.0"
+  },
+  "keywords": [
+    "astrachat",
+    "ai",
+    "chatbot",
+    "react",
+    "fastapi",
+    "typescript"
+  ],
+  "author": "astrachat Team",
+  "license": "MIT"
+}

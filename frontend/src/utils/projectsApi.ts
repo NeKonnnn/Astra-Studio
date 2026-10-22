@@ -1,10 +1,8 @@
-import { getApiUrl, getAuthFetchHeaders } from '../config/api';
+import { authFetch, getApiUrl } from '../config/api';
 import type { Project } from '../contexts/AppContext';
 
 export async function fetchProjectsFromServer(): Promise<Project[]> {
-  const response = await fetch(getApiUrl('/api/projects'), {
-    headers: getAuthFetchHeaders(),
-  });
+  const response = await authFetch(getApiUrl('/api/projects'));
   if (!response.ok) {
     throw new Error(`GET /api/projects: ${response.status}`);
   }
@@ -42,9 +40,9 @@ function projectToBody(
 }
 
 export async function syncProjectCreate(project: Project): Promise<void> {
-  const response = await fetch(getApiUrl('/api/projects'), {
+  const response = await authFetch(getApiUrl('/api/projects'), {
     method: 'POST',
-    headers: getAuthFetchHeaders({ 'Content-Type': 'application/json' }),
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(projectToBody(project)),
   });
   if (!response.ok) {
@@ -68,9 +66,9 @@ export async function syncProjectUpdate(projectId: string, updates: Partial<Proj
     body.knowledgeBaseIds = updates.knowledgeBaseIds;
   }
 
-  const response = await fetch(getApiUrl(`/api/projects/${encodeURIComponent(projectId)}`), {
+  const response = await authFetch(getApiUrl(`/api/projects/${encodeURIComponent(projectId)}`), {
     method: 'PUT',
-    headers: getAuthFetchHeaders({ 'Content-Type': 'application/json' }),
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
   if (!response.ok) {

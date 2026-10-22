@@ -16,7 +16,7 @@ import {
   ExpandMore as ExpandMoreIcon,
 } from '@mui/icons-material';
 import MemoryRagLibraryModal from '../MemoryRagLibraryModal';
-import { getApiUrl, getAuthFetchHeaders } from '../../config/api';
+import { authFetch, getApiUrl, getAuthFetchHeaders } from '../../config/api';
 import {
   getDropdownPopoverPaperSx,
   getDropdownItemSx,
@@ -69,7 +69,7 @@ export default function MemoryRagLibrarySection({ variant = 'prominent' }: Props
     let cancelled = false;
     (async () => {
       try {
-        const r = await fetch(getApiUrl('/api/rag/settings'), {
+        const r = await authFetch(getApiUrl('/api/rag/settings'), {
           headers: getAuthFetchHeaders(),
         });
         if (!r.ok) return;
@@ -88,7 +88,7 @@ export default function MemoryRagLibrarySection({ variant = 'prominent' }: Props
     setMemoryStrategy(next);
     setStrategySaving(true);
     try {
-      await fetch(getApiUrl('/api/rag/settings'), {
+      await authFetch(getApiUrl('/api/rag/settings'), {
         method: 'PUT',
         headers: getAuthFetchHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ rag_memory_strategy: next }),

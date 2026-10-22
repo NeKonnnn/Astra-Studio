@@ -227,6 +227,10 @@ async def _attach_kb_to_project(
     proj: Dict[str, Any],
     kb_id: int,
 ) -> None:
+    # Импорт здесь: ensure_project_library_kb тоже импортирует ProjectUpdate
+    # локально — общий модульный импорт ломал _attach (NameError → 500/Failed to fetch).
+    from backend.database.postgresql.project_models import ProjectUpdate
+
     existing = proj.get("knowledgeBaseIds") or proj.get("knowledge_base_ids") or []
     ids: List[int] = []
     for raw in existing if isinstance(existing, list) else []:

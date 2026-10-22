@@ -13,7 +13,7 @@ import MenuBookOutlinedIcon from '@mui/icons-material/MenuBookOutlined';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useAppActions, useAppContext } from '../contexts/AppContext';
-import { getApiUrl, API_ENDPOINTS } from '../config/api';
+import { authFetch, getApiUrl, API_ENDPOINTS } from '../config/api';
 import {
   GalleryEntityCard,
   GallerySearchBookmarksBar,
@@ -118,7 +118,7 @@ export function KnowledgeBasesGalleryContent({
         if (debouncedQuery) params.set('query', debouncedQuery);
         url = `${getApiUrl(API_ENDPOINTS.KNOWLEDGE_BASES)}/list?${params}`;
       }
-      const resp = await fetch(url, { headers: authHeaders() });
+      const resp = await authFetch(url, { headers: authHeaders() });
       if (!resp.ok) throw new Error('Не удалось загрузить базы знаний');
       const data = await resp.json();
       setItems(data.items || []);
@@ -145,7 +145,7 @@ export function KnowledgeBasesGalleryContent({
     }
     try {
       const method = kb.is_bookmarked ? 'DELETE' : 'POST';
-      const resp = await fetch(
+      const resp = await authFetch(
         `${getApiUrl(API_ENDPOINTS.KNOWLEDGE_BASES)}/${kb.id}/bookmark`,
         { method, headers: authHeaders() },
       );
@@ -179,7 +179,7 @@ export function KnowledgeBasesGalleryContent({
       return;
     }
     try {
-      const resp = await fetch(
+      const resp = await authFetch(
         `${getApiUrl(API_ENDPOINTS.KNOWLEDGE_BASES)}/${kbId}/rate`,
         {
           method: 'POST',
@@ -201,7 +201,7 @@ export function KnowledgeBasesGalleryContent({
   };
 
   const handleOpen = (kb: KbGalleryItem) => {
-    void fetch(`${getApiUrl(API_ENDPOINTS.KNOWLEDGE_BASES)}/${kb.id}/view`, {
+    void authFetch(`${getApiUrl(API_ENDPOINTS.KNOWLEDGE_BASES)}/${kb.id}/view`, {
       method: 'POST',
       headers: authHeaders(),
     }).catch(() => undefined);
@@ -220,12 +220,12 @@ export function KnowledgeBasesGalleryContent({
     }
     setUsingId(kb.id);
     try {
-      await fetch(`${getApiUrl(API_ENDPOINTS.KNOWLEDGE_BASES)}/${kb.id}/use`, {
+      await authFetch(`${getApiUrl(API_ENDPOINTS.KNOWLEDGE_BASES)}/${kb.id}/use`, {
         method: 'POST',
         headers: authHeaders(),
       }).catch(() => undefined);
       if (!kb.is_bookmarked) {
-        await fetch(`${getApiUrl(API_ENDPOINTS.KNOWLEDGE_BASES)}/${kb.id}/bookmark`, {
+        await authFetch(`${getApiUrl(API_ENDPOINTS.KNOWLEDGE_BASES)}/${kb.id}/bookmark`, {
           method: 'POST',
           headers: authHeaders(),
         }).catch(() => undefined);
@@ -262,7 +262,7 @@ export function KnowledgeBasesGalleryContent({
     }
     setCloningId(kb.id);
     try {
-      const resp = await fetch(
+      const resp = await authFetch(
         `${getApiUrl(API_ENDPOINTS.KNOWLEDGE_BASES)}/${kb.id}/duplicate`,
         { method: 'POST', headers: authHeaders() },
       );

@@ -49,10 +49,11 @@ def _is_primarily_cyrillic(text: str) -> bool:
 
 def reranker_is_english_only() -> bool:
     """
-    По умолчанию ``RAG_RERANKER_ENGLISH_ONLY=1`` (реранкер считается англоязычным);
-    для многоязычного реранкера задайте ``RAG_RERANKER_ENGLISH_ONLY=0``.
+    По умолчанию ``RAG_RERANKER_ENGLISH_ONLY=0`` (реранкер многоязычный, реранк
+    на кириллице не отключается); для англоязычного реранкера (ms-marco-MiniLM)
+    задайте ``RAG_RERANKER_ENGLISH_ONLY=1``.
     """
-    return os.environ.get("RAG_RERANKER_ENGLISH_ONLY", "1").strip().lower() not in (
+    return os.environ.get("RAG_RERANKER_ENGLISH_ONLY", "0").strip().lower() not in (
         "0",
         "false",
         "no",
@@ -70,7 +71,12 @@ def should_disable_rerank_for_query(query: str) -> bool:
     """
     if not reranker_is_english_only():
         return False
-    if os.environ.get("RAG_FORCE_RERANK_CYRILLIC", "").strip().lower() in ("1", "true", "yes", "on"):
+    if os.environ.get("RAG_FORCE_RERANK_CYRILLIC", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
         return False
     return _is_primarily_cyrillic(query or "")
 
@@ -108,7 +114,9 @@ def effective_use_reranking(
         else:
             base = True if requested is None else bool(requested)
     else:
-        base = (requested if requested is not None else cfg_rerank_enabled) and cfg_rerank_enabled
+        base = (
+            requested if requested is not None else cfg_rerank_enabled
+        ) and cfg_rerank_enabled
 
     if base and query_text is not None and should_disable_rerank_for_query(query_text):
         import logging as _logging
@@ -198,7 +206,9 @@ def resolve_auto_pipeline_strategy(
                 raw_query,
             )
         )
-        uppercase_code = bool(re.search(r"\b[А-ЯA-Z]{2,}(?:[-_/][А-ЯA-Z0-9]+)*\b", raw_query))
+        uppercase_code = bool(
+            re.search(r"\b[А-ЯA-Z]{2,}(?:[-_/][А-ЯA-Z0-9]+)*\b", raw_query)
+        )
         lexical_intent = any(
             token in q
             for token in (
@@ -236,7 +246,9 @@ def resolve_auto_pipeline_strategy(
                 "нескольк",
             )
         )
-        filename_mention = bool(re.search(r"\b[^\s/\\]+\.(?:pdf|docx?|xlsx?|txt|md|csv)\b", q))
+        filename_mention = bool(
+            re.search(r"\b[^\s/\\]+\.(?:pdf|docx?|xlsx?|txt|md|csv)\b", q)
+        )
         if graph_intent:
             scores["graph"] += 4.0
         if filename_mention:
@@ -344,8 +356,11 @@ def filter_by_min_vector_similarity(
 ) -> List[Tuple[DocumentVector, float]]:
     """
     Отсекает чанки с косинусным сходством ниже порога до реранка.
-    Если ничего не прошло порог — спасаем top-N по скору (минимум 3, максимум 12, ориентир k),
-    чтобы не обнулять recall на «трудных» корпусах (PDF/OCR). Это сознательный recall-first fallback.
+    Если ничего не прошло порог — возвращает пустой список: честное «релевантных
+    документов нет» лучше, чем слабый контекст из нерелевантных чанков
+    (rescue-fallback убран намеренно, BUG-RAG-03). ``k`` оставлен для совместимости
+    сигнатуры. Для «трудных» корпусов (PDF/OCR) порог снижается настройкой
+    ``min_vector_similarity`` (0 = не фильтровать).
     """
     if min_similarity <= 0 or not hits:
         return hits
@@ -360,17 +375,18 @@ def filter_by_min_vector_similarity(
                 len(hits) - len(filtered),
             )
         return filtered
-    # Не оставляем retrieval пустым из-за слишком жёсткого порога:
-    # спасаем ограниченный top-N, чтобы не ломать recall на "трудных" корпусах (PDF/OCR).
-    rescue_n = max(3, min(max(k, 1), 12))
-    rescued = sorted(hits, key=lambda x: float(x[1]), reverse=True)[:rescue_n]
     logger.debug(
-        "[RAG] min_vector_similarity=%.3f: все %d чанков ниже порога → rescue top-%d (recall-first)",
+        "[RAG] min_vector_similarity=%.3f: все %d чанков ниже порога → пустая выдача",
         min_similarity,
         len(hits),
-        rescue_n,
     )
-    return rescued
+    return []
+
+
+# Верхняя граница шкалы weighted RRF (1/(60+1) ≈ 0.0164 на источник; с весами < 0.05).
+_RRF_SCALE_MAX = 0.05
+# На шкале RRF top-1 «явно лучше», если отрыв от top-2 больше этой доли top-1.
+_RRF_MAX_RELATIVE_GAP = 0.30
 
 
 def should_diversify_hits(
@@ -391,6 +407,11 @@ def should_diversify_hits(
     выполняется всегда, ответ всегда True, и «top-1 явно лучше» не срабатывает
     никогда. ```score_of``` позволяет передать настоящий cosine чанка; вернул
     None — считаем шкалу неизвестной и диверсифицируем, как раньше.
+
+    Без ``score_of`` шкала RRF распознаётся по top-1 ниже ``_RRF_SCALE_MAX``
+    (cosine после ``min_vector_similarity`` не бывает таким малым): тогда
+    решает относительный отрыв top-1 от top-2, а не абсолютные cosine-пороги
+    (BUG-RAG-03).
     """
     if len(hits) < 3:
         return False
@@ -400,6 +421,9 @@ def should_diversify_hits(
     if score_of is None:
         s1: Optional[float] = float(hits[0][1])
         s2: Optional[float] = float(hits[1][1])
+        if 0.0 < s1 <= _RRF_SCALE_MAX:
+            # Шкала weighted RRF (~1/61 и ниже): абсолютные cosine-пороги неприменимы.
+            return (s1 - s2) / s1 <= _RRF_MAX_RELATIVE_GAP
     else:
         s1 = score_of(hits[0])
         s2 = score_of(hits[1])
@@ -474,7 +498,11 @@ def keyword_boost_hits(
     """
     if not hits or not query.strip():
         return hits
-    query_words = {w.lower() for w in re.findall(r"\b\w{3,}\b", query) if w.lower() not in _KEYWORD_STOPWORDS}
+    query_words = {
+        w.lower()
+        for w in re.findall(r"\b\w{3,}\b", query)
+        if w.lower() not in _KEYWORD_STOPWORDS
+    }
     if not query_words:
         return hits
     boosted = []
@@ -551,7 +579,9 @@ async def fuse_seed_and_graph_hits(
 
     vec_rank: Dict[Tuple[int, int], int] = {}
     vec_obj: Dict[Tuple[int, int], DocumentVector] = {}
-    for rank, (dv, _sc) in enumerate(sorted(seed_hits, key=lambda x: float(x[1]), reverse=True)):
+    for rank, (dv, _sc) in enumerate(
+        sorted(seed_hits, key=lambda x: float(x[1]), reverse=True)
+    ):
         if dv.document_id is None:
             continue
         key = (int(dv.document_id), int(dv.chunk_index))
@@ -620,7 +650,9 @@ def merge_vector_and_keyword_hits(
     vec_rank: Dict[Tuple[Optional[int], Optional[int]], int] = {}
     vec_obj: Dict[Tuple[Optional[int], Optional[int]], DocumentVector] = {}
     vec_raw: Dict[Tuple[Optional[int], Optional[int]], float] = {}
-    for rank, (dv, sc) in enumerate(sorted(vector_hits, key=lambda x: float(x[1]), reverse=True)):
+    for rank, (dv, sc) in enumerate(
+        sorted(vector_hits, key=lambda x: float(x[1]), reverse=True)
+    ):
         key = (dv.document_id, dv.chunk_index)
         if key in vec_rank:
             continue
@@ -630,7 +662,9 @@ def merge_vector_and_keyword_hits(
 
     kw_rank: Dict[Tuple[Optional[int], Optional[int]], int] = {}
     kw_raw: Dict[Tuple[Optional[int], Optional[int]], float] = {}
-    for rank, (dv, sc) in enumerate(sorted(keyword_hits, key=lambda x: float(x[1]), reverse=True)):
+    for rank, (dv, sc) in enumerate(
+        sorted(keyword_hits, key=lambda x: float(x[1]), reverse=True)
+    ):
         key = (dv.document_id, dv.chunk_index)
         if key in kw_rank:
             continue
@@ -841,13 +875,19 @@ def build_retrieval_metrics_lines(
     ]
     if n >= 2:
         margin = scores[0] - scores[1]
-        lines.append(f"margin_top1_minus_top2={margin:.4f} (мало → похожие кандидаты, выше неоднозначность)")
-    lines.append(f"уникальных_document_id={uniq_docs} (мало при многих файлах в корпусе → узкий захват)")
+        lines.append(
+            f"margin_top1_minus_top2={margin:.4f} (мало → похожие кандидаты, выше неоднозначность)"
+        )
+    lines.append(
+        f"уникальных_document_id={uniq_docs} (мало при многих файлах в корпусе → узкий захват)"
+    )
 
     lens = [len(c) for c in contents]
     total_ctx = sum(lens)
     avg_len = total_ctx // n if n else 0
-    lines.append(f"текст_чанков_симв: avg={avg_len} min={min(lens)} max={max(lens)} сумма_в_контекст={total_ctx}")
+    lines.append(
+        f"текст_чанков_симв: avg={avg_len} min={min(lens)} max={max(lens)} сумма_в_контекст={total_ctx}"
+    )
 
     short = sum(1 for L in lens if L < 80)
     if short:
@@ -859,7 +899,9 @@ def build_retrieval_metrics_lines(
 
     low_score = sum(1 for s in scores if s < 0.15)
     if low_score and n >= 2:
-        lines.append(f"низкий_score(<0.15)={low_score} → риск «слабой опоры», смотрите пороги на backend")
+        lines.append(
+            f"низкий_score(<0.15)={low_score} → риск «слабой опоры», смотрите пороги на backend"
+        )
 
     return lines
 
@@ -898,7 +940,9 @@ def log_rag_retrieval_report(
         for line in extra_lines:
             _emit(f"[SVC-RAG] {line}")
     if search_seconds is not None:
-        _emit(f"[SVC-RAG] время_поиска_с={search_seconds:.4f} (retrieval, постобработка, опционально LLM-judge)")
+        _emit(
+            f"[SVC-RAG] время_поиска_с={search_seconds:.4f} (retrieval, постобработка, опционально LLM-judge)"
+        )
     _emit("[SVC-RAG] --- Метрики retrieval (финальная выдача) ---")
     for line in build_retrieval_metrics_lines(final_hits, k_requested):
         _emit(f"[SVC-RAG]   {line}")

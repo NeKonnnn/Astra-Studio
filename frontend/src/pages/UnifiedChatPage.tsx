@@ -58,7 +58,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import { useTheme } from '@mui/material/styles';
 import { useAppContext, useAppActions, Message, MultiLLMResponseSlot } from '../contexts/AppContext';
 import { useSocket } from '../contexts/SocketContext';
-import { getApiUrl, getWsUrl, API_ENDPOINTS, getAuthFetchHeaders } from '../config/api';
+import { authFetch, getApiUrl, getWsUrl, API_ENDPOINTS, getAuthFetchHeaders } from '../config/api';
 import MessageRenderer from '../components/MessageRenderer';
 import { DocumentSearchPanel } from '../components/DocumentSearchPanel';
 import { useNavigate } from 'react-router-dom';
@@ -182,6 +182,10 @@ import {
   ModelThinkingMode,
 } from '../utils/modelThinking';
 import { applyAgentMcpToChat, applyStoredAgentMcpToChat } from '../utils/applyAgentMcp';
+import {
+  ensureSelectedModelWeights,
+  isSelectedModelWeightsReady,
+} from '../utils/applyAgentServer';
 import AgentChainUpdate from '../components/chat/AgentChainUpdate';
 import ThinkingShimmerText from '../components/chat/ThinkingShimmerText';
 import { resolveChainRenderSegments } from '../constants/agentChain';
@@ -2288,6 +2292,39 @@ export default function UnifiedChatPage({
     return false;
   }, [currentChat?.id]);
 
+  /** Path выбран + веса в пуле (иначе 503). При необходимости POST /load перед отправкой. */
+  const ensureModelReadyForSend = useCallback(
+    async (message?: string): Promise<boolean> => {
+      if (!ensureModelSelectedForSend(message)) {
+        return false;
+      }
+      if (isAnyGenerationModeEnabled(currentChat?.id)) {
+        return true;
+      }
+      const modelPath = localStorage.getItem(LAST_SELECTED_MODEL_PATH_STORAGE_KEY);
+      if (!isValidSelectedModelPath(modelPath)) {
+        return true; // агент без своей модели — бэкенд сам разберётся
+      }
+      if (isSelectedModelWeightsReady(modelPath)) {
+        return true;
+      }
+      if (!token) {
+        setModelErrorBanner('Нет авторизации для загрузки модели');
+        return false;
+      }
+      const result = await ensureSelectedModelWeights(token, modelPath);
+      if (result.ok && !('pending' in result && result.pending)) {
+        return true;
+      }
+      const msg =
+        ('message' in result && result.message) ||
+        'Модель не загружена. Дождитесь загрузки весов или выберите модель снова.';
+      setModelErrorBanner(msg);
+      return false;
+    },
+    [currentChat?.id, ensureModelSelectedForSend, token],
+  );
+
   // Стабильный обработчик для MessageRenderer (НЕ меняется при ререндерах!)
   const handleSendMessageFromRendererRef = useRef<((prompt: string) => void) | null>(null);
   const clearFollowUpSuggestionsRef = useRef<() => void>(() => {});
@@ -2295,15 +2332,17 @@ export default function UnifiedChatPage({
   // Обновляем ref при изменении зависимостей, но НЕ создаем новую функцию
   useEffect(() => {
     handleSendMessageFromRendererRef.current = (prompt: string) => {
-      if (!ensureModelSelectedForSend(prompt)) {
-        return;
-      }
-      if (currentChat && isConnected && !currentChatLoading) {
-        clearFollowUpSuggestionsRef.current();
-        sendMessage(prompt, currentChat.id);
-      }
+      void (async () => {
+        if (!(await ensureModelReadyForSend(prompt))) {
+          return;
+        }
+        if (currentChat && isConnected && !currentChatLoading) {
+          clearFollowUpSuggestionsRef.current();
+          sendMessage(prompt, currentChat.id);
+        }
+      })();
     };
-  }, [currentChat, isConnected, currentChatLoading, sendMessage, ensureModelSelectedForSend]);
+  }, [currentChat, isConnected, currentChatLoading, sendMessage, ensureModelReadyForSend]);
   
   // Создаем стабильную функцию ОДИН РАЗ (никогда не меняется!)
   const handleSendMessageFromRenderer = useCallback((prompt: string) => {
@@ -2955,7 +2994,7 @@ export default function UnifiedChatPage({
   useEffect(() => {
     const loadAvailableModelsOnce = async () => {
       try {
-        const response = await fetch(`${getApiUrl('/api/models/available')}`);
+        const response = await authFetch(`${getApiUrl('/api/models/available')}`);
         if (response.ok) {
           const data = await response.json();
           const newModels = data.models || [];
@@ -3078,7 +3117,7 @@ export default function UnifiedChatPage({
 
     try {
       if (lastMultiLlmPostedKeyRef.current !== modelsKey) {
-        const response = await fetch(`${getApiUrl('/api/model-comparison/models')}`, {
+        const response = await authFetch(`${getApiUrl('/api/model-comparison/models')}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ models: selectedModels }),
@@ -3134,9 +3173,6 @@ export default function UnifiedChatPage({
     if ((!inputMessage.trim() && inlineAttachments.length === 0) || currentChatLoading) {
       return;
     }
-    if (!ensureModelSelectedForSend(inputMessage.trim())) {
-      return;
-    }
     if (!isConnected && !isConnecting) {
       if (!token) {
         showNotification('error', 'Нет соединения с сервером. Попробуйте переподключиться.');
@@ -3144,63 +3180,89 @@ export default function UnifiedChatPage({
       }
       // Токен есть, сокет ещё догоняет — sendMessage поставит отправку в очередь после connect
     }
-    
-    // Автоматически создаем новый чат, если его нет
-    if (!currentChat) {
-      const newChatId = createChat('Новый чат');
-      setCurrentChat(newChatId);
-      const messageText = inputMessage.trim();
-      setInputMessage('');
-      const inlinePayloadNew = inlineAttachments.length
+
+    const messageSnapshot = inputMessage.trim();
+    const inlineSnapshot = [...inlineAttachments];
+    const chatSnapshot = currentChat;
+
+    void (async () => {
+      if (!(await ensureModelReadyForSend(messageSnapshot))) {
+        return;
+      }
+      if (currentChatLoading) {
+        return;
+      }
+
+      // Автоматически создаем новый чат, если его нет
+      if (!chatSnapshot) {
+        const newChatId = createChat('Новый чат');
+        setCurrentChat(newChatId);
+        setInputMessage('');
+        const inlinePayloadNew = inlineSnapshot.length
+          ? {
+              inline_context:
+                inlineSnapshot
+                  .filter((f) => f.contentType === 'text')
+                  .map((f) => `[${f.name}]\n${f.content}`)
+                  .join('\n\n') || undefined,
+              inline_images: inlineSnapshot
+                .filter((f) => f.contentType === 'image')
+                .map((f) => f.content),
+              attachments_meta: inlineSnapshot.map((f) => ({
+                name: f.name,
+                contentType: f.contentType as 'text' | 'image',
+                preview: f.contentType === 'image' ? f.content : undefined,
+                minio_object: f.minioObject,
+                minio_bucket: f.minioBucket,
+                ...(typeof f.size === 'number' && f.size > 0 ? { size: f.size } : {}),
+                ...(typeof f.tokenEstimate === 'number' && f.tokenEstimate > 0
+                  ? { tokenEstimate: f.tokenEstimate }
+                  : {}),
+              })),
+            }
+          : undefined;
+        setTimeout(() => {
+          clearFollowUpSuggestions();
+          sendMessage(messageSnapshot, newChatId, true, undefined, undefined, inlinePayloadNew);
+          setInlineAttachments([]);
+          inputRef.current?.focus();
+        }, 50);
+        return;
+      }
+
+      const inlinePayload = inlineSnapshot.length
         ? {
-            inline_context: inlineAttachments.filter(f => f.contentType === 'text').map(f => `[${f.name}]\n${f.content}`).join('\n\n') || undefined,
-            inline_images: inlineAttachments.filter(f => f.contentType === 'image').map(f => f.content),
-            attachments_meta: inlineAttachments.map(f => ({
+            inline_context:
+              inlineSnapshot
+                .filter((f) => f.contentType === 'text')
+                .map((f) => `[${f.name}]\n${f.content}`)
+                .join('\n\n') || undefined,
+            inline_images: inlineSnapshot
+              .filter((f) => f.contentType === 'image')
+              .map((f) => f.content),
+            attachments_meta: inlineSnapshot.map((f) => ({
               name: f.name,
               contentType: f.contentType as 'text' | 'image',
               preview: f.contentType === 'image' ? f.content : undefined,
               minio_object: f.minioObject,
               minio_bucket: f.minioBucket,
               ...(typeof f.size === 'number' && f.size > 0 ? { size: f.size } : {}),
-              ...(typeof f.tokenEstimate === 'number' && f.tokenEstimate > 0 ? { tokenEstimate: f.tokenEstimate } : {}),
+              ...(typeof f.tokenEstimate === 'number' && f.tokenEstimate > 0
+                ? { tokenEstimate: f.tokenEstimate }
+                : {}),
             })),
           }
         : undefined;
+      clearFollowUpSuggestions();
+      sendMessage(messageSnapshot, chatSnapshot.id, true, undefined, undefined, inlinePayload);
+      setInlineAttachments([]);
+      setInputMessage('');
+
       setTimeout(() => {
-        clearFollowUpSuggestions();
-        sendMessage(messageText, newChatId, true, undefined, undefined, inlinePayloadNew);
-        setInlineAttachments([]);
         inputRef.current?.focus();
-      }, 50);
-      return;
-    }
-
-    const inlinePayload = inlineAttachments.length
-      ? {
-          inline_context: inlineAttachments.filter(f => f.contentType === 'text').map(f => `[${f.name}]\n${f.content}`).join('\n\n') || undefined,
-          inline_images: inlineAttachments.filter(f => f.contentType === 'image').map(f => f.content),
-          attachments_meta: inlineAttachments.map(f => ({
-            name: f.name,
-            contentType: f.contentType as 'text' | 'image',
-            preview: f.contentType === 'image' ? f.content : undefined,
-            minio_object: f.minioObject,
-            minio_bucket: f.minioBucket,
-            ...(typeof f.size === 'number' && f.size > 0 ? { size: f.size } : {}),
-            ...(typeof f.tokenEstimate === 'number' && f.tokenEstimate > 0 ? { tokenEstimate: f.tokenEstimate } : {}),
-          })),
-        }
-      : undefined;
-    clearFollowUpSuggestions();
-    sendMessage(inputMessage.trim(), currentChat.id, true, undefined, undefined, inlinePayload);
-    setInlineAttachments([]);
-    setInputMessage('');
-    
-    // Возвращаем фокус на поле ввода
-    setTimeout(() => {
-      inputRef.current?.focus();
-    }, 10);
+      }, 10);
+    })();
   };
-
   const handleKeyPress = (event: React.KeyboardEvent): void => {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();

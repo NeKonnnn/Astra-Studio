@@ -29,20 +29,26 @@ class TestRerankForCyrillic:
     def test_primarily_cyrillic(self, text, expected):
         assert h._is_primarily_cyrillic(text) is expected
 
-    @pytest.mark.parametrize(("raw", "expected"), [(None, True), ("1", True), ("yes", True), ("0", False), ("false", False), ("OFF", False), ("", False)])
+    @pytest.mark.parametrize(("raw", "expected"), [(None, False), ("1", True), ("yes", True), ("0", False), ("false", False), ("OFF", False), ("", False)])
     def test_english_only_flag(self, monkeypatch, raw, expected):
         if raw is not None:
             monkeypatch.setenv("RAG_RERANKER_ENGLISH_ONLY", raw)
 
         assert h.reranker_is_english_only() is expected
 
-    def test_russian_queries_disable_the_english_reranker_by_default(self, monkeypatch):
-        # Дефолт RAG_RERANKER_ENGLISH_ONLY=1 (докстринг приведён в соответствие с кодом):
-        # на русском запросе реранк выключен, пока явно не задано RAG_RERANKER_ENGLISH_ONLY=0.
+    def test_russian_queries_keep_reranking_by_default(self, monkeypatch):
+        # BUG-RAG-03: дефолт RAG_RERANKER_ENGLISH_ONLY=0 (как в докстринге) — реранк на
+        # русском запросе не отключается, пока явно не задано RAG_RERANKER_ENGLISH_ONLY=1.
         monkeypatch.delenv("RAG_RERANKER_ENGLISH_ONLY", raising=False)
         monkeypatch.delenv("RAG_FORCE_RERANK_CYRILLIC", raising=False)
-        assert h.reranker_is_english_only() is True
-        assert "=1" in (h.reranker_is_english_only.__doc__ or "")
+        assert h.reranker_is_english_only() is False
+        assert "=0" in (h.reranker_is_english_only.__doc__ or "")
+        assert h.should_disable_rerank_for_query("налоговая отчётность") is False
+        assert h.should_disable_rerank_for_query("tax report") is False
+
+    def test_english_reranker_disables_rerank_for_russian_queries(self, monkeypatch):
+        monkeypatch.setenv("RAG_RERANKER_ENGLISH_ONLY", "1")
+        monkeypatch.delenv("RAG_FORCE_RERANK_CYRILLIC", raising=False)
         assert h.should_disable_rerank_for_query("налоговая отчётность") is True
         assert h.should_disable_rerank_for_query("tax report") is False
 
@@ -66,7 +72,11 @@ class TestRerankForCyrillic:
     def test_effective_reranking_matrix(self, requested, cfg, strategy, expected):
         assert h.effective_use_reranking(requested, cfg, strategy) is expected
 
-    def test_cyrillic_query_turns_reranking_off(self):
+    def test_cyrillic_query_keeps_reranking_for_multilingual_reranker(self):
+        assert h.effective_use_reranking(None, True, "auto", query_text="налоговая отчётность") is True
+
+    def test_cyrillic_query_turns_reranking_off_for_english_reranker(self, monkeypatch):
+        monkeypatch.setenv("RAG_RERANKER_ENGLISH_ONLY", "1")
         assert h.effective_use_reranking(None, True, "auto", query_text="налоговая отчётность") is False
         assert h.effective_use_reranking(None, True, "auto", query_text="tax report") is True
         assert h.effective_use_reranking(None, True, "auto", query_text=None) is True
@@ -172,21 +182,18 @@ class TestSimilarityFilter:
     def test_threshold_is_inclusive(self):
         assert [s for _, s in h.filter_by_min_vector_similarity(self.HITS, 0.5, 5)] == [0.9, 0.5]
 
-    def test_everything_below_the_threshold_is_rescued_recall_first(self):
-        # Сознательный recall-first fallback: если ничего не прошло порог — top-N (минимум 3) по скору.
-        # Докстринг приведён в соответствие с этим поведением.
-        assert "пустой список" not in (h.filter_by_min_vector_similarity.__doc__ or "")
+    def test_everything_below_the_threshold_gives_an_empty_list(self):
+        # BUG-RAG-03: как в докстринге — если ничего не прошло порог, выдача пустая (без rescue).
+        assert "пустой список" in (h.filter_by_min_vector_similarity.__doc__ or "")
         low = [(dv(i), 0.01 * i) for i in range(1, 8)]
 
-        out = h.filter_by_min_vector_similarity(low, 0.9, 5)
+        assert h.filter_by_min_vector_similarity(low, 0.9, 5) == []
 
-        assert len(out) == 5 and [s for _, s in out] == sorted([s for _, s in low], reverse=True)[:5]
-
-    @pytest.mark.parametrize(("k", "expected"), [(0, 3), (1, 3), (5, 5), (50, 7)])
-    def test_rescue_size(self, k, expected):
+    @pytest.mark.parametrize("k", [0, 1, 5, 50])
+    def test_no_rescue_for_any_k(self, k):
         low = [(dv(i), 0.01 * i) for i in range(1, 8)]
 
-        assert len(h.filter_by_min_vector_similarity(low, 0.9, k)) == expected
+        assert h.filter_by_min_vector_similarity(low, 0.9, k) == []
 
 
 class TestDiversifyDecision:
@@ -207,9 +214,12 @@ class TestDiversifyDecision:
     def test_weak_top_score_is_diversified(self):
         assert h.should_diversify_hits(self.hits(0.2, 0.05, 0.01)) is True
 
-    def test_rrf_scale_always_diversifies_without_score_of_known_issue(self):
-        # Пороги в шкале cosine: на RRF-скорах (~0.016) top-1 всегда < 0.24 → всегда True.
-        assert h.should_diversify_hits(self.hits(0.0164, 0.0100, 0.0050)) is True
+    def test_rrf_scale_clear_winner_is_not_diversified(self):
+        # BUG-RAG-03: на RRF-шкале (~0.016) cosine-пороги неприменимы — решает относительный отрыв.
+        assert h.should_diversify_hits(self.hits(0.0164, 0.0100, 0.0050)) is False
+
+    def test_rrf_scale_close_scores_are_diversified(self):
+        assert h.should_diversify_hits(self.hits(0.0164, 0.0160, 0.0150)) is True
 
     def test_real_cosine_can_be_supplied(self):
         cosine = {0: 0.9, 1: 0.3, 2: 0.2}

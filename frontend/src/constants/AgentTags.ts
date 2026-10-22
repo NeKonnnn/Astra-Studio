@@ -1,4 +1,4 @@
-import { getApiUrl, getAuthFetchHeaders } from '../config/api';
+import { authFetch, getApiUrl } from '../config/api';
 
 /** Тег из справочника (таблица tags): общий на всех, имя уникально. */
 export interface AgentTag {
@@ -11,6 +11,21 @@ export interface AgentTag {
 // подтянуть его без перезагрузки страницы, но и дёргать API на каждое
 // открытие поля незачем.
 const CACHE_TTL_MS = 60000;
+
+/**
+ * Строгий разбор id тега: только положительное целое число (number) либо строка из цифр.
+ * `null`, `undefined`, `''`, `true`, NaN, дроби (`0.5`) и нуль отвергаются, а не приводятся к 0.
+ */
+export function toPositiveIntId(value: unknown): number | null {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  }
+  if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+    const n = Number(value.trim());
+    return Number.isSafeInteger(n) && n > 0 ? n : null;
+  }
+  return null;
+}
 
 let cached: { at: number; tags: AgentTag[] } | null = null;
 let inflight: Promise<AgentTag[]> | null = null;
@@ -47,7 +62,7 @@ export async function fetchAgentTags(force = false): Promise<AgentTag[]> {
   if (inflight) return inflight;
   inflight = (async () => {
     try {
-      const resp = await fetch(getApiUrl('/api/agents/tags'), { headers: getAuthFetchHeaders() });
+      const resp = await authFetch(getApiUrl('/api/agents/tags'));
       if (!resp.ok) {
         // Ошибку (в т.ч. 5xx) не кэшируем: пустой справочник не должен
         // «залипать» на минуту. Отдаём прежний кэш, если он был.
@@ -58,9 +73,9 @@ export async function fetchAgentTags(force = false): Promise<AgentTag[]> {
       const tags: AgentTag[] = [];
       for (const item of raw) {
         const rec = (item || {}) as Record<string, unknown>;
-        const id = Number(rec.id);
+        const id = toPositiveIntId(rec.id);
         const name = String(rec.name ?? '').trim();
-        if (!Number.isFinite(id) || !name) continue;
+        if (id === null || !name) continue;
         tags.push({ id, name, color: typeof rec.color === 'string' ? rec.color : null });
       }
       cached = { at: Date.now(), tags };
@@ -79,9 +94,8 @@ export function parseTagIds(raw: unknown): number[] {
   if (!Array.isArray(raw)) return [];
   const out: number[] = [];
   for (const item of raw) {
-    const n = Number(item);
-    if (!Number.isFinite(n) || n <= 0) continue;
-    const id = Math.trunc(n);
+    const id = toPositiveIntId(item);
+    if (id === null) continue;
     if (!out.includes(id)) out.push(id);
   }
   return out;

@@ -20,7 +20,11 @@ from app.services.chunker import (
     resolve_chunk_params,
     split_into_chunks_with_meta,
 )
-from app.services.document_parser import empty_document_index_error, parse_document
+from app.services.document_parser import (
+    empty_document_index_error,
+    parse_document,
+    parsed_file_type,
+)
 from app.services.retrieval_pipeline import RetrievalTrace, run_retrieval_pipeline
 from app.services.stage_timer import StageTimer
 from app.text_sanitize import strip_null_bytes
@@ -275,7 +279,7 @@ class MemoryRagService:
             return text_duplicate_index_result("memory", filename, same)
 
         meta: Dict[str, Any] = {
-            "file_type": parsed.get("file_type", ""),
+            "file_type": parsed_file_type(parsed),
             "pages": parsed.get("pages", 0),
             "size": len(file_data),
             "source": "memory_library",
@@ -335,6 +339,16 @@ class MemoryRagService:
             except Exception as e:
                 logger.error("memory-rag иерархическая индексация не удалась: %s", e)
                 await self.doc_repo.delete_document(doc_id)
+                # Как в KB: сообщаем backend, чтобы убрал исходник (BUG-RAG-08).
+                from app.services.index_failed_report import report_index_failed
+
+                await report_index_failed(
+                    minio_object=minio_object,
+                    minio_bucket=minio_bucket,
+                    filename=filename,
+                    reason=f"Иерархическая индексация: {e}",
+                    store="memory",
+                )
                 timer.log(logger)
                 return {
                     "ok": False,
@@ -405,6 +419,15 @@ class MemoryRagService:
         except Exception as e:
             logger.error("Ошибка индексации memory_rag: %s", e)
             await self.doc_repo.delete_document(doc_id)
+            from app.services.index_failed_report import report_index_failed
+
+            await report_index_failed(
+                minio_object=minio_object,
+                minio_bucket=minio_bucket,
+                filename=filename,
+                reason=f"Ошибка эмбеддингов: {e}",
+                store="memory",
+            )
             timer.log(logger)
             return {
                 "ok": False,

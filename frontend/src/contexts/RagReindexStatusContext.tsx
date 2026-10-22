@@ -9,7 +9,7 @@ import React, {
   type ReactNode,
 } from 'react';
 import { useLocation } from 'react-router-dom';
-import { getApiUrl, getAuthFetchHeaders } from '../config/api';
+import { authFetch, getApiUrl } from '../config/api';
 import { useAppContext } from './AppContext';
 import { getSettings, initSettings } from '../settings';
 import {
@@ -150,9 +150,7 @@ export function RagReindexStatusProvider({ children }: { children: ReactNode }) 
         }
         const qs = params.toString() ? `?${params.toString()}` : '';
         try {
-          const res = await fetch(getApiUrl(`/api/rag/reindex-status${qs}`), {
-            headers: getAuthFetchHeaders(),
-          });
+          const res = await authFetch(getApiUrl(`/api/rag/reindex-status${qs}`));
           if (!res.ok) return;
           const data = (await res.json()) as RagReindexStatusPayload;
           // Темп опроса выбирается по этому флагу, поэтому держим его в ref

@@ -138,6 +138,26 @@ export function getAuthFetchHeaders(extra?: Record<string, string>): Record<stri
   };
 }
 
+/**
+ * fetch к API с JWT и cookie client binding.
+ * Без credentials: 'include' на cross-origin (:3000→:8000) cookie не уходит →
+ * 401 «Токен не привязан к сессии браузера».
+ */
+export async function authFetch(input: string, init?: RequestInit): Promise<Response> {
+  const headers = new Headers(init?.headers || {});
+  const auth = getAuthFetchHeaders();
+  for (const [key, value] of Object.entries(auth)) {
+    if (value && !headers.has(key)) {
+      headers.set(key, value);
+    }
+  }
+  return fetch(input, {
+    ...init,
+    headers,
+    credentials: init?.credentials ?? 'include',
+  });
+}
+
 // Функция для получения WebSocket URL
 export const getWsUrl = (endpoint: string): string => {
   const settings = getSettings();

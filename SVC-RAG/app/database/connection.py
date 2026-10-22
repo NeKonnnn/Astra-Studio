@@ -2,7 +2,7 @@
 import logging
 from typing import Optional
 import asyncpg
-from asyncpg import Pool, Connection
+from asyncpg import Pool
 
 from app.core.config import get_settings
 
@@ -38,6 +38,13 @@ class PostgreSQLConnection:
 
     async def connect(self, min_size: int = 2, max_size: int = 10) -> bool:
         try:
+            logger.debug(
+                "PostgreSQL (SVC-RAG): подключение host=%r port=%s database=%r user=%r",
+                self.host,
+                self.port,
+                self.database,
+                self.user,
+            )
             self.pool = await asyncpg.create_pool(
                 host=self.host,
                 port=self.port,
@@ -62,6 +69,16 @@ class PostgreSQLConnection:
             return True
         except Exception as e:
             logger.error("PostgreSQL (SVC-RAG): ошибка подключения: %s", e)
+            # Пул мог быть создан, а настройка pgvector упасть — не оставляем
+            # «наполовину готовый» пул (утечка соединений, BUG-RAG-34).
+            pool, self.pool = self.pool, None
+            if pool is not None:
+                try:
+                    await pool.close()
+                except Exception as close_err:
+                    logger.warning(
+                        "PostgreSQL (SVC-RAG): не удалось закрыть пул: %s", close_err
+                    )
             return False
 
     async def disconnect(self):

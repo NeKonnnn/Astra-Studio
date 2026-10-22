@@ -268,13 +268,21 @@ async def run_retrieval_pipeline(
         requested = "vector"
     if requested in {"keyword", "bm25"}:
         requested = "lexical"
+    # BUG-RAG-15: hybrid_ok читается и при явной стратегии (filename-anchor ниже),
+    # поэтому определяем его до ветвления; True только для auto.
+    hybrid_ok = False
     # ``hierarchical`` в нон-global пока не поддерживается индексной стороной — graceful fallback.
     if requested == "hierarchical" and store != "global":
-        logger.debug("[%s] strategy=hierarchical не поддерживается этим хранилищем, fallback=vector", store)
+        logger.debug(
+            "[%s] strategy=hierarchical не поддерживается этим хранилищем, fallback=vector",
+            store,
+        )
         resolved = "vector"
     elif requested == "auto":
         graph_ok = bool(graph_repo) and bool(getattr(cfg, "enable_graph_rag", True))
-        hybrid_ok = bool(getattr(cfg, "use_hybrid_search", True)) and bm25_index is not None
+        hybrid_ok = (
+            bool(getattr(cfg, "use_hybrid_search", True)) and bm25_index is not None
+        )
         resolved = resolve_auto_pipeline_strategy(
             q_text,
             store=store,
@@ -283,6 +291,13 @@ async def run_retrieval_pipeline(
             graph_available=graph_ok,
             hybrid_available=hybrid_ok,
         )
+        # Явный выбор пользователя не трогаем: сюда попадает только auto.
+        if resolved == "lexical" and hybrid_ok:
+            logger.debug(
+                "[%s] strategy=auto: lexical → hybrid (лексика входит в гибрид)",
+                store,
+            )
+            resolved = "hybrid"
         logger.debug("[%s] strategy=auto → %s", store, resolved)
     else:
         resolved = requested
@@ -344,6 +359,12 @@ async def run_retrieval_pipeline(
                 filename_mentions,
                 filename_doc_ids,
             )
+            if requested == "auto" and resolved == "lexical" and hybrid_ok:
+                logger.debug(
+                    "[%s] filename_anchor: lexical → hybrid (файл уже выбран)",
+                    store,
+                )
+                resolved = "hybrid"
 
     # Энумеративные запросы расширяем пул: топ-8 на 50-документном корпусе не даёт
     # собрать все упоминания «Константина», если среди них есть хотя бы один слабый
@@ -1114,11 +1135,15 @@ async def run_retrieval_pipeline(
     if eff_rr and hits:
         try:
             with timer.stage("rerank"):
+                # Не раздувать top_k до len(hits): на CPU LLM-реранкер
+                # (MiniCPM) на 40–50 пассажах занимает минуты и рвёт
+                # SVC_RAG_SEARCH_READ_TIMEOUT на бэкенде. Лимит — cfg.rerank_top_k.
+                _rr_k = max(int(k), int(cfg.rerank_top_k or 20))
                 hits, used_rr = await rerank_vector_hits_ex(
                     q_text,
                     hits,
                     rerank_client or rag_client,
-                    top_k=max(len(hits), k * 4, int(cfg.rerank_top_k or 20)),
+                    top_k=_rr_k,
                     vector_weight=0.3,
                     model=rerank_model,
                 )

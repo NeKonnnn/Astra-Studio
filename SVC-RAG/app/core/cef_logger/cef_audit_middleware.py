@@ -15,6 +15,8 @@ from starlette.responses import Response
 from app.core.cef_logger.cef_audit_context import (
     cef_audit_reset,
     cef_audit_set,
+    chat_model_set,
+    chat_model_set_from_request,
     user_from_request_headers,
 )
 from app.core.cef_logger.cef_logger import log_cef_event
@@ -149,6 +151,7 @@ class CefAuditMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
         user = user_from_request_headers(request)
         tokens = cef_audit_set(request=request, user=user)
+        chat_model_set_from_request(request)
         request_uuid = uuid.uuid4().hex
         path = request.url.path
         method_name = f"{request.method} {path}"
@@ -169,6 +172,7 @@ class CefAuditMiddleware(BaseHTTPMiddleware):
                         "textStatus": str(exc)[:512],
                     },
                 )
+            chat_model_set(None)
             cef_audit_reset(tokens)
             raise
 
@@ -212,5 +216,6 @@ class CefAuditMiddleware(BaseHTTPMiddleware):
                         },
                     )
         finally:
+            chat_model_set(None)
             cef_audit_reset(tokens)
         return response

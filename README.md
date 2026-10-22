@@ -1,24 +1,17 @@
-# Astra Studio
+# AstraChat
 
 [![GitHub Stars](https://img.shields.io/github/stars/NeKonnnn/AstraChat_AI_System?style=social&label=Stars)](https://github.com/NeKonnnn/AstraChat_AI_System) [![GitHub Forks](https://img.shields.io/github/forks/NeKonnnn/AstraChat_AI_System?style=social&label=Forks)](https://github.com/NeKonnnn/AstraChat_AI_System) [![GitHub Watchers](https://img.shields.io/github/watchers/NeKonnnn/AstraChat_AI_System?style=social&label=Watchers)](https://github.com/NeKonnnn/AstraChat_AI_System) [![Repo Size](https://img.shields.io/github/repo-size/NeKonnnn/AstraChat_AI_System?label=repo%20size)](https://github.com/NeKonnnn/AstraChat_AI_System) [![Languages](https://img.shields.io/github/languages/count/NeKonnnn/AstraChat_AI_System?label=languages)](https://github.com/NeKonnnn/AstraChat_AI_System) [![Python](https://img.shields.io/github/languages/top/NeKonnnn/AstraChat_AI_System?label=python)](https://github.com/NeKonnnn/AstraChat_AI_System) [![Last Commit](https://img.shields.io/github/last-commit/NeKonnnn/AstraChat_AI_System?label=last%20commit)](https://github.com/NeKonnnn/AstraChat_AI_System)
 
-![Astra Studio Logo](assets/AstraStudio.png)
+![Astra Chat Logo](assets/Astra_logo.png)
 
-## Что такое Astra Studio?
+## Что такое AstraChat?
 
-Astra Studio — это вэб-приложение с микросервисной архитектурой, объединяющая приватность локальных моделей, масштабируемость облачных решений и интеллект агентной архитектуры для корпоративного использования. Приложение представляет собой интеллектуального AI-ассистента с расширенными возможностями для работы с документами, голосовым взаимодействием и автоматизацией задач, построенный на основе передовых технологий машинного обучения.
+AstraChat — это AI-платформа с микросервисной архитектурой, объединяющая приватность локальных моделей, масштабируемость облачных решений и интеллект агентной архитектуры для корпоративного использования. Платформа представляет собой интеллектуальный AI-ассистент с расширенными возможностями для работы с документами, голосовым взаимодействием и автоматизацией задач, построенный на основе передовых технологий машинного обучения.
 
 ## Основной функционал
 
 ### Микросервисная архитектура
-- **LLM-сервис** — единый сервис для инференса больших языковых моделей
-- **OCR-сервис**  — извлечение текста из изображений/сканов для дальнейшей обработки
-- **RAG-сервисы**:
-  - **SVC-RAG**: логика RAG: индексация, поиск, иерархия чанков, связь с БД, отдает релевантные фрагменты бэкенду
-  - **SVC-RAG-MODELS**: модели для эмбеддингов и реранкинга
-- **TTS-сервис**: синтез речи
-- **STT-сервис**: распознавание речи 
-- **Diarization**: разделение речи по спикерам
+- **LLM-сервис** — единый сервис для всех AI-моделей (LLM, транскрипция, синтез речи)
 - **Backend** — основная бизнес-логика с агентной архитектурой
 - **Frontend** — современный веб-интерфейс на React
 
@@ -26,32 +19,28 @@ Astra Studio — это вэб-приложение с микросервисн�
 - **Агент-оркестратор** — автоматический выбор и координация специализированных агентов
 - **Специализированные агенты**:
   - DocumentAgent — работа с загруженными документами
+  - WebSearchAgent — поиск информации в интернете
+  - CalculationAgent — математические вычисления
+  - MemoryAgent — работа с памятью системы
   - MCPAgent — интеграция с внешними сервисами
   - LangGraphAgent — планирование и выполнение сложных задач
-  - PrompEnchancementAgent - создание улучшенных промпртов
-  - SummarizationAgent - суммаризация документов, текстов
 - **Планирование задач** — многошаговое планирование сложных задач
 
 ### Мультимодальность
-- **Транскрибация речи**: WhisperX
+- **Транскрипция речи**: Vosk (быстрая) + WhisperX (точная)
 - **Диаризация спикеров**: автоматическое разделение речи по говорящим
 - **Синтез речи**: Silero TTS с несколькими голосами
 - **Обработка документов**: PDF, DOCX, TXT, Markdown
 
 ### RAG система (Retrieval-Augmented Generation)
-Уникальная система с возможностью гибкой настройки стратегий поиска и методов чанкования
-**Статегии поиска:**
-- **Векторный** 
-- **Лексический** 
-- **Гибридный (векторный + лексический)**
-- **Графовый**
-
-**Методы чанкования:**
-- **Иерархическое** 
-- **Фиксированное**
-- **По разметке**
-- **По разделителям**
-- **Семантическое**
+- **Векторный поиск** на базе PostgreSQL + pgvector
+- **Семантический поиск** по загруженным документам
+- **Контекстные ответы** на основе ваших документов
+- **Иерархическое индексирование** — оптимизация для больших документов (30+ страниц)
+  - **4-8x ускорение поиска** для больших документов
+  - **Полный контекст** вместо отдельных фрагментов
+  - **60-70% меньше векторов** в базе данных
+  - **Автоматическая активация** для документов > 5 страниц
 
 ### Хранение данных
 - **MongoDB** — хранение диалогов и истории общения
@@ -66,7 +55,7 @@ Astra Studio — это вэб-приложение с микросервисн�
 
 ## Установка Docker
 
-Перед началом работы с Astra Studio необходимо установить и запустить Docker на вашей системе.
+Перед началом работы с AstraChat необходимо установить и запустить Docker на вашей системе.
 
 ### Установка Docker для Windows
 
@@ -147,7 +136,7 @@ sudo systemctl status docker  # Для Linux
 
 > **Важно**
 > 
-> Убедитесь, что Docker запущен и работает перед выполнением команд установки Astra Studio. В Windows Docker Desktop должен быть запущен, в Linux — служба Docker должна быть активна.
+> Убедитесь, что Docker запущен и работает перед выполнением команд установки AstraChat. В Windows Docker Desktop должен быть запущен, в Linux — служба Docker должна быть активна.
 
 ---
 
@@ -159,11 +148,11 @@ sudo systemctl status docker  # Для Linux
 
 > **Важно**
 > 
-> При использовании Docker для установки Astra Studio убедитесь, что вы правильно настроили монтирование томов для моделей и данных. Это критически важно для корректной работы системы и предотвращения потери данных.
+> При использовании Docker для установки AstraChat убедитесь, что вы правильно настроили монтирование томов для моделей и данных. Это критически важно для корректной работы системы и предотвращения потери данных.
 
 > **Совет**
 > 
-> Для использования Astra Studio с поддержкой GPU (CUDA) убедитесь, что на вашей системе установлен Nvidia CUDA container toolkit. Это необходимо для ускорения работы больших моделей.
+> Для использования AstraChat с поддержкой GPU (CUDA) убедитесь, что на вашей системе установлен Nvidia CUDA container toolkit. Это необходимо для ускорения работы больших моделей.
 
 ## Подготовка к установке
 
@@ -171,16 +160,17 @@ sudo systemctl status docker  # Для Linux
 
 ```bash
 # Перейдите в директорию проекта (замените путь на ваш)
-cd /path/to/Astra-Studio
+cd /path/to/memo_new_api
 
 # Создайте необходимые папки
-mkdir venv_312 models diarize_models silero_models whisperx_models
+mkdir venv_312 models diarize_models model_small silero_models whisperx_models
 ```
 
 Эти папки используются для хранения:
 - `venv_312` — виртуальное окружение Python (опционально, если не используете Docker)
-- `models` — LLM модели и модели RAG (модель эмбеддингов, реранкер)
+- `models` — LLM модели и модели эмбеддингов
 - `diarize_models` — модели для диаризации спикеров
+- `model_small` — модели Vosk для быстрой транскрипции
 - `silero_models` — модели Silero для синтеза речи
 - `whisperx_models` — модели WhisperX для точной транскрипции
 
@@ -194,33 +184,25 @@ mkdir venv_312 models diarize_models silero_models whisperx_models
 
 ### Полная установка (все сервисы)
 
-Для запуска всех компонентов системы (LLM-сервис, звуковые сервисы, Backend, Frontend, базы данных) убедитесь, что вы находитесь в корневой директории проекта и выполните:
+Для запуска всех компонентов системы (LLM-сервис, Backend, Frontend, базы данных) убедитесь, что вы находитесь в корневой директории проекта и выполните:
 
 ```bash
 # Перейдите в директорию проекта (если еще не в ней)
-cd /path/to/AstrraChat_AI
+cd /path/to/memo_new_api
 
 # Запустите все сервисы
 docker-compose up -d
 ```
 
-Эта команда запустит микросервисную связку (см. `docker-compose.yml`):
-- **LLM-сервис** (`llm-service`) — порт хоста `8002` (внутри контейнера `8000`)
-- **STT** (`stt-service`, WhisperX) — `8001`
-- **Диаризация** (`diarization-service`) — `8003`
-- **OCR** (`ocr-service`) — `8004`
-- **TTS** (`tts-service`, Silero) — `8005`
-- **Backend** (`astrachat-backend`, API + Socket.IO) — `8000`
-- **Frontend** (`astrachat-frontend`) — `3000`
-- **RAG: модели** (`rag-models`) — `8010`
-- **RAG: логика** (`svc-rag`, парсинг, pgvector, BM25) — `8011`
-- **MongoDB** — `27017`
-- **PostgreSQL** (pgvector) — `5432`
-- **MinIO** — `9000` (API) и `9001` (Console)
+Эта команда запустит:
+- **LLM-сервис** на порту `8001`
+- **Backend** на порту `8000`
+- **Frontend** на порту `3000`
+- **MongoDB** на порту `27017`
+- **PostgreSQL** на порту `5432`
+- **MinIO** на портах `9000` (API) и `9001` (Console)
 
-Опционально (профиль `production`): **Nginx** — `80` и `443` (см. `docker compose --profile production up -d`).
-
-После установки вы сможете получить доступ к Astra Studio по адресу: **http://localhost:3000**
+После установки вы сможете получить доступ к AstraChat по адресу: **http://localhost:3000**
 
 ### Поэтапная установка
 
@@ -228,7 +210,7 @@ docker-compose up -d
 
 ```bash
 # Перейдите в директорию проекта (если еще не в ней)
-cd /path/to/Astra-Studio
+cd /path/to/memo_new_api
 ```
 
 #### 1. Сначала запустите LLM-сервис:
@@ -261,11 +243,12 @@ docker-compose up -d
 
 ## Настройка переменных окружения
 
-Создайте файл `.env` в корне проекта на основе `MAIN.env` и настройте следующие параметры:
+Создайте файл `.env` в корне проекта на основе `env.example` и настройте следующие параметры:
 
 ### LLM-сервис
 - `LLM_MODEL_PATH` — путь к LLM модели
 - `LLM_MODEL_NAME` — имя модели
+- `VOSK_MODEL_PATH` — путь к модели Vosk
 - `SILERO_MODELS_DIR` — директория с моделями Silero
 - `WHISPERX_MODELS_DIR` — директория с моделями WhisperX
 
@@ -293,67 +276,17 @@ docker-compose ps
 
 ## Доступ к сервисам
 
-Основной вход пользователя:
 - **Frontend**: http://localhost:3000
-- **Backend API и WebSocket**: http://localhost:8000
-
-Микросервисы (для отладки и прямых проверок; в работе приложения backend ходит к ним по именам контейнеров):
-- **LLM-сервис**: http://localhost:8002
-- **STT**: http://localhost:8001
-- **Диаризация**: http://localhost:8003
-- **OCR**: http://localhost:8004
-- **TTS**: http://localhost:8005
-- **RAG (модели)**: http://localhost:8010
-- **RAG (SVC-RAG API)**: http://localhost:8011
-
-Хранилища и БД:
-- **MongoDB**: `localhost:27017`
-- **PostgreSQL**: `localhost:5432`
-- **MinIO API**: http://localhost:9000
+- **Backend API**: http://localhost:8000
+- **LLM-сервис**: http://localhost:8001
 - **MinIO Console**: http://localhost:9001
-
-## Запуск тестов
-
-Юнит-тесты не требуют запущенных контейнеров, баз данных и моделей: внешние сервисы в них замоканы.
-
-Установите инструменты для тестов и зависимости того сервиса, который проверяете:
-
-```bash
-pip install -r requirements-dev.txt        # pytest, pytest-asyncio, pytest-cov, httpx
-pip install -r backend/requirements.txt    # зависимости backend (для тестов backend)
-```
-
-У каждого сервиса свой пакет `app`, поэтому наборы запускаются **по отдельности**, каждый из своей директории:
-
-| Набор | Команда |
-|---|---|
-| backend | `pytest` (из корня репозитория) |
-| SVC-RAG | `cd SVC-RAG && pytest` |
-| SVC-RAG-MODELS | `cd SVC-RAG-MODELS && pytest` |
-| SVC-OCR | `cd SVC-OCR && pytest` |
-| SVC-SPEECH-DIAR / -RECG / -SYNT | `cd SVC-SPEECH-<имя> && pytest` |
-| llm-svc | `cd llm-svc && pytest` |
-| frontend | `cd frontend && npm install && CI=true npm test -- --watchAll=false` |
-
-Покрытие backend:
-
-```bash
-pytest --cov=backend --cov-report=term-missing
-```
-
-Что важно знать:
-
-- Конфигурация pytest лежит в `pytest.ini` (backend) и `<сервис>/pytest.ini`. Для backend `backend/tests/conftest.py` задаёт минимальное тестовое окружение (`USE_LLM_SVC`, JWT-переменные с синтетическими значениями), поэтому реальные `.env` для тестов не нужны.
-- В llm-svc нативный `llama_cpp` в тестах подменяется заглушкой (`llm-svc/conftest.py`), устанавливать его не нужно.
-- Тесты, помеченные `xfail` или `skip`, описывают известные дефекты кода: причина указана в самом тесте. После исправления дефекта пометку нужно убрать.
-- Тесты общих модулей OCR и SPEECH-сервисов (`core/security`, `utils/downloader`) одинаковы, потому что сами модули в этих сервисах идентичны. При изменении теста обновляйте копии во всех четырёх сервисах.
 
 ---
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=NeKonnnn/Astra-Studio&type=date&legend=bottom-right)](https://www.star-history.com/?repos=NeKonnnn%2FAstra-Studio&type=date&legend=bottom-right)
+[![Star History Chart](https://api.star-history.com/svg?repos=NeKonnnn/AstraChat_AI_System&type=date&legend=top-left)](https://www.star-history.com/#NeKonnnn/AstraChat_AI_System&type=date&legend=top-left)
 
 ---
 
-**Приятного использования Astra Studio!**
+**Приятного использования AstraChat!**

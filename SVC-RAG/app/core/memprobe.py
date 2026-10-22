@@ -54,7 +54,9 @@ logger = get_logger(__name__)
 # Глубина вложенности замеров. ContextVar, а не обычная переменная: под
 # asyncio запросы чередуются на одном потоке, и общий счётчик перемешал бы
 # лесенку разных запросов.
-_depth: contextvars.ContextVar[int] = contextvars.ContextVar("memprobe_depth", default=0)
+_depth: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "memprobe_depth", default=0
+)
 
 # Сколько кадров стека помнит tracemalloc. Один - этого хватает, чтобы
 # назвать виновника, а больше заметно дороже.
@@ -68,6 +70,7 @@ _mode_cache: Optional[str] = None
 
 # Режим, выставленный ручкой диагностики на живом поде. Перебивает настройку.
 _mode_override: Optional[str] = None
+
 
 def _normalize(raw: Any) -> str:
     """Привести значение настройки к одному из MODES.
@@ -85,6 +88,7 @@ def _normalize(raw: Any) -> str:
     if value in ("false", "no", "0", "none", ""):
         return "off"
     return value if value in MODES else "off"
+
 
 def mode() -> str:
     """Текущий режим замеров.
@@ -112,6 +116,7 @@ def mode() -> str:
         return "off"
     return _mode_cache
 
+
 def set_mode(value: Optional[str]) -> str:
     """Переключить режим на живом поде. None - вернуться к настройке."""
     global _mode_override
@@ -125,7 +130,9 @@ def set_mode(value: Optional[str]) -> str:
     logger.debug("[MEM] режим замеров переключён на %s", current)
     return current
 
+
 # ─── Приборы ─────────────────────────────────────────────────────────────────
+
 
 def rss_mb() -> Optional[float]:
     """Сколько процесс забрал у ядра, МБ. None - мерить нечем (не Linux)."""
@@ -135,6 +142,7 @@ def rss_mb() -> Optional[float]:
         return pages * os.sysconf("SC_PAGE_SIZE") / 1048576.0
     except Exception:
         return None
+
 
 def _proc_status() -> Dict[str, float]:
     """VmPeak/VmSize/VmHWM из /proc/self/status, МБ. Пусто вне Linux."""
@@ -161,12 +169,14 @@ def _proc_status() -> Dict[str, float]:
         pass
     return out
 
+
 def blocks() -> int:
     """Сколько блоков сейчас держит аллокатор питона."""
     try:
         return sys.getallocatedblocks()
     except Exception:
         return 0
+
 
 def traced() -> tuple:
     """(текущие, пиковые) байты по tracemalloc. Нули, если он не запущен."""
@@ -177,7 +187,9 @@ def traced() -> tuple:
     except Exception:
         return (0, 0)
 
+
 # ─── Включение tracemalloc ───────────────────────────────────────────────────
+
 
 def ensure_trace_started() -> bool:
     """Запустить tracemalloc, если режим full и он ещё не идёт."""
@@ -195,6 +207,7 @@ def ensure_trace_started() -> bool:
         logger.debug("[MEM] tracemalloc не запустился (%s)", e)
         return False
 
+
 def stop_trace() -> bool:
     """Остановить tracemalloc и освободить его собственные записи."""
     try:
@@ -206,7 +219,9 @@ def stop_trace() -> bool:
     except Exception:
         return False
 
+
 # ─── Замер ───────────────────────────────────────────────────────────────────
+
 
 def _fmt_num(n: int) -> str:
     """Разряды пробелами: 182350 -> 182 350. Иначе глазом не прочитать."""
@@ -214,10 +229,12 @@ def _fmt_num(n: int) -> str:
     body = f"{abs(n):,}".replace(",", " ")
     return f"{sign}{body}"
 
+
 def _fmt_mb(x: Optional[float]) -> str:
     if x is None:
         return "н/д"
     return f"{x:+.2f} МБ" if x else "0.00 МБ"
+
 
 @contextmanager
 def probe(label: str, **extra: Any):
@@ -293,7 +310,9 @@ def probe(label: str, **extra: Any):
                 except Exception:
                     pass
 
+
 # ─── Снимок состояния ────────────────────────────────────────────────────────
+
 
 def _cache_counts() -> Dict[str, Any]:
     """Что лежит в известных кэшах прямо сейчас.
@@ -366,6 +385,7 @@ def _cache_counts() -> Dict[str, Any]:
 
     return out
 
+
 def _by_type(limit: int) -> List[Dict[str, Any]]:
     """Живые объекты по типам: сколько штук и сколько весят.
 
@@ -400,6 +420,7 @@ def _by_type(limit: int) -> List[Dict[str, Any]]:
     rows.sort(key=lambda r: r["размер_мб"], reverse=True)
     return rows[:limit]
 
+
 def _top_allocations(limit: int) -> List[Dict[str, Any]]:
     """Откуда пришла живая память - по данным tracemalloc."""
     try:
@@ -419,6 +440,7 @@ def _top_allocations(limit: int) -> List[Dict[str, Any]]:
         return rows
     except Exception:
         return []
+
 
 def snapshot(deep: bool = False, limit: int = 25) -> Dict[str, Any]:
     """Полный срез потребления памяти на текущий момент."""
@@ -452,12 +474,14 @@ def snapshot(deep: bool = False, limit: int = 25) -> Dict[str, Any]:
         )
     return data
 
+
 def tracing() -> bool:
     """Идёт ли сейчас tracemalloc."""
     try:
         return tracemalloc.is_tracing()
     except Exception:
         return False
+
 
 # ─── Замер на уровне запроса ─────────────────────────────────────────────────
 
@@ -466,6 +490,7 @@ def tracing() -> bool:
 # вкладка раз в несколько секунд, и по этой же причине в коммите 27 из него
 # убирали обычные строки лога.
 QUIET_SUFFIXES = ("/reindex/status", "/health", "/memory-diag/snapshot")
+
 
 def install_request_probe(app: Any) -> None:
     """Повесить замер памяти на каждый HTTP-запрос.

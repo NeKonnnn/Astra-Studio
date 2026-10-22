@@ -5,18 +5,38 @@ from __future__ import annotations
 import contextvars
 from typing import Any, Dict, NamedTuple, Optional
 
-_request: contextvars.ContextVar = contextvars.ContextVar("svc_rag_cef_request", default=None)
+_request: contextvars.ContextVar = contextvars.ContextVar(
+    "svc_rag_cef_request", default=None
+)
 _user: contextvars.ContextVar = contextvars.ContextVar("svc_rag_cef_user", default=None)
 
-# Модель чата из заголовка backend (X-Astra-Model): judge/summary в той же модели.
+# Модель чата из заголовка backend (X-Astra-Model) — для judge/summarize в SVC-RAG.
 _chat_model: contextvars.ContextVar = contextvars.ContextVar(
-    "svc_rag_chat_model", default=None
+    "svc_rag_chat_model_path", default=None
 )
 
 
 class _Tokens(NamedTuple):
     request: Any
     user: Any
+
+
+def chat_model_set(model_path: Optional[str]) -> None:
+    _chat_model.set(str(model_path or "").strip() or None)
+
+
+def chat_model_peek() -> Optional[str]:
+    return _chat_model.get()
+
+
+def chat_model_set_from_request(request: Any) -> None:
+    """Прочитать X-Astra-Model из запроса backend; при ошибке — сбросить."""
+    try:
+        headers = getattr(request, "headers", None) or {}
+        raw = headers.get("x-astra-model") or headers.get("X-Astra-Model") or ""
+        chat_model_set(str(raw).strip() or None)
+    except Exception:
+        chat_model_set(None)
 
 
 def cef_audit_set(
@@ -39,34 +59,13 @@ def cef_audit_peek() -> tuple[Optional[Any], Optional[Dict[str, Any]]]:
     return _request.get(), _user.get()
 
 
-def chat_model_set(model_path: Optional[str]) -> None:
-    _chat_model.set(str(model_path or "").strip() or None)
-
-
-def chat_model_peek() -> Optional[str]:
-    return _chat_model.get()
-
-
-def chat_model_set_from_request(request: Any) -> None:
-    """Взять путь модели из X-Astra-Model (прокидывает backend RagClient)."""
-    if request is None:
-        chat_model_set(None)
-        return
-    headers = getattr(request, "headers", None) or {}
-    raw = (
-        headers.get("x-astra-model")
-        or headers.get("X-Astra-Model")
-        or ""
-    )
-    chat_model_set(raw)
-
-
-# Логин для запросов, которые делает сам сервис, а не пользователь.
+# Логин для запросов, которые делает сам сервис, а не пользователь: список
+# моделей и health-check при старте пода. Согласовано с ИБ.
 MODELS_SYSTEM_USER_ID = "astrachat"
 
 
 def model_identity_headers() -> Dict[str, str]:
-    """X-User-ID для запросов к моделям через шлюз."""
+    """X-User-ID для запросов к моделям через шлюз"""
     import os
 
     login = ""
@@ -84,7 +83,18 @@ def model_identity_headers() -> Dict[str, str]:
 
 
 def cef_identity_headers() -> Dict[str, str]:
-    """Инициатор для внутренних вызовов backend (OCR, LLM-прокси)."""
+    """Инициатор для внутренних вызовов backend (OCR, LLM-прокси).
+
+    Backend зовёт SVC-RAG с заголовками X-CEF-*, и SVC-RAG по ним узнаёт
+    пользователя. В обратную сторону этого не было: OCR картинок и
+    LLM-прокси уходили в backend без логина, backend не знал инициатора, и
+    его вызов к модели уходил на шлюз как служебный - хотя запустил его
+    живой человек.
+
+    Прокидываем тем же словарём заголовков, чтобы не заводить второй.
+
+    Пусто, если пользователя нет: тогда backend отработает как раньше.
+    """
     headers: Dict[str, str] = {}
     try:
         _req, user = cef_audit_peek()

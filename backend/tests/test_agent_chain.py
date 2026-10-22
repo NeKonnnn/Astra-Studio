@@ -35,7 +35,7 @@ class TestAgentChain(unittest.TestCase):
         self.assertIn("Суммируй договор", text)
         self.assertIn("Юрист", text)
         self.assertIn("Рисков нет", text)
-        self.assertIn("specific expertise", text)
+        self.assertIn("Выполни свою часть работы", text)
 
     def test_format_visible_hides_intermediate(self):
         steps = [

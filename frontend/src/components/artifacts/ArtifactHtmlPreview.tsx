@@ -63,7 +63,7 @@ export default function ArtifactHtmlPreview({ content, isStreaming = false }: Pr
     <Box
       component="iframe"
       title="HTML artifact preview"
-      sandbox="allow-scripts allow-same-origin allow-forms"
+      sandbox="allow-scripts allow-forms"
       srcDoc={srcDoc}
       sx={{
         width: '100%',

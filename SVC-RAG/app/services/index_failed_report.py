@@ -27,6 +27,7 @@ import httpx
 
 from app.core.config import get_settings
 from app.core.http_verify import resolve_httpx_verify
+from app.core.internal_auth import internal_rag_headers
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -78,7 +79,9 @@ async def report_index_failed(
         async with httpx.AsyncClient(
             timeout=_report_timeout(), verify=resolve_httpx_verify()
         ) as client:
-            resp = await client.post(url, json=payload)
+            resp = await client.post(
+                url, headers=internal_rag_headers(), json=payload
+            )
             resp.raise_for_status()
         logger.info(
             "Индексация «%s» не состоялась - бэкенду отправлен запрос убрать "

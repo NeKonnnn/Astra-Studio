@@ -60,10 +60,14 @@ from backend.app_state import (
     memory_clear_on_restart, minio_client,
 )
 # -- FastAPI
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from backend.settings.service_toggles import (
+    ServiceDisabledError,
+    log_disabled_services_once,
+)
 _app_cfg = settings.app
 app = FastAPI(
     title=_app_cfg.name,
@@ -71,6 +75,16 @@ app = FastAPI(
     version=_app_cfg.version,
     debug=_app_cfg.debug,
 )
+
+
+@app.exception_handler(ServiceDisabledError)
+async def service_disabled_handler(_request: Request, exc: ServiceDisabledError):
+    """Выключенный микросервис → 503, без traceback в ASGI."""
+    return JSONResponse(
+        status_code=503,
+        content={"detail": f"Микросервис '{exc.display}' в разработке"},
+    )
+
 _cors_origins = [o for o in settings.cors.allowed_origins if o]
 app.add_middleware(
     CORSMiddleware,
@@ -213,6 +227,7 @@ async def startup_event():
             logger.info("Память очищена при перезапуске")
         except Exception as e:
             logger.warning(f"Не удалось очистить память: {e}")
+    log_disabled_services_once()
     logger.info("Приложение запущено")
     log_cef_event("SYS001")
 @app.on_event("shutdown")

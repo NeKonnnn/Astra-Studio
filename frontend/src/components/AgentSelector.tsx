@@ -11,12 +11,17 @@ import {
 import AgentIcon from '../icons/AgentIcon';
 import { useAuth } from '../contexts/AuthContext';
 import { useAppActions } from '../contexts/AppContext';
-import { getApiUrl } from '../config/api';
+import { authFetch, getApiUrl } from '../config/api';
 import {
   isValidSelectedModelPath,
   LAST_SELECTED_MODEL_PATH_STORAGE_KEY,
 } from '../utils/modelThinking';
 import { MODEL_PATH_CHANGED_EVENT } from '../utils/contextTokens';
+import {
+  ensureSelectedModelWeights,
+  MODEL_WEIGHTS_ENSURE_EVENT,
+  type ModelWeightsEnsureDetail,
+} from '../utils/applyAgentServer';
 import {
   getDropdownItemSx,
   DROPDOWN_CHEVRON_SX,
@@ -249,7 +254,8 @@ export default function AgentSelector({
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const resp = await fetch(url, { signal: controller.signal });
+      const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
+      const resp = await authFetch(url, { signal: controller.signal, headers });
       if (!resp.ok) return null;
       return await resp.json();
     } catch {
@@ -257,12 +263,12 @@ export default function AgentSelector({
     } finally {
       window.clearTimeout(timer);
     }
-  }, []);
+  }, [token]);
 
   const loadImagePresets = useCallback(async () => {
     setImagePresetsLoading(true);
     try {
-      const r = await fetch(getApiUrl('/api/image-generation/presets'));
+      const r = await authFetch(getApiUrl('/api/image-generation/presets'));
       if (!r.ok) return;
       const data = (await r.json()) as ImageGenPresetsPayload;
       const list = Array.isArray(data.presets) ? data.presets : [];
@@ -395,7 +401,8 @@ export default function AgentSelector({
 
   useEffect(() => {
     let cancelled = false;
-    fetch(getApiUrl('/api/models/current'))
+    const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
+    authFetch(getApiUrl('/api/models/current'), { headers })
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (!cancelled && data?.path) {
@@ -411,7 +418,49 @@ export default function AgentSelector({
       })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [normalizeModelPath]);
+  }, [normalizeModelPath, token]);
+
+  // Path в localStorage/settings ≠ веса в LLM: при открытии чата и возврате на вкладку
+  // дотягиваем ensure (/api/models/load). Спиннер на триггере — пока идёт ensure.
+  useEffect(() => {
+    const onEnsure = (e: Event) => {
+      const detail = (e as CustomEvent<ModelWeightsEnsureDetail>).detail;
+      if (!detail?.path) return;
+      if (detail.phase === 'start') {
+        setIsLoadingModel(true);
+        setLoadingModelPath(detail.path);
+        return;
+      }
+      setIsLoadingModel(false);
+      setLoadingModelPath(null);
+      if (detail.phase === 'error' && detail.message) {
+        showNotification('warning', detail.message);
+      }
+    };
+    window.addEventListener(MODEL_WEIGHTS_ENSURE_EVENT, onEnsure);
+    return () => window.removeEventListener(MODEL_WEIGHTS_ENSURE_EVENT, onEnsure);
+  }, [showNotification]);
+
+  useEffect(() => {
+    if (!token) return;
+    const path = readStoredModelPath();
+    if (!isValidSelectedModelPath(path)) return;
+    void ensureSelectedModelWeights(token, path);
+    // Только при появлении token: path подтянется из storage; спиннер/ошибки — через MODEL_WEIGHTS_ENSURE_EVENT.
+  }, [token]);
+
+  useEffect(() => {
+    if (!token) return;
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      const path = readStoredModelPath();
+      if (!isValidSelectedModelPath(path)) return;
+      // После простоя llm-svc мог выгрузить веса; без спиннера (backend no-op если в пуле).
+      void ensureSelectedModelWeights(token, path, { force: true, silent: true });
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [token]);
 
   useEffect(() => {
     const onAgentSelected = () => setActiveAgent(getActiveAgentFromStorage());
@@ -460,26 +509,19 @@ export default function AgentSelector({
   // ─── Model select ─────────────────────────────────────────────────────────────
 
   const handleSelectModel = async (modelPath: string) => {
-    if (modelPath === selectedModelPath) { handleClose(); return; }
+    // Повторный клик по той же модели — force ensure (после unload весов без смены path).
+    const sameAsSelected = modelPath === selectedModelPath;
     const prevModelPath = selectedModelPath;
     try {
-      // Спиннер крутится, пока backend реально подтянет веса (Post /api/models/load).
-      setIsLoadingModel(true);
-      setLoadingModelPath(modelPath);
       handleClose();
-
-      const response = await fetch(getApiUrl('/api/models/load'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify({ model_path: modelPath }),
-      });
-      // Сразу снимаем спиннер по факту ответа (веса уже на бэке), до парсинга/нотификаций.
-      setIsLoadingModel(false);
-      setLoadingModelPath(null);
-
-      const data = await response.json().catch(() => ({}));
-      if (!(response.ok && data.success)) {
-        throw new Error(data.message || data.detail || 'Не удалось загрузить модель');
+      if (!token) {
+        throw new Error('Нет токена авторизации');
+      }
+      const result = await ensureSelectedModelWeights(token, modelPath, { force: true });
+      if (!(result.ok && !('pending' in result && result.pending))) {
+        throw new Error(
+          ('message' in result && result.message) || 'Не удалось загрузить модель',
+        );
       }
 
       setSelectedModelPath(modelPath);
@@ -488,20 +530,21 @@ export default function AgentSelector({
         new CustomEvent(MODEL_PATH_CHANGED_EVENT, { detail: { path: modelPath } }),
       );
       onModelSelect?.(modelPath);
-      showNotification('success', 'Модель успешно загружена');
+      showNotification(
+        'success',
+        sameAsSelected ? 'Веса модели перезагружены' : 'Модель успешно загружена',
+      );
       void loadModels(false);
     } catch (e: any) {
-      setSelectedModelPath(prevModelPath);
-      if (prevModelPath) {
-        localStorage.setItem(LAST_SELECTED_MODEL_PATH_STORAGE_KEY, prevModelPath);
+      if (!sameAsSelected) {
+        setSelectedModelPath(prevModelPath);
+        if (prevModelPath) {
+          localStorage.setItem(LAST_SELECTED_MODEL_PATH_STORAGE_KEY, prevModelPath);
+        }
       }
       showNotification('error', `Ошибка загрузки модели: ${e?.message || e}`);
-    } finally {
-      setIsLoadingModel(false);
-      setLoadingModelPath(null);
     }
   };
-
   // ─── Derived ─────────────────────────────────────────────────────────────────
 
   /** Список подключений (уникальные метки) с их моделями. */

@@ -3,6 +3,7 @@
 Приоритет: TLS_CERT_PATH -> SSL_CERT_FILE -> REQUESTS_CA_BUNDLE -> True.
 Достаточно одной переменной TLS_CERT_PATH с путём к CA bundle.
 """
+
 from __future__ import annotations
 
 import logging
@@ -23,7 +24,14 @@ def resolve_httpx_verify() -> VerifySetting:
         if not ca_path:
             continue
         if os.path.isfile(ca_path):
-            logger.debug("[SSL] CA bundle из %s: %s", env_name, ca_path)
+            # Размер бандла - это цена одного httpx-клиента
+            try:
+                ca_size = os.path.getsize(ca_path)
+            except OSError:
+                ca_size = -1
+            logger.debug(
+                "[SSL] CA bundle из %s: %s (%s байт)", env_name, ca_path, ca_size
+            )
             return ca_path
         logger.warning(
             "[SSL] %s задан, но файл не найден: %s — используется verify=True",

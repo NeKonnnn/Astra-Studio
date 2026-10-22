@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { InlineAttachment } from '../components/ChatInputBar';
 import type { Message } from '../contexts/AppContext';
-import { getApiUrl } from '../config/api';
+import { authFetch, getApiUrl } from '../config/api';
 import { getMcpToolIdsForChat, MCP_SELECTION_CHANGED_EVENT } from '../mcp/selectionStorage';
 import { LAST_SELECTED_MODEL_PATH_STORAGE_KEY } from '../utils/modelThinking';
 import {
@@ -33,14 +33,6 @@ function readStoredAgentId(): number | null {
   } catch {
     return null;
   }
-}
-
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem('auth_token') || localStorage.getItem('token');
-  return {
-    'Content-Type': 'application/json',
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-  };
 }
 
 export interface UseChatContextUsageOptions {
@@ -93,7 +85,7 @@ export function useChatContextUsage({
 
   const loadModelSettings = useCallback(async () => {
     try {
-      const response = await fetch(getApiUrl('/api/models/settings'), { headers: authHeaders() });
+      const response = await authFetch(getApiUrl('/api/models/settings'));
       if (!response.ok) return;
       const data = await response.json();
       const ctx = data?.context_size;
@@ -203,9 +195,9 @@ export function useChatContextUsage({
 
     void (async () => {
       try {
-        const response = await fetch(getApiUrl('/api/chat/context-breakdown'), {
+        const response = await authFetch(getApiUrl('/api/chat/context-breakdown'), {
           method: 'POST',
-          headers: authHeaders(),
+          headers: { 'Content-Type': 'application/json' },
           body: overheadRequestKey,
         });
         if (!response.ok) return;

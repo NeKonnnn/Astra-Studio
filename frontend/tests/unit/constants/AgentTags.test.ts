@@ -6,7 +6,7 @@ jest.mock('@/config/api', () => ({
   getAuthFetchHeaders: () => ({}),
 }));
 
-import { fetchAgentTags, invalidateAgentTagsCache } from '@/constants/AgentTags';
+import { fetchAgentTags, invalidateAgentTagsCache, parseTagIds } from '@/constants/AgentTags';
 
 const okResponse = (tags: unknown[]) =>
   ({ ok: true, status: 200, json: async () => ({ tags }) }) as unknown as Response;
@@ -60,5 +60,44 @@ describe('fetchAgentTags error caching', () => {
     await fetchAgentTags();
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('strict tag id parsing (BUG-FE-07)', () => {
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    invalidateAgentTagsCache();
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it('skips tag rows with null / NaN / fractional / non-numeric ids instead of coercing to 0', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      okResponse([
+        { id: null, name: 'null-id' },
+        { id: undefined, name: 'no-id' },
+        { id: 'abc', name: 'text-id' },
+        { id: 1.5, name: 'fraction' },
+        { id: 0, name: 'zero' },
+        { id: true, name: 'bool' },
+        { id: 7, name: 'ok' },
+        { id: '8', name: 'numeric-string' },
+      ]),
+    ) as unknown as typeof fetch;
+
+    const tags = await fetchAgentTags();
+
+    expect(tags.map((t) => t.id)).toEqual([7, 8]);
+  });
+
+  it('parseTagIds rejects fractions, zero, null and NaN (no truncation to 0)', () => {
+    expect(parseTagIds([0.5])).toEqual([]);
+    expect(parseTagIds([1.5, 2])).toEqual([2]);
+    expect(parseTagIds([null, undefined, NaN, 0, -1, 'x', true])).toEqual([]);
+    expect(parseTagIds([3, '4', 3])).toEqual([3, 4]);
+    expect(parseTagIds('not-an-array')).toEqual([]);
   });
 });

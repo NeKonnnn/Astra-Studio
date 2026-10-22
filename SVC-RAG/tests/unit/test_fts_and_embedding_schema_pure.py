@@ -75,13 +75,16 @@ class TestExtractFilenames:
             "Воронин_Михаил.docx",
         ]
 
-    def test_quoted_name_with_spaces_also_yields_its_tail_known_issue(self):
-        """Известная особенность: имя в кавычках находится целиком, но «безкавычечный»
-        шаблон дополнительно вытаскивает хвост без пробелов (``2024.pdf``), и по
-        нему тоже ищется документ (``ILIKE %2024.pdf%``)."""
+    def test_quoted_name_with_spaces_does_not_yield_its_tail(self):
+        """BUG-RAG-06 (3): имя в кавычках находится целиком, без «хвоста» ``2024.pdf``."""
         assert fts.extract_filenames("Найди «Годовой отчёт 2024.pdf» пожалуйста") == [
             "Годовой отчёт 2024.pdf",
-            "2024.pdf",
+        ]
+
+    def test_quoted_and_plain_names_are_both_found(self):
+        assert fts.extract_filenames("«Годовой отчёт 2024.pdf» и report.docx") == [
+            "Годовой отчёт 2024.pdf",
+            "report.docx",
         ]
 
     def test_download_suffix(self):
@@ -116,9 +119,23 @@ class TestSqlFragments:
         where, rank, used, params = fts.substring_where_and_rank(
             vectors_alias="v", tokens=["abc", "x_y"], first_placeholder_idx=2
         )
-        assert used == 2 and params == ["%abc%", "%x_y%"]
+        # BUG-RAG-02: «_» и «%» в токене — литералы, а не маски ILIKE.
+        assert used == 2 and params == ["%abc%", "%x\\_y%"]
         assert where == "(v.content ILIKE $2 OR v.content ILIKE $3)"
         assert rank.endswith("::float") and rank.count("CASE WHEN") == 2
+
+    @pytest.mark.parametrize(
+        "raw,escaped",
+        [("abc", "abc"), ("100%", "100\\%"), ("a_b", "a\\_b"), ("a\\b", "a\\\\b"), ("%_\\", "\\%\\_\\\\")],
+    )
+    def test_escape_like(self, raw, escaped):
+        assert fts.escape_like(raw) == escaped
+
+    def test_substring_wildcards_are_escaped_in_params(self):
+        _, _, _, params = fts.substring_where_and_rank(
+            vectors_alias="v", tokens=["%", "обыч_ый"], first_placeholder_idx=1
+        )
+        assert params == ["%\\%%", "%обыч\\_ый%"]
 
     def test_substring_without_tokens_matches_nothing(self):
         assert fts.substring_where_and_rank(

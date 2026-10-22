@@ -2,6 +2,7 @@
  * @jest-environment jsdom
  */
 import {
+  clearDirectorySearchCache,
   formatShareFeedback,
   resolveShareUsernames,
   searchDirectoryUsers,
@@ -165,5 +166,60 @@ describe('formatShareFeedback', () => {
     expect(
       formatShareFeedback({ success: true, message: 'ok', warnings: ['w1'] }),
     ).toEqual({ success: 'ok', warning: 'w1' });
+  });
+});
+
+describe('searchDirectoryUsers cache scoping (BUG-FE-07)', () => {
+  const originalFetch = global.fetch;
+  const jwtFor = (sub: string) =>
+    ['e30', Buffer.from(JSON.stringify({ sub })).toString('base64url'), 'sig'].join('.');
+
+  beforeEach(() => {
+    clearDirectorySearchCache();
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    jest.restoreAllMocks();
+  });
+
+  it('caches a result for the same user', async () => {
+    const fetchMock = mockSearch({ ivan: [user('ivan.petrov')] });
+    const token = jwtFor('user-a');
+    await searchDirectoryUsers(token, 'ivan');
+    await searchDirectoryUsers(token, 'ivan');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT share the cache between different users', async () => {
+    const fetchMock = mockSearch({ ivan: [user('ivan.petrov')] });
+    await searchDirectoryUsers(jwtFor('user-a'), 'ivan');
+    await searchDirectoryUsers(jwtFor('user-b'), 'ivan');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not cache when the user id cannot be derived from the token', async () => {
+    const fetchMock = mockSearch({ ivan: [user('ivan.petrov')] });
+    await searchDirectoryUsers('opaque-token', 'ivan');
+    await searchDirectoryUsers('opaque-token', 'ivan');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not cache HTTP errors as an empty result', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ users: [user('ivan.petrov')] }) });
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const token = jwtFor('user-a');
+    expect(await searchDirectoryUsers(token, 'ivan')).toEqual([]);
+    expect((await searchDirectoryUsers(token, 'ivan')).length).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('never puts the token into the request URL', async () => {
+    const fetchMock = mockSearch({ ivan: [] });
+    const token = jwtFor('user-a');
+    await searchDirectoryUsers(token, 'ivan');
+    expect(String(fetchMock.mock.calls[0][0])).not.toContain(token);
   });
 });

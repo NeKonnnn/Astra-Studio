@@ -19,7 +19,11 @@ from app.services.chunker import (
     resolve_chunk_params,
     split_into_chunks_with_meta,
 )
-from app.services.document_parser import empty_document_index_error, parse_document
+from app.services.document_parser import (
+    empty_document_index_error,
+    parse_document,
+    parsed_file_type,
+)
 from app.services.retrieval_pipeline import RetrievalTrace, run_retrieval_pipeline
 from app.services.stage_timer import StageTimer
 
@@ -278,7 +282,7 @@ class KbService:
             }
 
         meta: Dict[str, Any] = {
-            "file_type": parsed.get("file_type", ""),
+            "file_type": parsed_file_type(parsed),
             "pages": parsed.get("pages", 0),
             "size": len(file_data),
             "source": "knowledge_base" if knowledge_base_id is not None else "agent",
@@ -410,11 +414,12 @@ class KbService:
                 chunking_strategy=chunking_strategy or "universal",
             )
         if not chunks_with_meta:
+            await self.doc_repo.delete_document(doc_id)
             timer.log(logger)
             return {
                 "ok": False,
                 "error": "Не удалось нарезать чанки",
-                "document_id": doc_id,
+                "document_id": None,
             }
 
         from app.services.index_batching import embed_and_store

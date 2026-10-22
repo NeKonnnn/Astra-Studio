@@ -86,9 +86,15 @@ def resolve_cef_dvchost() -> str:
 
 def _build_rfc5424_syslog_payload(cef_line: str, cef_severity: int) -> bytes:
     fac_name = (os.getenv("AUDIT_SYSLOG_FACILITY") or "LOCAL4").upper()
-    facility_code = _SYSLOG_FACILITY_CODES.get(fac_name, _SYSLOG_FACILITY_CODES["LOCAL4"])
+    facility_code = _SYSLOG_FACILITY_CODES.get(
+        fac_name, _SYSLOG_FACILITY_CODES["LOCAL4"]
+    )
     pri = facility_code * 8 + _cef_severity_to_syslog_pri_severity(int(cef_severity))
-    ts = datetime.now(tz=timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    ts = (
+        datetime.now(tz=timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
     hostname = resolve_cef_dvchost()
     app_name = os.getenv("CEF_DEVICE_PROCESS", "svc-rag")
     proc_id = os.getpid()
@@ -304,7 +310,9 @@ def request_context(request: Any, current_user: Optional[dict]) -> Dict[str, Any
     spt = 0
     app = "HTTPS"
     if current_user:
-        suser = str(current_user.get("username") or current_user.get("user_id") or "SYSTEM")
+        suser = str(
+            current_user.get("username") or current_user.get("user_id") or "SYSTEM"
+        )
         if current_user.get("sntdom"):
             sntdom = str(current_user["sntdom"])
     if request is not None:
@@ -468,12 +476,16 @@ def log_cef_event(
             "spt": 0,
             "app": "HTTPS",
             "suser": "SYSTEM",
-            "sntdom": domain_from_ldap_base_dn(os.getenv("LDAP_USER_SEARCH_BASE", "")) or "-",
+            "sntdom": domain_from_ldap_base_dn(os.getenv("LDAP_USER_SEARCH_BASE", ""))
+            or "-",
         }
         current_user_effective = {"username": "SYSTEM", "user_id": None}
     else:
         ctx = request_context(request, current_user)
-        current_user_effective = current_user or {"username": ctx["suser"], "user_id": None}
+        current_user_effective = current_user or {
+            "username": ctx["suser"],
+            "user_id": None,
+        }
 
     extra = dict(extra) if extra else {}
     _extra_dir = extra.pop("_deviceDirection", None)
@@ -491,11 +503,17 @@ def log_cef_event(
         "dpt": int(os.getenv("CEF_DPT", "443")),
         "app": ctx["app"],
         "act": spec.act,
-        "outcome": outcome or _outcome_from_status(status_code) or spec.outcome,
+        # Без status_code (сбой вне HTTP) берём outcome из спецификации события,
+        # иначе INT006/OBJ002 уходили в SIEM как success (BUG-RAG-22).
+        "outcome": outcome
+        or (_outcome_from_status(status_code) if status_code is not None else None)
+        or spec.outcome,
         "suser": ctx["suser"],
         "start": now_ms,
         "end": now_ms,
-        "rt": datetime.now(tz=timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        "rt": datetime.now(tz=timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z"),
         "dvchost": resolve_cef_dvchost(),
         "deviceDirection": effective_dir,
     }
@@ -511,7 +529,9 @@ def log_cef_event(
         if extra.get("dpt") is not None:
             extension["dpt"] = int(extra["dpt"])
 
-    extension.update({k: v for k, v in extra.items() if v is not None and not str(k).startswith("_")})
+    extension.update(
+        {k: v for k, v in extra.items() if v is not None and not str(k).startswith("_")}
+    )
 
     fmt_map = _SafeDict({**extension, "cat": spec.cat})
     extension["msg"] = spec.msg_template.format_map(fmt_map)

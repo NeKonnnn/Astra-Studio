@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useReducer, useEffect, ReactNode } from 'react';
-import { getApiUrl, API_ENDPOINTS } from '../config/api';
+import { authFetch, getApiUrl, API_ENDPOINTS } from '../config/api';
 import { initSettings } from '../settings';
 import { useAuth } from './AuthContext';
 import { normalizeMcpToolCallList } from '../mcp/utils/normalizeToolCall';
@@ -1061,7 +1061,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const loadModelSettings = async () => {
       try {
         const effectiveToken = token || localStorage.getItem('auth_token');
-        const response = await fetch(getApiUrl('/api/models/settings'), {
+        const response = await authFetch(getApiUrl('/api/models/settings'), {
           headers: effectiveToken ? { Authorization: `Bearer ${effectiveToken}` } : {},
         });
         if (response.ok) {
@@ -1120,7 +1120,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             }
           }
 
-          const response = await fetch(getApiUrl('/api/conversations?limit=500'), {
+          const response = await authFetch(getApiUrl('/api/conversations?limit=500'), {
             headers: { Authorization: `Bearer ${effectiveToken}` },
           });
           if (response.ok) {
@@ -1144,7 +1144,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
               if (toSyncArchive.length) {
                 void Promise.all(
                   toSyncArchive.map((chatId) =>
-                    fetch(getApiUrl(`/api/conversations/${chatId}/archive`), {
+                    authFetch(getApiUrl(`/api/conversations/${chatId}/archive`), {
                       method: 'POST',
                       headers: { Authorization: `Bearer ${effectiveToken}` },
                     }).catch(() => {}),
@@ -1212,7 +1212,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     (async () => {
       try {
         await initSettings();
-        const response = await fetch(getApiUrl(`/api/conversations/${chatId}`), {
+        const response = await authFetch(getApiUrl(`/api/conversations/${chatId}`), {
           headers: { Authorization: `Bearer ${effectiveToken}` },
         });
         if (!response.ok || cancelled) return;
@@ -1399,7 +1399,7 @@ export function useAppActions() {
       const effectiveToken = token || localStorage.getItem('auth_token');
       if (effectiveToken) {
         initSettings().then(() => {
-          fetch(getApiUrl(`/api/conversations/${chatId}/title`), {
+          authFetch(getApiUrl(`/api/conversations/${chatId}/title`), {
             method: 'PUT',
             headers: {
               'Content-Type': 'application/json',
@@ -1428,7 +1428,7 @@ export function useAppActions() {
       const effectiveToken = token || localStorage.getItem('auth_token');
       if (effectiveToken) {
         initSettings().then(() => {
-          fetch(getApiUrl(`/api/conversations/${chatId}`), {
+          authFetch(getApiUrl(`/api/conversations/${chatId}`), {
             method: 'DELETE',
             headers: { Authorization: `Bearer ${effectiveToken}` },
           }).catch(() => {});
@@ -1443,7 +1443,7 @@ export function useAppActions() {
       const effectiveToken = token || localStorage.getItem('auth_token');
       if (effectiveToken) {
         initSettings().then(() => {
-          fetch(getApiUrl('/api/conversations'), {
+          authFetch(getApiUrl('/api/conversations'), {
             method: 'DELETE',
             headers: { Authorization: `Bearer ${effectiveToken}` },
           }).catch(() => {});
@@ -1643,7 +1643,7 @@ export function useAppActions() {
           .then(() =>
             Promise.all(
               ids.map((chatId) =>
-                fetch(getApiUrl(`/api/conversations/${chatId}/archive`), {
+                authFetch(getApiUrl(`/api/conversations/${chatId}/archive`), {
                   method: 'POST',
                   headers: { Authorization: `Bearer ${effectiveToken}` },
                 }).catch(() => {}),
@@ -1660,7 +1660,7 @@ export function useAppActions() {
       if (effectiveToken) {
         initSettings()
           .then(() =>
-            fetch(getApiUrl(`/api/conversations/${chatId}/archive`), {
+            authFetch(getApiUrl(`/api/conversations/${chatId}/archive`), {
               method: 'POST',
               headers: { Authorization: `Bearer ${effectiveToken}` },
             }),
@@ -1679,7 +1679,7 @@ export function useAppActions() {
           .then(() =>
             Promise.all(
               chatIds.map((chatId) =>
-                fetch(getApiUrl(`/api/conversations/${chatId}/archive`), {
+                authFetch(getApiUrl(`/api/conversations/${chatId}/archive`), {
                   method: 'POST',
                   headers: { Authorization: `Bearer ${effectiveToken}` },
                 }).catch(() => {}),
@@ -1696,7 +1696,7 @@ export function useAppActions() {
       if (effectiveToken) {
         initSettings()
           .then(() =>
-            fetch(getApiUrl(`/api/conversations/${chatId}/unarchive`), {
+            authFetch(getApiUrl(`/api/conversations/${chatId}/unarchive`), {
               method: 'POST',
               headers: { Authorization: `Bearer ${effectiveToken}` },
             }),
@@ -1714,7 +1714,7 @@ export function useAppActions() {
           .then(() =>
             Promise.all(
               ids.map((chatId) =>
-                fetch(getApiUrl(`/api/conversations/${chatId}/unarchive`), {
+                authFetch(getApiUrl(`/api/conversations/${chatId}/unarchive`), {
                   method: 'POST',
                   headers: { Authorization: `Bearer ${effectiveToken}` },
                 }).catch(() => {}),
@@ -1774,7 +1774,7 @@ export function useAppActions() {
       if (effectiveToken) {
         initSettings()
           .then(() => {
-            fetch(getApiUrl(API_ENDPOINTS.PROJECT_DELETE(projectId)), {
+            authFetch(getApiUrl(API_ENDPOINTS.PROJECT_DELETE(projectId)), {
               method: 'DELETE',
               headers: { Authorization: `Bearer ${effectiveToken}` },
             })
@@ -1831,7 +1831,7 @@ export function useAppActions() {
           if (options?.multiLlmSlotIndex !== undefined) {
             body.multi_llm_slot_index = options.multiLlmSlotIndex;
           }
-          const response = await fetch(getApiUrl(`/api/conversations/${sourceChatId}/branch`), {
+          const response = await authFetch(getApiUrl(`/api/conversations/${sourceChatId}/branch`), {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',

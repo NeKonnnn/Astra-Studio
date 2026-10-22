@@ -1,4 +1,4 @@
-import { getApiUrl, getAuthFetchHeaders } from '../config/api';
+import { authFetch, getApiUrl } from '../config/api';
 
 /**
  * Черновик РАГ-настроек агента или проекта.
@@ -84,9 +84,9 @@ export async function saveEntityRagSettings(opts: {
     }
   }
 
-  const response = await fetch(getApiUrl('/api/rag/settings'), {
+  const response = await authFetch(getApiUrl('/api/rag/settings'), {
     method: 'PUT',
-    headers: getAuthFetchHeaders({ 'Content-Type': 'application/json' }),
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
 

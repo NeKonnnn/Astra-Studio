@@ -1,4 +1,4 @@
-import { getApiUrl } from '../config/api';
+import { authFetch, getApiUrl } from '../config/api';
 
 export interface UserAgentListItem {
   id: number;
@@ -21,12 +21,11 @@ export async function fetchMergedUserAgents(
 ): Promise<UserAgentListItem[]> {
   if (!token) return [];
 
-  const headers: HeadersInit = { Authorization: `Bearer ${token}` };
   const qs = `?limit=${limit}`;
   const [mineResp, sharedResp, bookmarksResp] = await Promise.all([
-    fetch(getApiUrl(`/api/agents/my/agents${qs}`), { headers }),
-    fetch(getApiUrl(`/api/agents/my/shared${qs}`), { headers }),
-    fetch(getApiUrl(`/api/agents/my/bookmarks${qs}`), { headers }),
+    authFetch(getApiUrl(`/api/agents/my/agents${qs}`)),
+    authFetch(getApiUrl(`/api/agents/my/shared${qs}`)),
+    authFetch(getApiUrl(`/api/agents/my/bookmarks${qs}`)),
   ]);
 
   const mine: UserAgentListItem[] = mineResp.ok ? (await mineResp.json()).agents || [] : [];

@@ -53,6 +53,10 @@ services:
       - MINIO_BUCKET_NAME=${MINIO_BUCKET_NAME:-astrachat-temp}
       - MINIO_DOCUMENTS_BUCKET_NAME=${MINIO_DOCUMENTS_BUCKET_NAME:-astrachat-documents}
       - MINIO_MEMORY_RAG_BUCKET_NAME=${MINIO_MEMORY_RAG_BUCKET_NAME:-astrachat-memory-rag}
+      # MCP Open-WebSearch: HTTP-режим в Docker (stdio — по умолчанию для локальной разработки)
+      - MCP_SERVER_WEBSEARCH_TRANSPORT=${MCP_SERVER_WEBSEARCH_TRANSPORT:-streamable-http}
+      - MCP_SERVER_WEBSEARCH_BASE_PATH=/mcp
+      - MCP_SERVER_WEBSEARCH_HEALTH_PATH=/mcp
     depends_on:
       mongodb:
         condition: service_healthy
@@ -60,6 +64,25 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      mcp-websearch:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - astrachat-network
+
+  # MCP Open-WebSearch — веб-поиск для LLM (https://github.com/Aas-ee/open-webSearch)
+  mcp-websearch:
+    image: ghcr.io/aas-ee/open-web-search:latest
+    container_name: astrachat-mcp-websearch
+    ports:
+      - "8013:3000"
+    environment:
+      NODE_ENV: production
+      DEFAULT_SEARCH_ENGINE: duckduckgo
+      ALLOWED_SEARCH_ENGINES: duckduckgo,bing,exa,brave
+      ENABLE_CORS: "true"
+      CORS_ORIGIN: "*"
+    command: ["node", "build/index.js"]
     restart: unless-stopped
     networks:
       - astrachat-network

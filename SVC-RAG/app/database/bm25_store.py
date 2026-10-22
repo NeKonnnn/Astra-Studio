@@ -38,6 +38,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from rank_bm25 import BM25Okapi
 
 from app.core.logging import get_logger
+from app.database.fts import escape_like
 
 logger = get_logger(__name__)
 
@@ -78,6 +79,7 @@ STALE_DAYS = 7
 _ALLOWED_IDENT_CHARS = frozenset(string.ascii_letters + string.digits + "_")
 _ALLOWED_FIRST_CHARS = frozenset(string.ascii_letters)
 
+
 def _safe_table(name: str) -> str:
     if not name:
         raise ValueError("Пустое имя таблицы")
@@ -92,7 +94,9 @@ def _safe_table(name: str) -> str:
         raise ValueError(f"Недопустимые символы в имени таблицы {name!r}: {codes}")
     return name
 
+
 # ─── Упаковка ────────────────────────────────────────────────────────────────
+
 
 def encode(index: BM25Okapi, metadatas: List[Dict[str, Any]]) -> bytes:
     """Индекс в байты: только данные, без ссылок на классы.
@@ -115,6 +119,7 @@ def encode(index: BM25Okapi, metadatas: List[Dict[str, Any]]) -> bytes:
     }
     raw = json.dumps(payload).encode("utf-8")
     return _HEADER + len(raw).to_bytes(4, "big") + zlib.compress(raw, 1)
+
 
 def decode(blob: bytes) -> Optional[Tuple[BM25Okapi, List[Dict[str, Any]], int]]:
     """Байты обратно в индекс. ```None```, если запись негодная.
@@ -183,6 +188,7 @@ def decode(blob: bytes) -> Optional[Tuple[BM25Okapi, List[Dict[str, Any]], int]]
 
     return index, metadatas, index.corpus_size
 
+
 # ─── Схема ───────────────────────────────────────────────────────────────────
 
 # Создавали ли уже таблицу. None - ещё не пробовали, False - не вышло и
@@ -190,6 +196,7 @@ def decode(blob: bytes) -> Optional[Tuple[BM25Okapi, List[Dict[str, Any]], int]]
 # нет. Сбрасывается только рестартом пода, и это правильно: если DDL не
 # прошёл, само оно не починится.
 _table_ready: Optional[bool] = None
+
 
 async def ensure_table_once(conn) -> bool:
     global _table_ready
@@ -199,6 +206,7 @@ async def ensure_table_once(conn) -> bool:
             logger.debug("BM25 хранилище: таблица %s готова", STORE_TABLE)
             await _drop_stale(conn)
     return _table_ready
+
 
 async def _drop_stale(conn) -> None:
     """Убрать записи, которые давно никто не спрашивал."""
@@ -215,6 +223,7 @@ async def _drop_stale(conn) -> None:
             logger.debug("BM25-хранилище: убрано %s устаревших записей", removed)
     except Exception as e:
         logger.warning("BM25-хранилище: чистка не удалась (%s)", e)
+
 
 async def ensure_table(conn) -> bool:
     """Создать таблицу, если её нет. ```False``` - создать не удалось.
@@ -241,7 +250,9 @@ async def ensure_table(conn) -> bool:
         logger.warning("BM25-хранилище: таблица не создана (%s) - работаем без него", e)
         return False
 
+
 # ─── Ключи ───────────────────────────────────────────────────────────────────
+
 
 def cache_key(store: str, entity: str, dim: int) -> str:
     """Ключ записи: стор, сущность, размерность.
@@ -251,6 +262,7 @@ def cache_key(store: str, entity: str, dim: int) -> str:
     несколько, и все они становятся ненужными одновременно.
     """
     return f"{store}:{entity}:{int(dim)}"
+
 
 def documents_entity(document_ids: Optional[List[int]]) -> str:
     """Имя сущности по набору документов - для базы знаний.
@@ -264,7 +276,9 @@ def documents_entity(document_ids: Optional[List[int]]) -> str:
     joined = ",".join(str(int(d)) for d in sorted(set(document_ids)))
     return "d" + hashlib.sha1(joined.encode("utf-8")).hexdigest()[:16]
 
+
 # ─── Отпечаток ───────────────────────────────────────────────────────────────
+
 
 def fingerprint_expr(vectors_alias: str) -> str:
     """Выражение отпечатка: по нему видно, что корпус изменился.
@@ -277,11 +291,11 @@ def fingerprint_expr(vectors_alias: str) -> str:
     нет, есть только ```created_at```, а он не меняется при удалении.
     """
     alias = _safe_table(vectors_alias)
-    return (
-        f"(count(*)::text || ':' || coalesce(max({alias}.id), 0)::text)"
-    )
+    return f"(count(*)::text || ':' || coalesce(max({alias}.id), 0)::text)"
+
 
 # ─── Чтение и запись ─────────────────────────────────────────────────────────
+
 
 async def load(
     conn,
@@ -339,6 +353,7 @@ async def load(
         return None, None
     return row["fingerprint"], row["payload"]
 
+
 async def save(
     conn,
     *,
@@ -374,12 +389,14 @@ async def save(
     except Exception as e:
         logger.warning("BM25-хранилище: запись не удалась (%s)", e)
 
+
 async def delete_by_prefix(conn, prefix: str) -> int:
     """Убрать записи сущности. Зовётся при удалении агента или проекта."""
     try:
         result = await conn.execute(
             f"DELETE FROM {STORE_TABLE} WHERE cache_key LIKE $1",
-            f"{prefix}%",
+            # «_» и «%» в имени сущности — литералы, а не шаблон LIKE (BUG-RAG-08).
+            f"{escape_like(prefix)}%",
             timeout=QUERY_TIMEOUT,
         )
         # asyncpg возвращает строку вида "DELETE 3"

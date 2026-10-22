@@ -36,6 +36,37 @@ function putCachedSearch(cacheKey: string, users: DirectoryUserHit[]): void {
   searchCache.set(cacheKey, { at: Date.now(), users });
 }
 
+/** Сбросить кэш поиска (например, при выходе / смене пользователя). */
+export function clearDirectorySearchCache(): void {
+  searchCache.clear();
+}
+
+/**
+ * Идентификатор пользователя из JWT (`sub` / `user_id` / `username`) — только для скоупа кэша.
+ * Сам токен в ключ не попадает. Если id извлечь нельзя (не JWT) — вернём null и кэшировать не будем.
+ */
+function cacheScopeFromToken(token: string): string | null {
+  try {
+    const part = (token || '').split('.')[1];
+    if (!part) return null;
+    const base64 = part.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4);
+    const json =
+      typeof atob === 'function'
+        ? decodeURIComponent(
+            Array.from(atob(padded))
+              .map((c) => '%' + c.charCodeAt(0).toString(16).padStart(2, '0'))
+              .join(''),
+          )
+        : Buffer.from(padded, 'base64').toString('utf8');
+    const payload = JSON.parse(json) as Record<string, unknown>;
+    const id = payload.sub ?? payload.user_id ?? payload.username;
+    return typeof id === 'string' || typeof id === 'number' ? String(id) : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function searchDirectoryUsers(
   token: string,
   q: string,
@@ -45,8 +76,12 @@ export async function searchDirectoryUsers(
 ): Promise<DirectoryUserHit[]> {
   const query = (q || '').trim();
   if (query.length < 2) return [];
-  const cacheKey = `${query.toLowerCase()}:${limit}:share=${forShare ? 1 : 0}`;
-  const cached = getCachedSearch(cacheKey);
+  const scope = cacheScopeFromToken(token);
+  const cacheKey =
+    scope === null
+      ? null
+      : `${scope}\u0000${query.toLowerCase()}:${limit}:share=${forShare ? 1 : 0}`;
+  const cached = cacheKey ? getCachedSearch(cacheKey) : null;
   if (cached) return cached;
 
   const shareParam = forShare ? '&for_share=true' : '';
@@ -57,7 +92,7 @@ export async function searchDirectoryUsers(
   if (!resp.ok) return [];
   const data = await resp.json().catch(() => ({}));
   const users: DirectoryUserHit[] = Array.isArray(data?.users) ? data.users : [];
-  putCachedSearch(cacheKey, users);
+  if (cacheKey) putCachedSearch(cacheKey, users);
   return users;
 }
 

@@ -161,8 +161,10 @@ def _apply_rag_models_client_env(data: dict) -> dict:
     """env RAG_MODELS_CLIENT** / RAG_MODELS_SERVICE_URL перекрывают yml."""
     out = dict(data)
     rmc = dict(out.get("rag_models_client") or {})
-    env_base = _env_str("RAG_MODELS_CLIENT_BASE_URL") or _env_str("RAG_MODELS_SERVICE_URL")
-    env_key = _env_str("RAG_MODELS_CLIENT_API_KEY_ENV")
+    env_base = _env_str("RAG_MODELS_CLIENT_BASE_URL") or _env_str(
+        "RAG_MODELS_SERVICE_URL"
+    )
+    env_key = _env_str("RAG_API_KEY")
     if env_base:
         rmc["base_url"] = env_base.rstrip("/")
         print(
@@ -172,7 +174,8 @@ def _apply_rag_models_client_env(data: dict) -> dict:
     if env_key is not None:
         rmc["api_key_env"] = env_key
         print(
-            f"[CFG-DEBUG] rag_models_client.api_key_env <- env {env_key!r}",
+            # Значение секрета в stdout не печатаем (BUG-RAG-23).
+            "[CFG-DEBUG] rag_models_client.api_key_env <- env RAG_API_KEY (значение скрыто)",
             flush=True,
         )
     env_batch = _env_str("RAG_MODELS_CLIENT_EMBED_BATCH_SIZE")

@@ -268,7 +268,17 @@ class RagClient:
         key = (
             os.getenv("SVC_RAG_API_KEY") or os.getenv("RAG_API_KEY") or ""
         ).strip()
-        return {"X-API-Key": key} if key else {}
+        if not key:
+            # svc-rag fail-closed: без X-API-Key при заданном ключе на стороне
+            # сервиса получим 401 на каждом /reindex/status и upload.
+            if not getattr(RagClient, "_warned_missing_svc_rag_key", False):
+                RagClient._warned_missing_svc_rag_key = True
+                logger.warning(
+                    "SVC_RAG_API_KEY/RAG_API_KEY не задан на backend — "
+                    "запросы к svc-rag уйдут без X-API-Key (ожидайте 401)"
+                )
+            return {}
+        return {"X-API-Key": key}
 
     async def _request(
         self,

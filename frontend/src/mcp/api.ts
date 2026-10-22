@@ -1,4 +1,4 @@
-import { getApiUrl } from '../config/api';
+import { authFetch, getApiUrl } from '../config/api';
 import { McpApiError, extractServerIdFromPath, formatMcpApiError } from './errors';
 import type { McpPlatformStatus, McpServerConfigPublic, McpToolInfo, McpVerifyResult, McpCredentialsMetadata } from './types';
 
@@ -16,18 +16,13 @@ export const MCP_API = {
   ATLASSIAN_CREDENTIALS: '/api/mcp/servers/atlassian/credentials',
 } as const;
 
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem('auth_token') || localStorage.getItem('token');
-  return {
-    'Content-Type': 'application/json',
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-  };
-}
-
 async function mcpFetch<T>(endpoint: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(getApiUrl(endpoint), {
+  const response = await authFetch(getApiUrl(endpoint), {
     ...init,
-    headers: { ...authHeaders(), ...(init?.headers || {}) },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(init?.headers || {}),
+    },
   });
   if (!response.ok) {
     let detail = response.statusText;

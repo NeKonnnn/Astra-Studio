@@ -1453,20 +1453,29 @@ class LLMService:
                             enable_thinking,
                             req_extra,
                         )
-                        # После rebuild пул пуст: без ensure chat/completions даёт 500.
+                        # После rebuild пул пуст: без ensure chat/completions даёт 503.
+                        # Не «пробуем chat» при False — иначе UI видит выбранную модель и 503.
                         try:
                             loaded = await provider_ref.ensure_model_loaded(eff_model)
                             if not loaded:
                                 logger.warning(
-                                    "[generate_response] ensure_model_loaded=False provider=%r model=%r — всё равно пробуем chat",
+                                    "[generate_response] ensure_model_loaded=False provider=%r model=%r",
                                     provider_ref.id,
                                     eff_model,
+                                )
+                                return (
+                                    f"Модель «{eff_model}» не загружена в LLM-бэкенде. "
+                                    "Дождитесь загрузки весов или выберите модель в селекторе ещё раз."
                                 )
                         except Exception:
                             logger.exception(
                                 "[generate_response] ensure_model_loaded failed provider=%r model=%r",
                                 provider_ref.id,
                                 eff_model,
+                            )
+                            return (
+                                f"Не удалось загрузить модель «{eff_model}» в LLM-бэкенде. "
+                                "Повторите выбор модели в селекторе."
                             )
                         if streaming and stream_callback:
                             return await provider_ref.stream_chat(

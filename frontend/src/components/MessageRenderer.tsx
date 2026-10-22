@@ -1429,12 +1429,20 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
   // Функция для парсинга Markdown
   const parseMarkdown = (text: string) => {
     // Auto-continue часто дописывает второй ```html — склеиваем в один viewer.
-    const coalesced =
-      presentationExpected || hasGpbSlideClass(text)
-        ? coalescePresentationHtmlInMessage(text)
-        : text;
+    const shouldCoalesce = presentationExpected || hasGpbSlideClass(text);
     // Сначала вырезаем :::artifact — внутри них свои fence ```, обычный split ломается.
-    const rawSegments = splitContentWithArtifacts(coalesced, { messageId, isStreaming });
+    // BUG-FE-55: при наличии :::artifact склеиваем слайды только в текстовых сегментах вне артефактов,
+    // иначе обёртка артефакта переписывается в один html-блок и остаётся пустой и незакрытой.
+    const rawSegments = text.includes(':::artifact')
+      ? splitContentWithArtifacts(text, { messageId, isStreaming }).map((seg) =>
+          seg.kind === 'text' && shouldCoalesce
+            ? { ...seg, text: coalescePresentationHtmlInMessage(seg.text) }
+            : seg,
+        )
+      : splitContentWithArtifacts(
+          shouldCoalesce ? coalescePresentationHtmlInMessage(text) : text,
+          { messageId, isStreaming },
+        );
     // Презентация сверху, остальные артефакты (Mermaid/HTML/…) под ней.
     const segments = hoistPresentationArtifacts(rawSegments, (content) =>
       isGpbPresentationHtml(content) ||
@@ -1906,6 +1914,10 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
     const mathPh = protectMathPlaceholders(text);
     text = mathPh.text;
 
+    // BUG-FE-53: плейсхолдеры HTML-блоков __ASTRA_HTML_BLOCK_N__ не должны попадать под правила
+    // __жирный__, _курсив_ и subscript - прячем их в токен без подчёркиваний и возвращаем после.
+    text = text.replace(/__ASTRA_HTML_BLOCK_(\d+)__/g, (_m, n: string) => `%%ASTRAHTMLBLOCK${n}%%`);
+
     // Обрабатываем вложенные форматирования правильно
     // Сначала обрабатываем самые внешние теги (жирный), потом внутренние (курсив)
     // Используем жадное совпадение для внешних тегов
@@ -1950,14 +1962,14 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
       `${base}<sub>${sub}</sub>`,
     );
 
+    // Изображения — ДО ссылок (BUG-FE-56): иначе ![alt](url) превращается в «!<a>alt</a>».
+    text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_m, alt: string, src: string) =>
+      `<img src="${src}" alt="${alt}" style="max-width: 100%; height: auto;" />`,
+    );
+
     // Обрабатываем ссылки
     text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label: string, href: string) =>
       `<a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`,
-    );
-
-    // Обрабатываем изображения
-    text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_m, alt: string, src: string) =>
-      `<img src="${src}" alt="${alt}" style="max-width: 100%; height: auto;" />`,
     );
 
     // Обрабатываем инлайн код
@@ -1966,6 +1978,7 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
     // Обрабатываем цитаты
     text = text.replace(/^>\s+(.+)$/gim, (_m, body: string) => `<blockquote>${body}</blockquote>`);
 
+    text = text.replace(/%%ASTRAHTMLBLOCK(\d+)%%/g, (_m, n: string) => `__ASTRA_HTML_BLOCK_${n}__`);
     text = restoreRegions(text, mathPh.regions, mathPh.tokenPrefix);
 
     // Обрабатываем горизонтальные линии
@@ -1979,7 +1992,7 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
      let specialBlockIndex = 0;
      let orderedListCounter = 0; // Счетчик для нумерованных списков
      
-     const processedLines = lines.map((line, lineIndex) => {
+     const renderLine = (line: string, lineIndex: number): React.ReactNode => {
       const trimmedLine = line.trim();
 
       const htmlBlockMatch = trimmedLine.match(/^__ASTRA_HTML_BLOCK_(\d+)__$/);
@@ -2161,7 +2174,14 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
         listItems = [];
         listType = null;
         // Не сбрасываем счетчик - он может продолжиться после прерывания
-        return list;
+        // BUG-FE-54: строка, завершившая список, не должна пропадать - рендерим список и затем её саму.
+        if (!line.trim()) return list;
+        return (
+          <React.Fragment key={`${index}-after-list-${lineIndex}`}>
+            {list}
+            {renderLine(line, lineIndex)}
+          </React.Fragment>
+        );
       }
 
       if (line.startsWith('<blockquote>')) {
@@ -2220,7 +2240,8 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
       }
 
       return <br key={`${index}-${lineIndex}`} />;
-    });
+    };
+    const processedLines: React.ReactNode[] = lines.map((line, lineIndex) => renderLine(line, lineIndex));
 
          // Проверяем, не остался ли незавершенный список
      if (inList && listItems.length > 0) {

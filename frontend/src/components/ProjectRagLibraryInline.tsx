@@ -24,7 +24,7 @@ import {
   Refresh as RefreshIcon,
   Image as ImageIcon,
 } from '@mui/icons-material';
-import { getApiUrl, API_ENDPOINTS, getAuthFetchHeaders } from '../config/api';
+import { authFetch, getApiUrl, API_ENDPOINTS, getAuthFetchHeaders } from '../config/api';
 import {
   fetchRagEntityDefaults,
   resolveRagEmbeddingModelPath,
@@ -140,7 +140,7 @@ export default function ProjectRagLibraryInline({
     const url = getApiUrl(
       `${API_ENDPOINTS.KNOWLEDGE_BASES}/ensure-project-library?project_id=${encodeURIComponent(pid)}`,
     );
-    const resp = await fetch(url, {
+    const resp = await authFetch(url, {
       method: 'POST',
       headers: getAuthFetchHeaders(),
     });
@@ -164,7 +164,7 @@ export default function ProjectRagLibraryInline({
       rerankingEnabled: boolean;
     }> => {
       try {
-        const resp = await fetch(
+        const resp = await authFetch(
           getApiUrl(`/api/rag/settings?scope=kb&knowledge_base_id=${encodeURIComponent(String(kbId))}`),
           { headers: getAuthFetchHeaders() },
         );
@@ -208,7 +208,7 @@ export default function ProjectRagLibraryInline({
     const kbId = await ensureLibraryKbId(pid);
     if (kbId == null) return [];
     const url = getApiUrl(API_ENDPOINTS.KB_DOCUMENTS_LIST);
-    const resp = await fetch(url, { headers: getAuthFetchHeaders() });
+    const resp = await authFetch(url, { headers: getAuthFetchHeaders() });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
     const rows: unknown[] = Array.isArray(data) ? data : data.documents || [];
@@ -387,7 +387,7 @@ export default function ProjectRagLibraryInline({
         fd.append('file', file);
         fd.append('knowledge_base_id', String(kbId));
         const url = getApiUrl(API_ENDPOINTS.KB_DOCUMENTS_UPLOAD);
-        const resp = await fetch(url, { method: 'POST', headers: getAuthFetchHeaders(), body: fd });
+        const resp = await authFetch(url, { method: 'POST', headers: getAuthFetchHeaders(), body: fd });
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({ detail: resp.statusText }));
           const duplicateMsg = parseRagDuplicateUploadMessage(resp.status, err, file.name);
@@ -501,7 +501,7 @@ export default function ProjectRagLibraryInline({
     if (!effectiveId) return;
     try {
       const url = getApiUrl(`${API_ENDPOINTS.KB_DOCUMENTS_DELETE}/${doc.id}`);
-      const resp = await fetch(url, {
+      const resp = await authFetch(url, {
         method: 'DELETE',
         headers: getAuthFetchHeaders(),
       });

@@ -21,7 +21,11 @@ from app.services.chunker import (
     resolve_chunk_params,
     split_into_chunks_with_meta,
 )
-from app.services.document_parser import empty_document_index_error, parse_document
+from app.services.document_parser import (
+    empty_document_index_error,
+    parse_document,
+    parsed_file_type,
+)
 from app.services.retrieval_pipeline import RetrievalTrace, run_retrieval_pipeline
 from app.services.hierarchical_indexing import index_document_hierarchically
 from app.services.stage_timer import StageTimer
@@ -257,7 +261,7 @@ class ProjectRagService:
             }
 
         meta: Dict[str, Any] = {
-            "file_type": parsed.get("file_type", ""),
+            "file_type": parsed_file_type(parsed),
             "pages": parsed.get("pages", 0),
             "size": len(file_data),
             "source": "project",
@@ -324,6 +328,17 @@ class ProjectRagService:
             except Exception as e:
                 logger.error("project_rag иерархическая индексация не удалась: %s", e)
                 await self.doc_repo.delete_document(doc_id)
+                # Как в KB: документа не будет — сообщаем backend, чтобы он убрал
+                # исходник (BUG-RAG-08).
+                from app.services.index_failed_report import report_index_failed
+
+                await report_index_failed(
+                    minio_object=minio_object,
+                    minio_bucket=minio_bucket,
+                    filename=filename,
+                    reason=f"Иерархическая индексация: {e}",
+                    store="project",
+                )
                 timer.log(logger)
                 return {
                     "ok": False,
@@ -398,6 +413,15 @@ class ProjectRagService:
         except Exception as e:
             logger.error("Ошибка индексации project_rag: %s", e)
             await self.doc_repo.delete_document(doc_id)
+            from app.services.index_failed_report import report_index_failed
+
+            await report_index_failed(
+                minio_object=minio_object,
+                minio_bucket=minio_bucket,
+                filename=filename,
+                reason=f"Ошибка эмбеддингов: {e}",
+                store="project",
+            )
             timer.log(logger)
             return {
                 "ok": False,
@@ -931,10 +955,24 @@ class ProjectRagService:
         selected = vectors[start : start + limit]
         return [(v.content, v.document_id, v.chunk_index) for v in selected]
 
-    async def delete_document(self, document_id: int) -> Dict[str, Any]:
-        """Удаляет документ; возвращает minio-ключи для очистки бэкендом."""
+    async def delete_document(
+        self, document_id: int, project_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Удаляет документ; возвращает minio-ключи для очистки бэкендом.
+
+        `project_id` (из пути запроса) обязан совпасть с проектом документа:
+        документ чужого проекта отвечает как несуществующий (BUG-RAG-16).
+        """
         doc = await self.doc_repo.get_document(document_id)
         if not doc:
+            return {"ok": False, "error": "not_found"}
+        if project_id is not None and str(doc.get("project_id") or "") != str(project_id):
+            logger.warning(
+                "project_rag: отказ в удалении документа id=%s: проект %r не совпадает с запрошенным %r",
+                document_id,
+                doc.get("project_id"),
+                project_id,
+            )
             return {"ok": False, "error": "not_found"}
         meta = doc["metadata"] or {}
         if self.graph_repo:

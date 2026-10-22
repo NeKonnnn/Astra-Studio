@@ -235,7 +235,7 @@ async def project_rag_delete_document(
     svc: ProjectRagService = Depends(get_project_rag_service),
 ):
     """Удалить один документ из RAG-хранилища проекта."""
-    out = await svc.delete_document(document_id)
+    out = await svc.delete_document(document_id, project_id=project_id)
     if not out.get("ok"):
         raise HTTPException(status_code=404, detail="Документ не найден")
     return out

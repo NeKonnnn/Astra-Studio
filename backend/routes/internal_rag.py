@@ -2,31 +2,64 @@
 routes/internal_rag.py — внутренние прокси для SVC-RAG.
 SVC-RAG не ходит в llm-service напрямую: любые его LLM-вызовы (judge, иерархическая
 суммаризация) идут сюда, а backend выполняет их своей выбранной моделью (ask_agent).
-Авторизация — сетевая изоляция (как и весь трафик backend↔svc-rag), токен не нужен.
+Авторизация — сетевая изоляция (как и весь трафик backend↔svc-rag): снаружи
+/api/internal/ закрыт на frontend-nginx (404). Дополнительно (BUG-X-01) можно
+задать общий секрет INTERNAL_RAG_SECRET: тогда каждый запрос обязан нести его в
+заголовке X-Internal-Rag-Secret (иначе 401), и только после этого ему верим
+заголовкам X-CEF-* (инициатор). Секрет не задан — прежний режим сетевой изоляции.
 """
 
 import asyncio
 import concurrent.futures
+import hmac
 import os
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from backend.settings.logging import get_logger
 
 logger = get_logger(__name__)
 
+INTERNAL_SECRET_ENV = "INTERNAL_RAG_SECRET"
+INTERNAL_SECRET_HEADER = "X-Internal-Rag-Secret"
+
+
+def _configured_internal_secret() -> str:
+    return (os.getenv(INTERNAL_SECRET_ENV) or "").strip()
+
+
+async def _require_internal_secret(request: Request) -> None:
+    """Если INTERNAL_RAG_SECRET задан — требуем его в заголовке (401 иначе).
+
+    Выполняется раньше разбора X-CEF-*, поэтому неаутентифицированный вызывающий
+    не может ни выполнить ручку, ни подставить чужого инициатора в аудит.
+    """
+    expected = _configured_internal_secret()
+    if not expected:
+        return
+    got = (request.headers.get(INTERNAL_SECRET_HEADER) or "").strip()
+    if not got or not hmac.compare_digest(got.encode("utf-8"), expected.encode("utf-8")):
+        logger.warning(
+            "internal/rag: отказ — нет или неверный %s (%s)",
+            INTERNAL_SECRET_HEADER,
+            request.url.path,
+        )
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
 
 async def _audit_identity_from_svc_rag(request: Request):
     """Инициатор из заголовков SVC-RAG - для CEF и для X-User-ID к моделям.
 
-    Эти ручки без токена (см. модуль): пользователя backend знать неоткуда,
+    Пользователя backend знать неоткуда (вызов идёт от сервиса, а не от браузера),
     и вызов к модели ушёл бы на шлюз как служебный, хотя за ним стоит живой
     человек. SVC-RAG прокидывает логин теми же заголовками X-CEF-*,
     которыми backend прокидывает его в SVC-RAG - словарь общий.
 
-    Доверие к заголовку ровно то же, что и к самой ручке: она без
-    аутентификации и держится на сетевой изоляции, о чём написано выше.
+    Доверие к заголовку ровно то же, что и к самой ручке: при заданном
+    INTERNAL_RAG_SECRET сюда попадают только аутентифицированные вызовы
+    (_require_internal_secret выполняется раньше); без секрета ручка держится на
+    сетевой изоляции (/api/internal/ закрыт на nginx), о чём написано выше.
 
     Заголовков нет - ничего не трогаем, поведение прежнее.
     """
@@ -54,7 +87,11 @@ async def _audit_identity_from_svc_rag(request: Request):
 
 router = APIRouter(
     tags=["internal-rag"],
-    dependencies=[Depends(_audit_identity_from_svc_rag)],
+    # Порядок важен: сначала секрет, потом доверие к X-CEF-*.
+    dependencies=[
+        Depends(_require_internal_secret),
+        Depends(_audit_identity_from_svc_rag),
+    ],
 )
 
 
@@ -74,7 +111,6 @@ class InternalRagIndexFailedRequest(BaseModel):
     filename: str = ""
     reason: str = ""
     store: str = "kb"
-
 
 @router.post("/api/internal/rag/index-failed")
 async def internal_rag_index_failed(body: InternalRagIndexFailedRequest):

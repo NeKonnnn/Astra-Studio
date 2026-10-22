@@ -8,6 +8,7 @@ from app.database.connection import PostgreSQLConnection
 from app.database.fts import (
     build_fts_or_query,
     ensure_fts_columns,
+    escape_like,
     fts_where_and_rank,
     query_has_searchable_content,
     substring_where_and_rank,
@@ -18,6 +19,7 @@ from app.database.search_filters import DocumentVectorSearchFilters
 
 logger = logging.getLogger(__name__)
 
+
 class ProjectRagDocumentRepository:
     def __init__(self, db: PostgreSQLConnection):
         self.db = db
@@ -25,8 +27,7 @@ class ProjectRagDocumentRepository:
     async def create_tables(self):
         async with await self.db.acquire() as conn:
             await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            await conn.execute(
-                """
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS project_rag_documents (
                     id SERIAL PRIMARY KEY,
                     project_id VARCHAR(128) NOT NULL,
@@ -36,8 +37,7 @@ class ProjectRagDocumentRepository:
                     created_at TIMESTAMP DEFAULT NOW(),
                     updated_at TIMESTAMP DEFAULT NOW()
                 )
-            """
-            )
+            """)
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_proj_rag_docs_project_id ON project_rag_documents(project_id)"
             )
@@ -57,22 +57,42 @@ class ProjectRagDocumentRepository:
         pid = strip_null_bytes(project_id)
         fn = strip_null_bytes(document.filename)
         body = strip_null_bytes(document.content)
-        async with await self.db.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                INSERT INTO project_rag_documents
-                    (project_id, filename, content, metadata, created_at, updated_at)
-                VALUES ($1, $2, $3, $4::jsonb, $5, $6)
-                RETURNING id
-                """,
-                pid,
-                fn,
-                body,
-                meta,
-                document.created_at,
-                document.updated_at,
+        try:
+            async with await self.db.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO project_rag_documents
+                        (project_id, filename, content, metadata, created_at, updated_at)
+                    VALUES ($1, $2, $3, $4::jsonb, $5, $6)
+                    RETURNING id
+                    """,
+                    pid,
+                    fn,
+                    body,
+                    meta,
+                    document.created_at,
+                    document.updated_at,
+                )
+            doc_id = row["id"] if row else None
+            if doc_id is not None:
+                from app.core.cef_logger.storage_audit import log_postgres_success
+
+                log_postgres_success(
+                    "PostgreSQL.insert(project_rag_documents)",
+                    db=self.db,
+                    request_uuid=str(doc_id),
+                )
+            return doc_id
+        except Exception as e:
+            from app.core.cef_logger.storage_audit import log_postgres_failure
+
+            log_postgres_failure(
+                "PostgreSQL.insert(project_rag_documents)",
+                str(e),
+                db=self.db,
+                request_uuid=fn,
             )
-        return row["id"] if row else None
+            raise
 
     async def find_duplicate(
         self,
@@ -137,14 +157,14 @@ class ProjectRagDocumentRepository:
         return [r["project_id"] for r in rows if r["project_id"]]
 
     async def get_documents_by_owner(self, owner_user_id: str) -> List[dict]:
-        """Документы, у которых metadata.owner_user_id совпадает с пользователем."""
+        """Документы владельца - без текста."""
         oid = (owner_user_id or "").strip().lower()
         if not oid:
             return []
         async with await self.db.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT id, project_id, filename, content, metadata, created_at, updated_at
+                SELECT id, project_id, filename, metadata, created_at, updated_at
                 FROM project_rag_documents
                 WHERE LOWER(TRIM(COALESCE(metadata->>'owner_user_id', ''))) = $1
                 ORDER BY created_at DESC
@@ -174,7 +194,7 @@ class ProjectRagDocumentRepository:
         needle = (name_or_stem or "").strip()
         if not needle:
             return []
-        like = f"%{needle}%"
+        like = f"%{escape_like(needle)}%"
         sql = "SELECT id FROM project_rag_documents WHERE filename ILIKE $1"
         params: List[Any] = [like]
         if project_id is not None:
@@ -190,24 +210,60 @@ class ProjectRagDocumentRepository:
         return [int(r["id"]) for r in rows]
 
     async def delete_document(self, document_id: int) -> bool:
-        # Векторы удаляются через FK ON DELETE CASCADE (embedding_schema).
-        async with await self.db.acquire() as conn:
-            await conn.execute(
-                "DELETE FROM project_rag_documents WHERE id = $1", document_id
+        try:
+            async with await self.db.acquire() as conn:
+                await conn.execute(
+                    "DELETE FROM project_rag_documents WHERE id = $1", document_id
+                )
+            from app.core.cef_logger.storage_audit import log_postgres_success
+
+            log_postgres_success(
+                "PostgreSQL.delete(project_rag_documents)",
+                db=self.db,
+                request_uuid=str(document_id),
             )
-        return True
+            return True
+        except Exception as e:
+            from app.core.cef_logger.storage_audit import log_postgres_failure
+
+            log_postgres_failure(
+                "PostgreSQL.delete(project_rag_documents)",
+                str(e),
+                db=self.db,
+                request_uuid=str(document_id),
+            )
+            raise
 
     async def delete_documents_by_project(self, project_id: str) -> int:
         """Удаляет все документы проекта. Возвращает количество удалённых."""
-        async with await self.db.acquire() as conn:
-            result = await conn.execute(
-                "DELETE FROM project_rag_documents WHERE project_id = $1", project_id
-            )
-        # asyncpg возвращает "DELETE N"
         try:
-            return int(result.split()[-1])
-        except Exception:
-            return 0
+            async with await self.db.acquire() as conn:
+                result = await conn.execute(
+                    "DELETE FROM project_rag_documents WHERE project_id = $1",
+                    project_id,
+                )
+            from app.core.cef_logger.storage_audit import log_postgres_success
+
+            log_postgres_success(
+                "PostgreSQL.delete(project_rag_documents by project)",
+                db=self.db,
+                request_uuid=str(project_id),
+            )
+            # asyncpg возвращает "DELETE N"
+            try:
+                return int(result.split()[-1])
+            except Exception:
+                return 0
+        except Exception as e:
+            from app.core.cef_logger.storage_audit import log_postgres_failure
+
+            log_postgres_failure(
+                "PostgreSQL.delete(project_rag_documents by project)",
+                str(e),
+                db=self.db,
+                request_uuid=str(project_id),
+            )
+            raise
 
     async def list_documents_brief(self, project_id: str) -> List[dict]:
         """Документы проекта без их текста - для списка в интерфейсе"""
@@ -239,6 +295,7 @@ class ProjectRagDocumentRepository:
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
+
 
 class ProjectRagVectorRepository:
     def __init__(self, db: PostgreSQLConnection, embedding_dim: int = 384):
@@ -293,18 +350,52 @@ class ProjectRagVectorRepository:
                 f"(${base+1}, ${base+2}, ${base+3}::{cast}, ${base+4}, ${base+5}::jsonb)"
             )
             flat.extend([doc_id, idx, emb, content, meta])
-        async with await self.db.acquire() as conn:
-            table = await self._table(conn)
-            await conn.execute(
-                f"""
-                INSERT INTO {table}
-                    (document_id, chunk_index, embedding, content, metadata)
-                VALUES {", ".join(placeholders)}
-                ON CONFLICT (document_id, chunk_index) DO NOTHING
-                """,
-                *flat,
+        doc_id0 = vectors[0].document_id
+        try:
+            async with await self.db.acquire() as conn:
+                table = await self._table(conn)
+                await conn.execute(
+                    f"""
+                    INSERT INTO {table}
+                        (document_id, chunk_index, embedding, content, metadata)
+                    VALUES {", ".join(placeholders)}
+                    ON CONFLICT (document_id, chunk_index) DO NOTHING
+                    """,
+                    *flat,
+                )
+            from app.core.cef_logger.storage_audit import log_postgres_success
+
+            from app.clients.openai_models_compat_client import get_embed_log_context
+
+            ctx = get_embed_log_context() or {}
+            op = ctx.get("operation")
+            filename = ctx.get("filename")
+            op_part = f" op={op}" if op else ""
+            file_part = f" file={str(filename)[:120]}" if filename else ""
+
+            log_postgres_success(
+                f"PostgreSQL.insert(project_rag_vectors) document_id={doc_id0} n={len(vectors)}{op_part}{file_part}",
+                db=self.db,
+                request_uuid=str(doc_id0),
             )
-        return len(vectors)
+            return len(vectors)
+        except Exception as e:
+            from app.core.cef_logger.storage_audit import log_postgres_failure
+            from app.clients.openai_models_compat_client import get_embed_log_context
+
+            ctx = get_embed_log_context() or {}
+            op = ctx.get("operation")
+            filename = ctx.get("filename")
+            op_part = f" op={op}" if op else ""
+            file_part = f" file={str(filename)[:120]}" if filename else ""
+
+            log_postgres_failure(
+                f"PostgreSQL.insert(project_rag_vectors) document_id={doc_id0} n={len(vectors)}{op_part}{file_part}",
+                str(e),
+                db=self.db,
+                request_uuid=str(doc_id0),
+            )
+            raise
 
     async def similarity_search(
         self,
@@ -342,7 +433,7 @@ class ProjectRagVectorRepository:
             fn = (filters.filename_contains or "").strip()
             if fn:
                 clauses.append(f"d.filename ILIKE ${pi}")
-                params.append(f"%{fn}%")
+                params.append(f"%{escape_like(fn)}%")
                 pi += 1
         where_sql = " AND ".join(clauses) if clauses else "TRUE"
         params.append(limit)
@@ -354,7 +445,7 @@ class ProjectRagVectorRepository:
             await apply_ann_search_settings(conn)
             from_sql = f"{table} v {join_sql}".strip()
             q = f"""
-                SELECT v.id, v.document_id, v.chunk_index, v.embedding::text, v.content,
+                SELECT v.id, v.document_id, v.chunk_index, v.content,
                        v.metadata,
                        1 - (v.embedding <=> $1::{cast}) as similarity 
                 FROM {from_sql}
@@ -421,7 +512,7 @@ class ProjectRagVectorRepository:
             fn = (filters.filename_contains or "").strip()
             if fn:
                 clauses.append(f"d.filename ILIKE ${pi}")
-                params.append(f"%{fn}%")
+                params.append(f"%{escape_like(fn)}%")
                 pi += 1
 
         where_sql = " AND ".join(clauses)
@@ -430,7 +521,7 @@ class ProjectRagVectorRepository:
             table = await self._table(conn)
             from_sql = f"{table} v {join_sql}".strip()
             q = f"""
-                SELECT v.id, v.document_id, v.chunk_index, v.embedding::text, v.content,
+                SELECT v.id, v.document_id, v.chunk_index, v.content,
                        v.metadata,
                        {rank_fts} AS lexical_score
                 FROM {from_sql}
@@ -441,7 +532,7 @@ class ProjectRagVectorRepository:
             rows = await conn.fetch(q, *params)
         out: List[Tuple[DocumentVector, float]] = []
         for row in rows:
-            emb = [float(x.strip()) for x in row["embedding"].strip("[]").split(",")]
+            emb = None  # вектор из БД не тянем, см. DocumentVector.embedding
             meta = row["metadata"]
             if isinstance(meta, str):
                 meta = json.loads(meta) if meta else {}
@@ -502,7 +593,7 @@ class ProjectRagVectorRepository:
             table = await self._table(conn)
             from_sql = f"{table} v {join_sql}".strip()
             q = f"""
-                SELECT v.id, v.document_id, v.chunk_index, v.embedding::text, v.content,
+                SELECT v.id, v.document_id, v.chunk_index, v.content,
                        v.metadata,
                        {rank_sub} AS lexical_score
                 FROM {from_sql}
@@ -513,7 +604,7 @@ class ProjectRagVectorRepository:
             rows = await conn.fetch(q, *params)
         out: List[Tuple[DocumentVector, float]] = []
         for row in rows:
-            emb = [float(x.strip()) for x in row["embedding"].strip("[]").split(",")]
+            emb = None  # вектор из БД не тянем, см. DocumentVector.embedding
             meta = row["metadata"]
             if isinstance(meta, str):
                 meta = json.loads(meta) if meta else {}
@@ -533,7 +624,7 @@ class ProjectRagVectorRepository:
         return out
 
     def _row_to_dv(self, row) -> Tuple[DocumentVector, float]:
-        emb = [float(x.strip()) for x in row["embedding"].strip("[]").split(",")]
+        emb = None  # вектор из БД не тянем, см. DocumentVector.embedding
         meta = row["metadata"]
         if isinstance(meta, str):
             meta = json.loads(meta) if meta else {}
@@ -572,6 +663,115 @@ class ProjectRagVectorRepository:
                     out = {int(r["chunk_index"]): r["content"] or "" for r in rows}
                     break
         return out
+
+    async def get_vectors_by_document(self, document_id: int) -> List[DocumentVector]:
+        """Все чанки документа по chunk_index. Нужен для parent-document expansion."""
+        rows = []
+        async with await self.db.acquire() as conn:
+            for t in await self._all_tables(conn):
+                rows = await conn.fetch(
+                    "SELECT id, document_id, chunk_index, content, "
+                    f"metadata FROM {t} WHERE document_id = $1 ORDER BY chunk_index",
+                    document_id,
+                )
+                if rows:
+                    break
+        out: List[DocumentVector] = []
+        for row in rows:
+            emb = None  # вектор из БД не тянем, см. DocumentVector.embedding
+            meta = row["metadata"]
+            if isinstance(meta, str):
+                meta = json.loads(meta) if meta else {}
+            out.append(
+                DocumentVector(
+                    id=row["id"],
+                    document_id=row["document_id"],
+                    chunk_index=row["chunk_index"],
+                    embedding=emb,
+                    content=row["content"],
+                    metadata=meta or {},
+                )
+            )
+        return out
+
+    async def delete_vectors_by_document(self, document_id: int) -> bool:
+        """Чистит вектора документа во ВСЕХ таблицах (см. пояснение в kb_repository)."""
+        try:
+            n_deleted = 0
+            async with await self.db.acquire() as conn:
+                # Все таблицы размерностей — одной транзакцией: либо вектора удалены везде,
+                # либо нигде (BUG-RAG-32).
+                async with conn.transaction():
+                    for t in await self._all_tables(conn):
+                        row = await conn.fetchrow(
+                            f"SELECT COUNT(*) AS c FROM {t} WHERE document_id = $1",
+                            document_id,
+                        )
+                        n_deleted += int(
+                            row["c"] if row and row.get("c") is not None else 0
+                        )
+                        await conn.execute(
+                            f"DELETE FROM {t} WHERE document_id = $1",
+                            document_id,
+                        )
+
+            from app.core.cef_logger.storage_audit import log_postgres_success
+
+            from app.clients.openai_models_compat_client import get_embed_log_context
+
+            ctx = get_embed_log_context() or {}
+            op = ctx.get("operation")
+            filename = ctx.get("filename")
+            op_part = f" op={op}" if op else ""
+            file_part = f" file={str(filename)[:120]}" if filename else ""
+
+            log_postgres_success(
+                f"PostgreSQL.delete(project_rag_vectors) document_id={document_id} n_deleted={n_deleted}{op_part}{file_part}",
+                db=self.db,
+                request_uuid=str(document_id),
+            )
+            return True
+        except Exception as e:
+            from app.core.cef_logger.storage_audit import log_postgres_failure
+            from app.clients.openai_models_compat_client import get_embed_log_context
+
+            ctx = get_embed_log_context() or {}
+            op = ctx.get("operation")
+            filename = ctx.get("filename")
+            op_part = f" op={op}" if op else ""
+            file_part = f" file={str(filename)[:120]}" if filename else ""
+
+            log_postgres_failure(
+                f"PostgreSQL.delete(project_rag_vectors) document_id={document_id}{op_part}{file_part}",
+                str(e),
+                db=self.db,
+                request_uuid=str(document_id),
+            )
+            raise
+
+    async def get_all_document_ids(self, project_id: Optional[str] = None) -> List[int]:
+        """Уникальные document_id в project RAG."""
+        async with await self.db.acquire() as conn:
+            tables = await self._all_tables(conn)
+            if not tables:
+                return []
+            if project_id is not None:
+                union = " UNION ".join(
+                    f"SELECT v.document_id FROM {t} v "
+                    "JOIN project_rag_documents d ON d.id = v.document_id "
+                    "WHERE d.project_id = $1"
+                    for t in tables
+                )
+                rows = await conn.fetch(
+                    f"SELECT DISTINCT document_id FROM ({union}) u ORDER BY document_id",
+                    project_id,
+                )
+            else:
+                union = " UNION ".join(f"SELECT document_id FROM {t}" for t in tables)
+                rows = await conn.fetch(
+                    f"SELECT DISTINCT document_id FROM ({union}) u ORDER BY document_id"
+                )
+        return [r["document_id"] for r in rows]
 
     async def bm25_store_load(self, cache_key: str, project_id: Optional[str] = None):
         """Отпечаток корпуса проекта и готовый индекс, если он свежий.
@@ -620,71 +820,6 @@ class ProjectRagVectorRepository:
         async with await self.db.acquire() as conn:
             return await bm25_store.delete_by_prefix(conn, f"project:{project_id}:")
 
-    async def get_vectors_by_document(self, document_id: int) -> List[DocumentVector]:
-        """Все чанки документа по chunk_index. Нужен для parent-document expansion."""
-        rows = []
-        async with await self.db.acquire() as conn:
-            for t in await self._all_tables(conn):
-                rows = await conn.fetch(
-                    "SELECT id, document_id, chunk_index, embedding::text, content, "
-                    f"metadata FROM {t} WHERE document_id = $1 ORDER BY chunk_index",
-                    document_id,
-                )
-                if rows:
-                    break
-        out: List[DocumentVector] = []
-        for row in rows:
-            emb = [float(x.strip()) for x in row["embedding"].strip("[]").split(",")]
-            meta = row["metadata"]
-            if isinstance(meta, str):
-                meta = json.loads(meta) if meta else {}
-            out.append(
-                DocumentVector(
-                    id=row["id"],
-                    document_id=row["document_id"],
-                    chunk_index=row["chunk_index"],
-                    embedding=emb,
-                    content=row["content"],
-                    metadata=meta or {},
-                )
-            )
-        return out
-
-    async def delete_vectors_by_document(self, document_id: int) -> bool:
-        """Чистит вектора документа во ВСЕХ таблицах (см. пояснение в kb_repository)."""
-        async with await self.db.acquire() as conn:
-            for t in await self._all_tables(conn):
-                await conn.execute(
-                    f"DELETE FROM {t} WHERE document_id = $1", document_id
-                )
-        return True
-
-    async def get_all_document_ids(self, project_id: Optional[str] = None) -> List[int]:
-        """Уникальные document_id в project RAG."""
-        async with await self.db.acquire() as conn:
-            tables = await self._all_tables(conn)
-            if not tables:
-                return []
-            if project_id is not None:
-                union = " UNION ".join(
-                    f"SELECT v.document_id FROM {t} v "
-                    "JOIN project_rag_documents d ON d.id = v.document_id "
-                    "WHERE d.project_id = $1"
-                    for t in tables
-                )
-                rows = await conn.fetch(
-                    f"SELECT DISTINCT document_id FROM ({union}) u ORDER BY document_id",
-                    project_id,
-                )
-            else:
-                union = " UNION ".join(
-                    f"SELECT document_id FROM {t}" for t in tables
-                )
-                rows = await conn.fetch(
-                    f"SELECT DISTINCT document_id FROM ({union}) u ORDER BY document_id"
-                )
-        return [r["document_id"] for r in rows]
-
     async def get_all_contents_for_bm25(
         self, project_id: Optional[str] = None
     ) -> List[Tuple[int, int, str]]:
@@ -717,7 +852,7 @@ class ProjectRagVectorRepository:
         async with await self.db.acquire() as conn:
             for t in await self._all_tables(conn):
                 row = await conn.fetchrow(
-                    "SELECT id, document_id, chunk_index, embedding::text, content, "
+                    "SELECT id, document_id, chunk_index, content, "
                     f"metadata FROM {t} WHERE document_id = $1 AND chunk_index = $2",
                     document_id,
                     chunk_index,
@@ -726,7 +861,7 @@ class ProjectRagVectorRepository:
                     break
         if not row:
             return None
-        emb = [float(x.strip()) for x in row["embedding"].strip("[]").split(",")]
+        emb = None  # вектор из БД не тянем, см. DocumentVector.embedding
         meta = row["metadata"]
         if isinstance(meta, str):
             meta = json.loads(meta) if meta else {}

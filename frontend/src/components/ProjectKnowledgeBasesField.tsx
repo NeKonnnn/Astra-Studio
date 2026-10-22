@@ -21,7 +21,7 @@ import {
   ExpandMore as ExpandMoreIcon,
 } from '@mui/icons-material';
 import { useAuth } from '../contexts/AuthContext';
-import { getApiUrl, API_ENDPOINTS } from '../config/api';
+import { authFetch, getApiUrl, API_ENDPOINTS } from '../config/api';
 import {
   getDropdownChevronSx,
   getDropdownItemStateSx,
@@ -66,7 +66,8 @@ export default function ProjectKnowledgeBasesField({
     void (async () => {
       try {
         const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
-        const resp = await fetch(
+        // authFetch: credentials + cookie binding (plain fetch → 401 «токен не привязан»)
+        const resp = await authFetch(
           `${getApiUrl(API_ENDPOINTS.KNOWLEDGE_BASES)}/list?limit=100`,
           { headers },
         );

@@ -307,15 +307,22 @@ class TestReportIndexFailed:
             minio_object="o", minio_bucket="b", filename="a", reason="r"
         )
 
-    async def test_request_sends_no_credentials_known_issue(self):
-        """Известная особенность: уведомление уходит без какого-либо секрета —
-        внутренний эндпоинт backend держится только на сетевой изоляции."""
+    async def test_request_sends_shared_secret_when_configured(self, monkeypatch):
+        """BUG-RAG-07: при заданном INTERNAL_RAG_SECRET уведомление несёт его в заголовке."""
+        monkeypatch.setenv("INTERNAL_RAG_SECRET", "s3cret")
         route = ROUTER.post(self.URL).respond(200)
         await ifr.report_index_failed(
             minio_object="o", minio_bucket="b", filename="a", reason="r"
         )
-        headers = {k.lower() for k in route.calls.last.request.headers}
-        assert "authorization" not in headers and "x-api-key" not in headers
+        assert route.calls.last.request.headers["x-internal-rag-secret"] == "s3cret"
+
+    async def test_request_has_no_secret_header_when_not_configured(self, monkeypatch):
+        monkeypatch.delenv("INTERNAL_RAG_SECRET", raising=False)
+        route = ROUTER.post(self.URL).respond(200)
+        await ifr.report_index_failed(
+            minio_object="o", minio_bucket="b", filename="a", reason="r"
+        )
+        assert "x-internal-rag-secret" not in {k.lower() for k in route.calls.last.request.headers}
 
     @pytest.mark.parametrize("raw,expected", [("30", 30.0), ("1", 3.0), ("junk", 15.0)])
     def test_timeout_has_floor_and_fallback(self, monkeypatch, raw, expected):

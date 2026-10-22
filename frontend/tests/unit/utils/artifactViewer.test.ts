@@ -41,6 +41,45 @@ describe('artifactViewer mermaid security level', () => {
   });
 });
 
+describe('artifactViewer SVG sanitization (BUG-FE-04)', () => {
+  it('strips scripts, on* handlers and javascript: links from SVG artifacts', async () => {
+    const html = await buildArtifactViewerDocument({
+      type: 'image/svg+xml',
+      content:
+        '<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><script>alert(2)</script>' +
+        '<a href="javascript:alert(3)"><circle r="5" onclick="x()"/></a><rect width="1" height="1"/></svg>',
+      title: 'Svg',
+    });
+
+    expect(html).not.toMatch(/<script/i);
+    expect(html).not.toMatch(/\bon(load|click)\s*=/i);
+    expect(html).not.toMatch(/javascript:/i);
+    expect(html).toContain('<rect');
+    expect(html).toContain('<circle');
+  });
+
+  it('sanitizes SVG returned by mermaid as well', async () => {
+    mockRender.mockResolvedValue({ svg: '<svg><image href="x" onerror="alert(1)"/></svg>' });
+    const html = await buildArtifactViewerDocument({
+      type: 'application/vnd.mermaid',
+      content: 'graph TD; A-->B;',
+      title: 'Diagram',
+    });
+    expect(html).not.toMatch(/onerror/i);
+  });
+
+  it('keeps foreignObject labels (needed by mermaid)', async () => {
+    mockRender.mockResolvedValue({
+      svg: '<svg><foreignObject><div>Label</div></foreignObject></svg>',
+    });
+    const html = await buildArtifactViewerDocument({
+      type: 'application/vnd.mermaid',
+      content: 'graph TD; A-->B;',
+    });
+    expect(html).toContain('Label');
+  });
+});
+
 describe('openArtifactViewer window.open features', () => {
   const originalOpen = window.open;
 

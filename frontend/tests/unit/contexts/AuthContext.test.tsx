@@ -44,23 +44,46 @@ describe('isMissingRoleLoginError', () => {
     expect(isMissingRoleLoginError('unforbiddenly')).toBe(false);
   });
 
-  it('matches the standalone word "роль" in various forms', () => {
-    expect(isMissingRoleLoginError('У пользователя нет роль')).toBe(true);
-    expect(isMissingRoleLoginError('Нет роль.')).toBe(true);
-    expect(isMissingRoleLoginError('Роль')).toBe(true);
-    expect(isMissingRoleLoginError('(роль) отсутствует')).toBe(true);
+  it('does NOT match generic standalone words role/forbidden in wrong-password text (BUG-FE-06)', () => {
+    expect(isMissingRoleLoginError('Неверный пароль, роль')).toBe(false);
+    expect(isMissingRoleLoginError('Роль')).toBe(false);
+    expect(isMissingRoleLoginError('Invalid password for user role_admin')).toBe(false);
+    expect(isMissingRoleLoginError('Wrong password. role: forbidden')).toBe(false);
+    expect(isMissingRoleLoginError('Неверное имя пользователя или пароль', 'forbidden role')).toBe(false);
+    // «forbidden» без HTTP 403 — не признак отсутствия роли
+    expect(isMissingRoleLoginError('403 Forbidden')).toBe(false);
+    expect(isMissingRoleLoginError({ message: 'forbidden' })).toBe(false);
   });
 
-  it('matches english markers as whole words', () => {
+  it('matches the phrase about a missing role in various forms', () => {
+    expect(isMissingRoleLoginError('У пользователя нет роль')).toBe(true);
+    expect(isMissingRoleLoginError('Нет роль.')).toBe(true);
+    expect(isMissingRoleLoginError('Отсутствует необходимая роль')).toBe(true);
+    expect(
+      isMissingRoleLoginError(
+        'У вас нет необходимой роли для взаимодействия с AstraChat. Обратитесь к администратору проекта',
+      ),
+    ).toBe(true);
+  });
+
+  it('matches english phrases as whole words', () => {
     expect(isMissingRoleLoginError('User has no role')).toBe(true);
     expect(isMissingRoleLoginError('Missing roles: astra_user')).toBe(true);
     expect(isMissingRoleLoginError('Insufficient permissions')).toBe(true);
-    expect(isMissingRoleLoginError('403 Forbidden')).toBe(true);
   });
 
-  it('matches error codes with underscores / dashes', () => {
+  it('treats a standalone "forbidden" as a role error only with HTTP 403', () => {
+    expect(isMissingRoleLoginError('403 Forbidden', undefined, 403)).toBe(true);
+    expect(isMissingRoleLoginError({ message: 'forbidden' }, undefined, 403)).toBe(true);
+    expect(isMissingRoleLoginError('Forbidden', undefined, 401)).toBe(false);
+  });
+
+  it('prefers the backend error code when available', () => {
     expect(isMissingRoleLoginError({ code: 'missing_role' })).toBe(true);
     expect(isMissingRoleLoginError({ code: 'insufficient-role' })).toBe(true);
+    expect(isMissingRoleLoginError({ error_code: 'ROLE_REQUIRED' })).toBe(true);
+    expect(isMissingRoleLoginError('missing_role')).toBe(true);
+    expect(isMissingRoleLoginError({ code: 'invalid_credentials', message: 'Неверный пароль' })).toBe(false);
   });
 
   it('matches the "доступ запрещен/запрещён" phrase', () => {
@@ -71,9 +94,9 @@ describe('isMissingRoleLoginError', () => {
 
   it('checks parsed message and detail object fields', () => {
     expect(isMissingRoleLoginError(undefined, 'Нет нужной роль')).toBe(true);
-    expect(isMissingRoleLoginError({ message: 'forbidden' })).toBe(true);
+    expect(isMissingRoleLoginError({ message: 'no role assigned' })).toBe(true);
     expect(isMissingRoleLoginError({ detail: 'no role' })).toBe(true);
-    expect(isMissingRoleLoginError({ error: 'Insufficient scope' })).toBe(true);
+    expect(isMissingRoleLoginError({ error: 'Insufficient permissions' })).toBe(true);
   });
 
   it('returns false for unrelated / non-string input', () => {
