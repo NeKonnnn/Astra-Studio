@@ -9,6 +9,8 @@ export const ASTRA_OPEN_AGENT_CONSTRUCTOR = 'astrachat:open-agent-constructor';
 export const ASTRA_OPEN_TRANSCRIPTION_SIDEBAR = 'astrachat:open-transcription-sidebar';
 export const ASTRA_OPEN_SKILLS_SIDEBAR = 'astrachat:open-skills-sidebar';
 export const ASTRA_OPEN_KNOWLEDGE_BASES_SIDEBAR = 'astrachat:open-knowledge-bases-sidebar';
+/** Закрыть popover «Инструменты» в чате (после перехода в настройки сущности). */
+export const ASTRA_CLOSE_CHAT_GEAR = 'astrachat:close-chat-gear';
 
 /** sessionStorage: id агента, которого нужно открыть в конструкторе после перехода в чат */
 export const ASTRA_OPEN_AGENT_CONSTRUCTOR_ID_KEY = 'astrachat_open_agent_constructor_id';

@@ -36,11 +36,14 @@ import { readAgentPresentationSkills } from '../utils/agentArtifactsEnabled';
 import { getApiUrl } from '../config/api';
 import { readSelectedImageGenPresetId } from '../utils/imageGenerationPresets';
 import { isImageGenerationModeEnabled, isVideoGenerationModeEnabled } from '../imageGeneration/selectionStorage';
+import {
+  generationCompleteToastTitle,
+  previewGenerationReply,
+  shouldShowGenerationCompleteToast,
+} from '../utils/generationCompleteToast';
 
-/** Нет чанков после начала стрима — часто finish_reason=length без chat_complete. */
-const STREAM_STALL_AFTER_CHUNK_MS = 120_000;
-/** Нет вообще никакой активности (RAG/ожидание первого токена) — дольше. */
-const STREAM_STALL_BEFORE_CHUNK_MS = 360_000;
+import { resolveStreamStallLimitMs } from '../utils/streamStall';
+
 const STREAM_STALL_CHECK_MS = 5_000;
 
 function dispatchMcpToolActivity(record: McpToolCallRecord, phase: 'start' | 'end') {
@@ -175,7 +178,34 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   const [isConnecting, setIsConnecting] = useState(false);
 
   const { state: appState } = useAppContext();
-  const { addMessage, updateMessage, patchMessageFields, setChatLoading, showNotification, getCurrentChat, getChatById, getProjectById } = useAppActions();
+  const {
+    addMessage,
+    updateMessage,
+    patchMessageFields,
+    setChatLoading,
+    showNotification,
+    showGenerationCompleteToast,
+    updateChatTitle,
+    getCurrentChat,
+    getChatById,
+    getProjectById,
+  } = useAppActions();
+  const viewingChatIdRef = useRef<string | null>(appState.currentChatId);
+  viewingChatIdRef.current = appState.currentChatId;
+
+  const maybeNotifyGenerationComplete = (
+    chatId: string,
+    rawReply: string,
+    titleOverride?: string | null,
+  ) => {
+    if (!shouldShowGenerationCompleteToast(chatId, viewingChatIdRef.current)) return;
+    const chat = getChatById(chatId);
+    showGenerationCompleteToast({
+      chatId,
+      title: generationCompleteToastTitle(titleOverride || chat?.title),
+      preview: previewGenerationReply(rawReply),
+    });
+  };
   /** Настройка «Потоковая генерация» из model_settings; явный аргумент перекрывает. */
   const resolveStreaming = (streaming?: boolean): boolean =>
     streaming !== undefined ? Boolean(streaming) : appState.modelSettings.streaming !== false;
@@ -246,6 +276,8 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     lastActivityAtMs: number;
     /** true после первого chunk/thinking — короткий idle-таймаут */
     receivedStreamData: boolean;
+    /** Генерация картинки/видео (Comfy) — длинный stall без текстовых чанков */
+    mediaGeneration: boolean;
     regeneration: {
       isRegenerating: boolean;
       assistantMessageId: string;
@@ -281,7 +313,8 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     if (!requestId) return;
     const session = streamSessionsRef.current.get(requestId);
     if (!session) return;
-    session.chatId = currentChatIdRef.current || session.chatId;
+    // chatId задаётся при createStreamSession и не перезаписывается UI-навигацией —
+    // иначе параллельный стрим «переезжает» в другой чат.
     session.messageId = currentMessageRef.current;
     session.multiLLMMessageId = multiLLMMessageRef.current;
     session.thinking = thinkingTraceRef.current;
@@ -314,6 +347,21 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const activateAnotherLiveSession = (exceptRequestId?: string | null) => {
+    let next: StreamSession | null = null;
+    for (const session of Array.from(streamSessionsRef.current.values())) {
+      if (session.isStopped) continue;
+      if (exceptRequestId && session.requestId === exceptRequestId) continue;
+      next = session;
+      break;
+    }
+    if (next) {
+      activateSession(next);
+    } else {
+      activeRequestIdRef.current = null;
+    }
+  };
+
   const createStreamSession = (
     requestId: string,
     chatId: string,
@@ -334,10 +382,23 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       mcpToolCalls: partial?.mcpToolCalls ?? [],
       lastActivityAtMs: partial?.lastActivityAtMs ?? Date.now(),
       receivedStreamData: partial?.receivedStreamData ?? false,
+      mediaGeneration: partial?.mediaGeneration ?? false,
       regeneration: partial?.regeneration ?? null,
     };
     streamSessionsRef.current.set(requestId, session);
     return session;
+  };
+
+  const beginNewStreamSession = (
+    requestId: string,
+    chatId: string,
+    partial?: Partial<Omit<StreamSession, 'requestId' | 'chatId'>>,
+  ): StreamSession => {
+    const prevRid = activeRequestIdRef.current;
+    if (prevRid && prevRid !== requestId) {
+      persistActiveSession(prevRid);
+    }
+    return createStreamSession(requestId, chatId, partial);
   };
 
   const endStreamSession = (requestId: string | null | undefined) => {
@@ -866,8 +927,14 @@ export function SocketProvider({ children }: { children: ReactNode }) {
 
       case 'thinking':
         {
-          touchStreamActivity(routedSession?.requestId || activeRequestIdRef.current, { streamData: true });
           const mediaKind = isMediaGenThinkingPayload(data);
+          const thinkRid = routedSession?.requestId || activeRequestIdRef.current;
+          if (mediaKind && thinkRid) {
+            const mediaSession = streamSessionsRef.current.get(thinkRid);
+            if (mediaSession) mediaSession.mediaGeneration = true;
+          }
+          // Для Comfy не ставим receivedStreamData — иначе сработает короткий 2‑мин stall.
+          touchStreamActivity(thinkRid, { streamData: !mediaKind });
           if (
             mediaKind &&
             currentChatIdRef.current &&
@@ -1168,6 +1235,14 @@ export function SocketProvider({ children }: { children: ReactNode }) {
             false,
             finalResponses,
           );
+          const toastPreview = finalResponses
+            .map((r) => (typeof r.content === 'string' ? r.content : ''))
+            .filter(Boolean)
+            .join(' · ');
+          const multiChatId = currentChatIdRef.current;
+          if (multiChatId) {
+            maybeNotifyGenerationComplete(multiChatId, toastPreview);
+          }
           multiLLMMessageRef.current = null;
           multiLLMResponsesRef.current.clear();
           expectedModelsCountRef.current = 0;
@@ -1175,7 +1250,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
           {
             const doneId = activeRequestIdRef.current || routedSession?.requestId || null;
             endStreamSession(doneId);
-            activeRequestIdRef.current = null;
+            activateAnotherLiveSession(doneId);
           }
           clearMcpToolActivity();
         } else {
@@ -1507,16 +1582,44 @@ export function SocketProvider({ children }: { children: ReactNode }) {
             );
           }
         } else {
-          // Путь 2: ref не установлен — ищем любое незавершённое сообщение
+          // Путь 2: ref не установлен — ищем незавершённое / media-placeholder сообщение
           const currentChat = getChatById(chatId) || getCurrentChat();
           const streamingMsgs = currentChat?.messages.filter(
             (m: Message) => m.isStreaming && m.role === 'assistant'
           ) ?? [];
+          const mediaPlaceholders =
+            streamingMsgs.length === 0
+              ? (currentChat?.messages.filter(
+                  (m: Message) =>
+                    m.role === 'assistant'
+                    && (m.isImageGenerating || m.isVideoGenerating)
+                    && !m.inlineAttachments?.length,
+                ) ?? [])
+              : [];
 
-          if (streamingMsgs.length > 0) {
-            const last = streamingMsgs[streamingMsgs.length - 1];
+          if (streamingMsgs.length > 0 || mediaPlaceholders.length > 0) {
+            const last =
+              streamingMsgs.length > 0
+                ? streamingMsgs[streamingMsgs.length - 1]
+                : mediaPlaceholders[mediaPlaceholders.length - 1];
             completedMessageId = last.id;
-            updateMessage(chatId, last.id, responseWithReasoning, false, undefined, undefined, undefined, docSearch, undefined, undefined, genInlineAttachments, false, undefined, undefined, false);
+            updateMessage(
+              chatId,
+              last.id,
+              responseWithReasoning,
+              false,
+              undefined,
+              undefined,
+              undefined,
+              docSearch,
+              undefined,
+              undefined,
+              genInlineAttachments,
+              false,
+              undefined,
+              undefined,
+              false,
+            );
           } else if (!isStoppedRef.current && response) {
             // Непотоковый режим: создаём сообщение только если его ещё нет
             const alreadyExists = currentChat?.messages.some(
@@ -1557,13 +1660,27 @@ export function SocketProvider({ children }: { children: ReactNode }) {
           window.dispatchEvent(new CustomEvent('astrachatCreationsUpdated'));
         }
 
+        const serverTitle =
+          typeof data.conversation_title === 'string' ? data.conversation_title.trim() : '';
+        if (serverTitle) {
+          const localTitle = getChatById(chatId)?.title;
+          if (!localTitle || localTitle === 'Новый чат' || localTitle !== serverTitle) {
+            updateChatTitle(chatId, serverTitle);
+          }
+        }
+        maybeNotifyGenerationComplete(
+          chatId,
+          responseWithReasoning || response,
+          serverTitle || undefined,
+        );
+
         thinkingTraceRef.current = '';
         responseAccumulatedRef.current = '';
         lastStreamSeqRef.current = 0;
         {
           const doneId = activeRequestIdRef.current || routedSession?.requestId || null;
           endStreamSession(doneId);
-          activeRequestIdRef.current = null;
+          activateAnotherLiveSession(doneId);
         }
         clearMcpToolActivity();
         break;
@@ -1789,9 +1906,13 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     lastStreamSeqRef.current = 0;
     mcpToolCallsRef.current = [];
     clearMcpToolActivity();
-    createStreamSession(requestId, chatId, {
+    beginNewStreamSession(requestId, chatId, {
       expectMultiLlm: Boolean(expectMultiLlm),
       multiLLMResponses: multiLLMResponsesRef.current,
+      mediaGeneration:
+        !expectMultiLlm
+        && !isCodingModeEnabled(chatId)
+        && (isImageGenerationModeEnabled(chatId) || isVideoGenerationModeEnabled(chatId)),
     });
     
     // Добавляем сообщение пользователя (с inline-вложениями для отображения в пузыре)
@@ -1803,6 +1924,15 @@ export function SocketProvider({ children }: { children: ReactNode }) {
         ? { inlineAttachments: inlineData.attachments_meta }
         : {}),
     });
+
+    // Сразу обновляем «Новый чат» в сайдбаре (не ждём useEffect — там уже placeholder ассистента).
+    {
+      const existingChat = getChatById(chatId);
+      const trimmed = String(message || '').trim();
+      if (existingChat?.title === 'Новый чат' && trimmed) {
+        updateChatTitle(chatId, trimmed.length > 50 ? `${trimmed.substring(0, 50)}...` : trimmed);
+      }
+    }
 
     // Устанавливаем состояние загрузки
     setChatLoading(chatId, true);
@@ -1972,7 +2102,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     lastStreamSeqRef.current = 0;
     const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
     activeRequestIdRef.current = requestId;
-    createStreamSession(requestId, chatId, {
+    beginNewStreamSession(requestId, chatId, {
       expectMultiLlm: true,
       multiLLMMessageId: assistantMessageId,
       multiLLMResponses: multiLLMResponsesRef.current,
@@ -2123,7 +2253,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     clearMcpToolActivity();
     const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
     activeRequestIdRef.current = requestId;
-    createStreamSession(requestId, chatId, {
+    beginNewStreamSession(requestId, chatId, {
       messageId: assistantMessageId,
       regeneration: regenerationStateRef.current,
     });
@@ -2321,9 +2451,10 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       const stalled: StreamSession[] = [];
       for (const session of Array.from(streamSessionsRef.current.values())) {
         if (session.isStopped) continue;
-        const limit = session.receivedStreamData
-          ? STREAM_STALL_AFTER_CHUNK_MS
-          : STREAM_STALL_BEFORE_CHUNK_MS;
+        const limit = resolveStreamStallLimitMs({
+          mediaGeneration: session.mediaGeneration,
+          receivedStreamData: session.receivedStreamData,
+        });
         if (now - session.lastActivityAtMs < limit) continue;
         stalled.push(session);
       }

@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 import os
 
@@ -22,60 +22,70 @@ def test_environment():
 
 
 @pytest.fixture(scope="session")
-def global_mock_llama():
-    """Фейковый LLM-handler на уровне сессии (подставляется через dependency_overrides)."""
-    if True:
-        instance = MagicMock()
-        instance.is_loaded.return_value = True
-        instance.model_name = "test-model"
-        instance.initialized = True
+def mock_llama_instance():
+    """Общий мок handler для API-тестов (не патчит класс LlamaHandler)."""
+    instance = MagicMock()
+    instance.is_loaded.return_value = True
+    instance.model_name = "test-model"
+    instance.initialized = True
+    instance.model_path = "/tmp/test.gguf"
 
-        # Мок для асинхронного метода generate_response, принимаем любые аргументы
-        async def generate_response(*args, **kwargs):
-            return {
-                "id": "test-id",
-                "created": 1234567890,
-                "model": "test-model",
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": "Test response from mock handler"
-                        },
-                        "finish_reason": "stop"
-                    }
-                ],
-                "usage": {
-                    "prompt_tokens": 10,
-                    "completion_tokens": 20,
-                    "total_tokens": 30
+    async def generate_response(*args, **kwargs):
+        return {
+            "id": "test-id",
+            "created": 1234567890,
+            "model": "test-model",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "Test response from mock handler",
+                    },
+                    "finish_reason": "stop",
                 }
-            }
+            ],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 20,
+                "total_tokens": 30,
+            },
+        }
 
-        instance.generate_response = AsyncMock(side_effect=generate_response)
-        instance.initialize = AsyncMock()
-        instance.cleanup = AsyncMock()
-        instance.is_model_id_loaded = MagicMock(return_value=True)
-        instance.get_loaded_model_ids = MagicMock(return_value=["test-model"])
+    instance.generate_response = AsyncMock(side_effect=generate_response)
+    instance.initialize = AsyncMock()
+    instance.cleanup = AsyncMock()
+    instance.is_model_id_loaded = MagicMock(return_value=True)
+    instance.get_loaded_model_ids = MagicMock(return_value=["test-model"])
+    instance.load_model = AsyncMock(return_value=True)
+    instance.load_model_by_name = AsyncMock(return_value=True)
+    return instance
 
-        yield instance
 
 @pytest.fixture(scope="session")
-def test_app(global_mock_llama):
-    """Тестовое приложение: реальный handler подменён фейком через dependency_overrides."""
-    from app.llm_dependencies import get_llm_handler
+def test_app(mock_llama_instance):
+    """Создание тестового приложения с переопределенными зависимостями."""
     from app.main import create_application
+    from app.api.dependencies import get_llama_service, get_llm_handler_without_loaded_gate
+    from app.llm_dependencies import get_llm_handler
 
     app = create_application()
-    app.dependency_overrides[get_llm_handler] = lambda: global_mock_llama
+
+    async def _override_handler():
+        return mock_llama_instance
+
+    app.dependency_overrides[get_llm_handler] = _override_handler
+    app.dependency_overrides[get_llama_service] = _override_handler
+    app.dependency_overrides[get_llm_handler_without_loaded_gate] = _override_handler
     yield app
     app.dependency_overrides.clear()
 
+
 @pytest.fixture
 def test_client(test_app):
-    """Тестовый клиент без lifespan (без загрузки модели из Nexus/диска)."""
-    return TestClient(test_app)
+    """Создание тестового клиента."""
+    with TestClient(test_app) as client:
+        yield client
 
 
 @pytest.fixture

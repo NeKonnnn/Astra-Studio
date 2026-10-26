@@ -58,7 +58,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import { useTheme } from '@mui/material/styles';
 import { useAppContext, useAppActions, Message, MultiLLMResponseSlot } from '../contexts/AppContext';
 import { useSocket } from '../contexts/SocketContext';
-import { authFetch, getApiUrl, getWsUrl, API_ENDPOINTS, getAuthFetchHeaders } from '../config/api';
+import { authFetch, getApiUrl, getWsUrl, API_ENDPOINTS } from '../config/api';
 import MessageRenderer from '../components/MessageRenderer';
 import { DocumentSearchPanel } from '../components/DocumentSearchPanel';
 import { useNavigate } from 'react-router-dom';
@@ -150,7 +150,7 @@ import {
   KNOWLEDGE_RAG_STORAGE_EVENT,
 } from '../utils/knowledgeRagStorage';
 import { estimateTokens } from '../utils/contextTokens';
-import { ASTRA_TRIGGER_ATTACH } from '../constants/hotkeys';
+import { ASTRA_CLOSE_CHAT_GEAR, ASTRA_TRIGGER_ATTACH } from '../constants/hotkeys';
 import {
   getDropdownPanelSx,
   getDropdownItemSx,
@@ -1928,9 +1928,14 @@ export default function UnifiedChatPage({
     return messages.filter((message) => {
       // Плейсхолдер генерации изображения/видео (isImageGenerating / isVideoGenerating)
       // специально оставляем видимым — в MessageCard рисуется ImageGenerationPlaceholder.
+      // При regen UI читает alternativeResponses[index], не только message.content.
+      const visibleText =
+        message.role === 'assistant'
+          ? getStreamingAssistantVisibleContent(message)
+          : message.content;
       const isEmptyAssistantPlaceholder =
         message.role === 'assistant' &&
-        !message.content.trim() &&
+        !visibleText.trim() &&
         !message.mcpToolCalls?.length &&
         !message.multiLLMResponses?.length &&
         !message.documentSearch &&
@@ -1940,7 +1945,7 @@ export default function UnifiedChatPage({
         !message.chainCurrentAgent &&
         !message.chainSteps?.length;
       if (!isEmptyAssistantPlaceholder) return true;
-      const parsedAssistant = extractReasoningBlock(message.content || '', message.isStreaming);
+      const parsedAssistant = extractReasoningBlock(visibleText || '', message.isStreaming);
       if (currentChatLoading && !parsedAssistant?.reasoningContent?.trim()) {
         return false;
       }
@@ -1994,6 +1999,38 @@ export default function UnifiedChatPage({
     return -1;
   }, [visibleMessages]);
 
+  /**
+   * User-вопрос активного стрима. При перегенерации середины ленты это НЕ
+   * последний user — иначе Grok-скролл утаскивает вьюпорт к хвосту чата.
+   */
+  const activeTurnUserVisibleIndex = useMemo(() => {
+    let streamId: string | null = null;
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i];
+      if (m.role !== 'assistant') continue;
+      if (m.isStreaming || (m.multiLLMResponses?.some((r) => r.isStreaming) ?? false)) {
+        streamId = m.id;
+        break;
+      }
+    }
+    if (!streamId) return lastUserVisibleIndex;
+    const streamIdx = messages.findIndex((m) => m.id === streamId);
+    if (streamIdx < 0) return lastUserVisibleIndex;
+    let userId: string | null = null;
+    for (let i = streamIdx - 1; i >= 0; i -= 1) {
+      if (messages[i].role === 'user') {
+        userId = messages[i].id;
+        break;
+      }
+    }
+    if (!userId) return lastUserVisibleIndex;
+    const visibleIdx = visibleMessages.findIndex((m) => m.id === userId);
+    return visibleIdx >= 0 ? visibleIdx : lastUserVisibleIndex;
+  }, [messages, visibleMessages, lastUserVisibleIndex]);
+
+  /** Перегенерация не хвоста — без нижнего спейсера на всю высоту экрана. */
+  const isTailTurnStream = activeTurnUserVisibleIndex === lastUserVisibleIndex;
+
   const scrollVisibleIndexToTop = useCallback((visibleIndex: number) => {
     if (visibleIndex < 0 || !virtuosoRef.current) return;
     isProgrammaticScrollRef.current = true;
@@ -2014,33 +2051,44 @@ export default function UnifiedChatPage({
     setGrokBottomSpacerPx(0);
   }, [currentChat?.id]);
 
-  // Старт хода → вопрос к верху (как в Grok).
+  // Старт хода → вопрос активного стрима к верху (как в Grok).
   useEffect(() => {
     const was = prevTurnActiveForGrokRef.current;
     prevTurnActiveForGrokRef.current = streamingActive;
     if (streamingActive && !was) {
       grokTurnActiveRef.current = true;
-      grokAnchorVisibleIndexRef.current = lastUserVisibleIndex;
+      grokAnchorVisibleIndexRef.current = activeTurnUserVisibleIndex;
       isAtBottomRef.current = false;
-      const vh = messagesContainerRef.current?.clientHeight ?? 0;
-      if (vh > 0) {
-        setGrokBottomSpacerPx((prev) => Math.max(prev, Math.round(vh - 140)));
+      if (isTailTurnStream) {
+        const vh = messagesContainerRef.current?.clientHeight ?? 0;
+        if (vh > 0) {
+          setGrokBottomSpacerPx((prev) => Math.max(prev, Math.round(vh - 140)));
+        }
+      } else {
+        // Середина ленты: не раздуваем footer-spacer — иначе визуально «прыжок» вниз.
+        setGrokBottomSpacerPx(0);
       }
-      requestAnimationFrame(() => scrollVisibleIndexToTop(lastUserVisibleIndex));
-      window.setTimeout(() => scrollVisibleIndexToTop(lastUserVisibleIndex), 60);
-      window.setTimeout(() => scrollVisibleIndexToTop(lastUserVisibleIndex), 180);
+      const anchor = activeTurnUserVisibleIndex;
+      requestAnimationFrame(() => scrollVisibleIndexToTop(anchor));
+      window.setTimeout(() => scrollVisibleIndexToTop(anchor), 60);
+      window.setTimeout(() => scrollVisibleIndexToTop(anchor), 180);
     } else if (!streamingActive && was) {
       grokTurnActiveRef.current = false;
       // Не оставляем высокий «воздух» под ответом — иначе между текстом и пилюлей пустая пропасть.
       setGrokBottomSpacerPx(0);
     }
-  }, [streamingActive, lastUserVisibleIndex, scrollVisibleIndexToTop]);
+  }, [
+    streamingActive,
+    activeTurnUserVisibleIndex,
+    isTailTurnStream,
+    scrollVisibleIndexToTop,
+  ]);
 
-  // Спейсер снизу: держит вопрос у верха, пока ответ короткий (в Footer, без remount карточек).
+  // Спейсер снизу: только для хвоста ленты (новый вопрос / regen последнего ответа).
   useLayoutEffect(() => {
-    if (!streamingActive) return;
+    if (!streamingActive || !isTailTurnStream) return;
     const container = messagesContainerRef.current;
-    const visibleIndex = grokAnchorVisibleIndexRef.current ?? lastUserVisibleIndex;
+    const visibleIndex = grokAnchorVisibleIndexRef.current ?? activeTurnUserVisibleIndex;
     if (!container || visibleIndex < 0) return;
 
     const anchorMsg = visibleMessages[visibleIndex];
@@ -2064,7 +2112,13 @@ export default function UnifiedChatPage({
     const turnHeight = lastEl.getBoundingClientRect().bottom - qEl.getBoundingClientRect().top;
     const next = Math.max(0, Math.round(container.clientHeight - turnHeight - 24));
     setGrokBottomSpacerPx((prev) => (Math.abs(prev - next) > 8 ? next : prev));
-  }, [streamingActive, messages, visibleMessages, lastUserVisibleIndex]);
+  }, [
+    streamingActive,
+    isTailTurnStream,
+    messages,
+    visibleMessages,
+    activeTurnUserVisibleIndex,
+  ]);
 
   useLayoutEffect(() => {
     if (virtuosoScrollerElRef.current) {
@@ -2145,6 +2199,8 @@ export default function UnifiedChatPage({
     return false;
   }, [messages, currentChatLoading]);
 
+  // Любой стримящийся assistant (не только «хвост» ленты): при перегенерации
+  // старого ответа ниже уже есть завершённые сообщения — ранний break ломал якорь «думает».
   const lastStreamingAssistant = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const message = messages[i];
@@ -2152,7 +2208,6 @@ export default function UnifiedChatPage({
       if (message.isStreaming || (message.multiLLMResponses?.some((r) => r.isStreaming) ?? false)) {
         return message;
       }
-      break;
     }
     return null;
   }, [messages]);
@@ -2444,6 +2499,30 @@ export default function UnifiedChatPage({
     if (parsed.visibleContent.trim()) return false;
     return true;
   }, [currentChatLoading, hasRunningMcpTools, lastStreamingAssistant]);
+
+  /**
+   * К какому видимому сообщению прикрепить карточку «думает».
+   * При перегенерации середины ленты пустой стримящийся пузырь скрыт из visibleMessages —
+   * якорим после предыдущего видимого (обычно user-вопрос), а не под хвостом чата.
+   */
+  const thinkingAnchorMessageId = useMemo(() => {
+    if (!chatAwaitingTokens) return null;
+    const visible = visibleMessages;
+    if (!visible.length) return null;
+    if (!lastStreamingAssistant) {
+      return visible[visible.length - 1]?.id ?? null;
+    }
+    if (visible.some((m) => m.id === lastStreamingAssistant.id)) {
+      return lastStreamingAssistant.id;
+    }
+    const streamIdx = messages.findIndex((m) => m.id === lastStreamingAssistant.id);
+    if (streamIdx < 0) return visible[visible.length - 1]?.id ?? null;
+    for (let i = streamIdx - 1; i >= 0; i -= 1) {
+      const prev = messages[i];
+      if (visible.some((m) => m.id === prev.id)) return prev.id;
+    }
+    return visible[visible.length - 1]?.id ?? null;
+  }, [chatAwaitingTokens, lastStreamingAssistant, messages, visibleMessages]);
 
   const chatAwaitingStartedAtMs = useMemo(() => {
     if (!chatAwaitingTokens) return null;
@@ -2803,17 +2882,16 @@ export default function UnifiedChatPage({
     };
   }, []);
 
-  // Автоматически обновляем название чата на основе первого сообщения пользователя
+  // Автоматически обновляем название чата на основе первого сообщения пользователя.
+  // Не ждём messages.length === 1: после send сразу есть placeholder ассистента (len ≥ 2).
   useEffect(() => {
-    if (currentChat && messages.length === 1 && interfaceSettings.autoGenerateTitles) {
-      const firstMessage = messages[0];
-      if (firstMessage.role === 'user' && currentChat.title === 'Новый чат') {
-        const title = firstMessage.content.length > 50 
-          ? firstMessage.content.substring(0, 50) + '...'
-          : firstMessage.content;
-        updateChatTitle(currentChat.id, title);
-      }
-    }
+    if (!currentChat || !interfaceSettings.autoGenerateTitles) return;
+    if (currentChat.title !== 'Новый чат') return;
+    const firstUser = messages.find((m) => m.role === 'user' && String(m.content || '').trim());
+    if (!firstUser) return;
+    const raw = String(firstUser.content).trim();
+    const title = raw.length > 50 ? `${raw.substring(0, 50)}...` : raw;
+    updateChatTitle(currentChat.id, title);
   }, [currentChat, messages, updateChatTitle, interfaceSettings.autoGenerateTitles]);
 
   // Убираем автоматическую остановку генерации при смене чата
@@ -3881,9 +3959,10 @@ export default function UnifiedChatPage({
       const uploadStartedAt = performance.now();
       logChatAttach('attach-fetch-start', { url: uploadUrl, uploadSize: fileToUpload.size });
 
-      const response = await fetch(uploadUrl, {
+      // credentials: 'include' через authFetch — иначе без cookie binding → 401
+      // «Токен не привязан к сессии браузера» на cross-origin (:3000→:8000).
+      const response = await authFetch(uploadUrl, {
         method: 'POST',
-        headers: getAuthFetchHeaders(),
         body: formData,
       });
 
@@ -4056,6 +4135,12 @@ export default function UnifiedChatPage({
     setGearToolsMenuWidthPx(null);
     setGearToolsPaperHeightPx(null);
   };
+
+  useEffect(() => {
+    const onCloseGear = () => handleMenuClose();
+    window.addEventListener(ASTRA_CLOSE_CHAT_GEAR, onCloseGear);
+    return () => window.removeEventListener(ASTRA_CLOSE_CHAT_GEAR, onCloseGear);
+  }, []);
 
   const handleStopGeneration = (): void => {
     stopGeneration();
@@ -4871,9 +4956,10 @@ export default function UnifiedChatPage({
                         }}
                       >
                         {renderMessageAtIndex(index, message, virtuosoData)}
-                        {/* «Думает» — сразу после последнего сообщения (место ответа), обычный item списка:
-                            при скролле вверх уезжает из вьюпорта вместе с лентой. */}
-                        {chatAwaitingTokens && index === virtuosoData.length - 1 ? (
+                        {/* «Думает» у якоря перегенерации / стрима, не всегда под последним сообщением. */}
+                        {chatAwaitingTokens &&
+                        thinkingAnchorMessageId &&
+                        message.id === thinkingAnchorMessageId ? (
                           <ChatThinkingIndicator
                             isDarkMode={isDarkMode}
                             leftAlignMessages={interfaceSettings.leftAlignMessages}

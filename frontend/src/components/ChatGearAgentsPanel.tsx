@@ -1,8 +1,9 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Box,
   ToggleButton,
   ToggleButtonGroup,
+  Typography,
 } from '@mui/material';
 import {
   Search as SearchIcon,
@@ -12,6 +13,8 @@ import {
 } from '../constants/menuStyles';
 import ChatGearMyAgentsTab from './ChatGearMyAgentsTab';
 import ChatGearGalleryAgentsTab from './ChatGearGalleryAgentsTab';
+import { getActiveAgentFromStorage } from './AgentSelector';
+import { clearActiveAgent } from '../utils/clearActiveAgent';
 
 interface ChatGearAgentsPanelProps {
   isDarkMode: boolean;
@@ -22,12 +25,20 @@ export default function ChatGearAgentsPanel({
 }: ChatGearAgentsPanelProps) {
   const [agentSearch, setAgentSearch] = useState('');
   const [agentsSubtab, setAgentsSubtab] = useState<'my' | 'gallery'>('my');
+  const [activeAgent, setActiveAgent] = useState(() => getActiveAgentFromStorage());
 
   const text = isDarkMode ? 'rgba(255,255,255,0.95)' : 'rgba(0,0,0,0.9)';
   const border = isDarkMode ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.12)';
   const placeholderColor = isDarkMode ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.35)';
   const menuDividerBorder = isDarkMode ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)';
   const subtleColor = isDarkMode ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.45)';
+  const muted = isDarkMode ? 'rgba(255,255,255,0.65)' : 'rgba(0,0,0,0.6)';
+
+  useEffect(() => {
+    const onAgentSelected = () => setActiveAgent(getActiveAgentFromStorage());
+    window.addEventListener('agentSelected', onAgentSelected);
+    return () => window.removeEventListener('agentSelected', onAgentSelected);
+  }, []);
 
   const tabs = useMemo(
     () => (
@@ -107,6 +118,31 @@ export default function ChatGearAgentsPanel({
         </Box>
         {tabs}
       </Box>
+
+      {activeAgent ? (
+        <Typography
+          component="button"
+          onClick={() => {
+            clearActiveAgent();
+            setActiveAgent(null);
+          }}
+          sx={{
+            border: 'none',
+            background: 'transparent',
+            cursor: 'pointer',
+            color: muted,
+            fontSize: '0.72rem',
+            textAlign: 'left',
+            px: 1.5,
+            pt: 0.75,
+            pb: 0,
+            flexShrink: 0,
+            '&:hover': { color: text },
+          }}
+        >
+          Сбросить выбор (1)
+        </Typography>
+      ) : null}
 
       {agentsSubtab === 'gallery' ? (
         <ChatGearGalleryAgentsTab

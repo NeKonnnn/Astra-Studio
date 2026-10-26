@@ -121,7 +121,7 @@ import {
   setKnowledgeRagEnabled,
   KNOWLEDGE_RAG_STORAGE_EVENT,
 } from '../utils/knowledgeRagStorage';
-import { ASTRA_TRIGGER_ATTACH } from '../constants/hotkeys';
+import { ASTRA_CLOSE_CHAT_GEAR, ASTRA_TRIGGER_ATTACH } from '../constants/hotkeys';
 import {
   MODEL_THINKING_MODE_STORAGE_KEY,
   ModelThinkingMode,
@@ -606,6 +606,12 @@ export default function ProjectPage({ sidebarOpen = true, sidebarHidden = false 
     setGearToolsMenuWidthPx(null);
     setGearToolsPaperHeightPx(null);
   };
+
+  useEffect(() => {
+    const onCloseGear = () => handleMenuClose();
+    window.addEventListener(ASTRA_CLOSE_CHAT_GEAR, onCloseGear);
+    return () => window.removeEventListener(ASTRA_CLOSE_CHAT_GEAR, onCloseGear);
+  }, []);
 
   const handleChatMenuClick = (event: React.MouseEvent<HTMLElement>, chatId: string) => {
     event.stopPropagation();

@@ -87,7 +87,6 @@ class VaultConfig(BaseModel):
     path: Optional[str] = None
 class SecurityConfig(BaseModel):
     enabled: bool = True
-    api_key: Optional[str] = None
     api_key_header: str = "X-API-Key"
 class NexusConfig(BaseModel):
     enabled: bool = False

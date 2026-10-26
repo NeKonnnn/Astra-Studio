@@ -42,6 +42,7 @@ import { initSettings } from './settings';
 import LlmStatusBanner from './components/LlmStatusBanner';
 import RagReindexStatusBanner from './components/RagReindexStatusBanner';
 import StatusToastHost from './components/StatusToastHost';
+import GenerationCompleteToastHost from './components/GenerationCompleteToastHost';
 import { RagReindexStatusProvider } from './contexts/RagReindexStatusContext';
 import PluginRunBanner from './components/PluginRunBanner';
 import { PluginRunProvider } from './contexts/PluginRunContext';
@@ -318,6 +319,7 @@ function App() {
             <RagReindexStatusProvider>
               <RagReindexStatusBanner />
               <StatusToastHost />
+              <GenerationCompleteToastHost />
               <PluginRunProvider>
               <PluginRunBanner />
               <SocketProvider>

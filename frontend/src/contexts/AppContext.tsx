@@ -238,6 +238,15 @@ export interface AppState {
     message: string;
     timestamp: string;
   }>;
+
+  /** Плашки «ответ готов» (другой чат завершил генерацию). */
+  generationCompleteToasts: Array<{
+    id: string;
+    chatId: string;
+    title: string;
+    preview: string;
+    timestamp: string;
+  }>;
   
   // Статистика
   stats: {
@@ -272,6 +281,11 @@ type AppAction =
   | { type: 'SET_LOADED_DOCUMENT'; payload: string | null }
   | { type: 'ADD_NOTIFICATION'; payload: { type: string; message: string } }
   | { type: 'REMOVE_NOTIFICATION'; payload: string }
+  | {
+      type: 'ADD_GENERATION_COMPLETE_TOAST';
+      payload: { chatId: string; title: string; preview: string };
+    }
+  | { type: 'REMOVE_GENERATION_COMPLETE_TOAST'; payload: string }
   | { type: 'CLEAR_MESSAGES'; payload: string }
   | { type: 'CREATE_FOLDER'; payload: Folder }
   | { type: 'UPDATE_FOLDER'; payload: { folderId: string; name: string } }
@@ -445,6 +459,7 @@ const initialState: AppState = {
   },
   loadedDocument: null,
   notifications: [],
+  generationCompleteToasts: [],
   stats: {
     totalMessages: 0,
     totalTokens: 0,
@@ -831,6 +846,26 @@ function appReducer(state: AppState, action: AppAction): AppState {
       return {
         ...state,
         notifications: state.notifications.filter(n => n.id !== action.payload),
+      };
+
+    case 'ADD_GENERATION_COMPLETE_TOAST': {
+      const toast = {
+        id: `gen_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        chatId: action.payload.chatId,
+        title: action.payload.title,
+        preview: action.payload.preview,
+        timestamp: new Date().toISOString(),
+      };
+      return {
+        ...state,
+        generationCompleteToasts: [...state.generationCompleteToasts, toast].slice(-4),
+      };
+    }
+
+    case 'REMOVE_GENERATION_COMPLETE_TOAST':
+      return {
+        ...state,
+        generationCompleteToasts: state.generationCompleteToasts.filter((t) => t.id !== action.payload),
       };
       
     case 'CLEAR_MESSAGES': {
@@ -1512,6 +1547,14 @@ export function useAppActions() {
     
     removeNotification: (id: string) => {
       dispatch({ type: 'REMOVE_NOTIFICATION', payload: id });
+    },
+
+    showGenerationCompleteToast: (payload: { chatId: string; title: string; preview: string }) => {
+      dispatch({ type: 'ADD_GENERATION_COMPLETE_TOAST', payload });
+    },
+
+    removeGenerationCompleteToast: (id: string) => {
+      dispatch({ type: 'REMOVE_GENERATION_COMPLETE_TOAST', payload: id });
     },
     
     clearMessages: (chatId: string) => {

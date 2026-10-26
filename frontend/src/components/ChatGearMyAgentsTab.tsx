@@ -1,17 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Box, Typography, CircularProgress } from '@mui/material';
-import {
-  Check as CheckIcon,
-  PersonOff as NoAgentIcon,
-} from '@mui/icons-material';
+import { Check as CheckIcon } from '@mui/icons-material';
+import { useNavigate } from 'react-router-dom';
 import AgentIcon from '../icons/AgentIcon';
 import { useAuth } from '../contexts/AuthContext';
 import { useAppActions } from '../contexts/AppContext';
-import { getApiUrl } from '../config/api';
+import { authFetch, getApiUrl } from '../config/api';
 import {
   getDropdownItemSx,
   MENU_ACTION_TEXT_SIZE,
-  CHAT_GEAR_MENU_AGENT_LIST_MAX_HEIGHT_PX,
   CHAT_GEAR_SCROLL_AREA_NO_VISIBLE_SCROLLBAR_SX,
 } from '../constants/menuStyles';
 import type { Agent } from './AgentSelector';
@@ -20,7 +17,9 @@ import { loadAgentModelOnly } from '../utils/applyAgentServer';
 import { persistAgentMcpConfig } from '../utils/applyAgentMcp';
 import { persistAgentArtifactsEnabled } from '../utils/agentArtifactsEnabled';
 import { clearActiveAgent } from '../utils/clearActiveAgent';
+import { openAgentInConstructor } from '../utils/openAgentConstructorNav';
 import ChatGearAgentReindexHint from './ChatGearAgentReindexHint';
+import ChatGearRowSettingsButton from './ChatGearRowSettingsButton';
 import { formatAuthorLabel } from '../utils/formatAuthorLabel';
 
 const STORAGE_AGENT_ID = 'active_agent_id';
@@ -38,6 +37,7 @@ interface AgentMenuItemProps {
   iconColor: string;
   subtleColor: string;
   onSelect: (agent: Agent) => void;
+  onOpenSettings: (agent: Agent) => void;
 }
 
 function MyAgentMenuItem({
@@ -51,6 +51,7 @@ function MyAgentMenuItem({
   iconColor,
   subtleColor,
   onSelect,
+  onOpenSettings,
 }: AgentMenuItemProps) {
   return (
     <Box
@@ -90,19 +91,27 @@ function MyAgentMenuItem({
         >
           {agent.name}
         </Typography>
-        {agent.is_shared_with_me && (
-          <Typography
-            sx={{
-              fontSize: '0.65rem',
-              color: subtleColor,
-              lineHeight: 1.2,
-            }}
-          >
-            от {formatAuthorLabel(agent.author_name, agent.author_full_name, agent.author_id) || 'коллеги'}
-          </Typography>
-        )}
+        <Typography
+          sx={{
+            fontSize: '0.65rem',
+            color: subtleColor,
+            lineHeight: 1.2,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {agent.is_shared_with_me ? 'от ' : ''}
+          {formatAuthorLabel(agent.author_name, agent.author_full_name, agent.author_id) ||
+            (agent.is_shared_with_me ? 'коллеги' : 'автор неизвестен')}
+        </Typography>
       </Box>
       <ChatGearAgentReindexHint agentId={agent.id} />
+      <ChatGearRowSettingsButton
+        title="Настройки агента"
+        color={subtleColor}
+        onOpen={() => onOpenSettings(agent)}
+      />
       {loadingAgentId === agent.id ? (
         <CircularProgress size={14} sx={{ flexShrink: 0, color: 'primary.main' }} />
       ) : activeAgent?.id === agent.id ? (
@@ -121,6 +130,7 @@ interface ChatGearMyAgentsTabProps {
 export default function ChatGearMyAgentsTab({ isDarkMode, searchQuery, visible }: ChatGearMyAgentsTabProps) {
   const { token } = useAuth();
   const { showNotification } = useAppActions();
+  const navigate = useNavigate();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loadingAgents, setLoadingAgents] = useState(false);
   const [activeAgent, setActiveAgent] = useState(() => getActiveAgentFromStorage());
@@ -131,14 +141,20 @@ export default function ChatGearMyAgentsTab({ isDarkMode, searchQuery, visible }
   const mutedTextColor = isDarkMode ? 'rgba(255,255,255,0.9)' : 'rgba(0,0,0,0.85)';
   const iconColor = isDarkMode ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.6)';
   const subtleColor = isDarkMode ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.5)';
+  const muted = isDarkMode ? 'rgba(255,255,255,0.65)' : 'rgba(0,0,0,0.6)';
 
   const loadAgents = useCallback(async () => {
+    if (!token) {
+      setAgents([]);
+      return;
+    }
     setLoadingAgents(true);
     try {
-      const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
+      // authFetch: JWT + cookie client binding (plain fetch → 401 SEC007 → пустой список)
+      const qs = '?limit=100';
       const [mineResp, sharedResp] = await Promise.all([
-        fetch(getApiUrl('/api/agents/my/agents'), { headers }),
-        fetch(getApiUrl('/api/agents/my/shared'), { headers }),
+        authFetch(getApiUrl(`/api/agents/my/agents${qs}`)),
+        authFetch(getApiUrl(`/api/agents/my/shared${qs}`)),
       ]);
       const mine = mineResp.ok ? ((await mineResp.json()).agents || []) : [];
       const shared = sharedResp.ok
@@ -154,7 +170,7 @@ export default function ChatGearMyAgentsTab({ isDarkMode, searchQuery, visible }
       }
       setAgents(Array.from(byId.values()));
     } catch {
-      /* silent */
+      setAgents([]);
     } finally {
       setLoadingAgents(false);
     }
@@ -179,12 +195,14 @@ export default function ChatGearMyAgentsTab({ isDarkMode, searchQuery, visible }
 
   const handleSelectAgent = useCallback(
     async (agent: Agent) => {
+      if (activeAgent?.id === agent.id) {
+        handleClearAgent();
+        return;
+      }
       let full: Agent = { ...agent };
       if (token) {
         try {
-          const r = await fetch(getApiUrl(`/api/agents/${agent.id}`), {
-            headers: { Authorization: `Bearer ${token}` },
-          });
+          const r = await authFetch(getApiUrl(`/api/agents/${agent.id}`));
           if (r.ok) {
             const j = await r.json();
             full = {
@@ -256,7 +274,7 @@ export default function ChatGearMyAgentsTab({ isDarkMode, searchQuery, visible }
         setLoadingAgentId(null);
       }
     },
-    [token, showNotification],
+    [token, showNotification, activeAgent, handleClearAgent],
   );
 
   const filteredAgents = useMemo(() => {
@@ -268,9 +286,8 @@ export default function ChatGearMyAgentsTab({ isDarkMode, searchQuery, visible }
   return (
     <Box
       sx={{
-        height: `${CHAT_GEAR_MENU_AGENT_LIST_MAX_HEIGHT_PX}px`,
-        maxHeight: `${CHAT_GEAR_MENU_AGENT_LIST_MAX_HEIGHT_PX}px`,
-        flexShrink: 0,
+        flex: 1,
+        minHeight: 0,
         overflowX: 'hidden',
         overflowY: 'auto',
         px: 0.75,
@@ -283,32 +300,31 @@ export default function ChatGearMyAgentsTab({ isDarkMode, searchQuery, visible }
         <Box sx={{ display: 'flex', justifyContent: 'center', py: 3 }}>
           <CircularProgress size={28} />
         </Box>
+      ) : filteredAgents.length === 0 ? (
+        <Box sx={{ py: 2, textAlign: 'center' }}>
+          <AgentIcon sx={{ fontSize: 28, opacity: 0.35, mb: 0.5 }} />
+          <Typography sx={{ fontSize: '0.78rem', color: muted }}>
+            {searchQuery.trim() ? 'Ничего не найдено' : 'Нет своих агентов'}
+          </Typography>
+          {!searchQuery.trim() ? (
+            <Typography
+              component="button"
+              onClick={() => navigate('/gallery?tab=agents')}
+              sx={{
+                mt: 0.75,
+                border: 'none',
+                background: 'transparent',
+                cursor: 'pointer',
+                color: '#2196f3',
+                fontSize: '0.75rem',
+              }}
+            >
+              Открыть галерею
+            </Typography>
+          ) : null}
+        </Box>
       ) : (
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-          <Box
-            onClick={() => {
-              if (!isLoadingModel) handleClearAgent();
-            }}
-            sx={{
-              ...dropdownItemSx,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 1,
-              color: !activeAgent ? mutedTextColor : iconColor,
-              fontWeight: !activeAgent ? 600 : 400,
-              bgcolor: !activeAgent ? (isDarkMode ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)') : 'transparent',
-              fontStyle: 'italic',
-              borderRadius: 1,
-              py: 0.75,
-              px: 0.75,
-              opacity: isLoadingModel ? 0.6 : 1,
-              pointerEvents: isLoadingModel ? 'none' : 'auto',
-            }}
-          >
-            <NoAgentIcon sx={{ fontSize: 18, color: subtleColor, flexShrink: 0 }} />
-            <Typography sx={{ flex: 1, fontSize: MENU_ACTION_TEXT_SIZE }}>Без агента</Typography>
-            {!activeAgent && <CheckIcon sx={{ fontSize: 16, color: 'primary.main', flexShrink: 0 }} />}
-          </Box>
           {filteredAgents.map((agent) => (
             <MyAgentMenuItem
               key={agent.id}
@@ -322,24 +338,9 @@ export default function ChatGearMyAgentsTab({ isDarkMode, searchQuery, visible }
               iconColor={iconColor}
               subtleColor={subtleColor}
               onSelect={(a) => void handleSelectAgent(a)}
+              onOpenSettings={(a) => openAgentInConstructor(a.id, navigate)}
             />
           ))}
-          {!loadingAgents && filteredAgents.length === 0 && !searchQuery.trim() && (
-            <Typography
-              variant="body2"
-              sx={{ color: subtleColor, fontSize: MENU_ACTION_TEXT_SIZE, px: 0.5, py: 1, textAlign: 'center' }}
-            >
-              Нет созданных агентов
-            </Typography>
-          )}
-          {!loadingAgents && searchQuery.trim() && filteredAgents.length === 0 && (
-            <Typography
-              variant="body2"
-              sx={{ color: subtleColor, fontSize: MENU_ACTION_TEXT_SIZE, px: 0.5, py: 1, textAlign: 'center' }}
-            >
-              Ничего не найдено
-            </Typography>
-          )}
         </Box>
       )}
     </Box>

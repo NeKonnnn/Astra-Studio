@@ -14,7 +14,6 @@ import { authFetch, getApiUrl, API_ENDPOINTS } from '../config/api';
 import {
   getDropdownItemSx,
   MENU_ACTION_TEXT_SIZE,
-  CHAT_GEAR_MENU_AGENT_LIST_MAX_HEIGHT_PX,
   CHAT_GEAR_SCROLL_AREA_NO_VISIBLE_SCROLLBAR_SX,
 } from '../constants/menuStyles';
 import { formatAuthorLabel } from '../utils/formatAuthorLabel';
@@ -25,6 +24,8 @@ import {
   KB_SELECTION_CHANGED_EVENT,
   toggleActiveKnowledgeBase,
 } from '../utils/knowledgeBaseSelectionStorage';
+import { openKnowledgeBaseInSidebar } from '../utils/openKnowledgeBaseSidebarNav';
+import ChatGearRowSettingsButton from './ChatGearRowSettingsButton';
 
 interface KbRow {
   id: number;
@@ -223,7 +224,6 @@ export default function ChatGearKnowledgeBasesPanel({
         sx={{
           flex: 1,
           minHeight: 0,
-          maxHeight: CHAT_GEAR_MENU_AGENT_LIST_MAX_HEIGHT_PX,
           overflowY: 'auto',
           ...CHAT_GEAR_SCROLL_AREA_NO_VISIBLE_SCROLLBAR_SX,
           px: 0.5,
@@ -319,6 +319,11 @@ export default function ChatGearKnowledgeBasesPanel({
                     {formatAuthorLabel(kb.author_name, kb.author_full_name, kb.author_id)}
                   </Typography>
                 </Box>
+                <ChatGearRowSettingsButton
+                  title="Настройки базы знаний"
+                  color={muted}
+                  onOpen={() => openKnowledgeBaseInSidebar(kb.id, navigate)}
+                />
                 {selected ? (
                   <CheckIcon sx={{ fontSize: 16, color: 'primary.main', flexShrink: 0 }} />
                 ) : null}

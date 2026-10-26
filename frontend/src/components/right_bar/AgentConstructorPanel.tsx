@@ -40,6 +40,7 @@ import {
   History as VersionIcon,
   Save as SaveIcon,
   Share as ShareIcon,
+  ContentCopy as CloneIcon,
   Public as PublicIcon,
   PublicOff as PublicOffIcon,
   Description as FileIcon,
@@ -95,6 +96,15 @@ import { persistAgentArtifactsEnabled } from '../../utils/agentArtifactsEnabled'
 import RAGSettings from '../settings/RAGSettings';
 import { useRagEntityReadyMessage } from '../../hooks/useRagEntityReadyMessage';
 import { fetchMergedUserAgents } from '../../utils/fetchMergedUserAgents';
+import {
+  cloneAgentDeep,
+  extractLinkedAgentIdsFromConfig,
+} from '../../utils/cloneAgentDeep';
+import {
+  consumePendingRelatedAgentIds,
+  type OpenAgentConstructorDetail,
+} from '../../utils/openAgentConstructorNav';
+import { useFeatureAccess } from '../../hooks/useFeatureAccess';
 import { getSidebarPanelBackground, getSidebarPanelChrome, getSidebarSecondaryButtonSx } from '../../constants/sidebarPanelColor';
 import RagUploadingFileThumb from '../RagUploadingFileThumb';
 import RagFilesSearchField from '../RagFilesSearchField';
@@ -264,6 +274,7 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
 
 export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConstructorPanelProps) {
   const { token, user } = useAuth();
+  const { canUseAgents } = useFeatureAccess();
   const ragUserId = String(user?.user_id || user?.username || '').trim().toLowerCase();
   const { showNotification } = useAppActions();
   const { notifyReindexStarted } = useRagReindexStatus();
@@ -507,6 +518,7 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
   const [categoryPopoverAnchor, setCategoryPopoverAnchor] = useState<HTMLElement | null>(null);
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const [isPublishing, setIsPublishing] = useState(false);
+  const [isCloning, setIsCloning] = useState(false);
   /** Оранжевая табличка у блока документов агента (нет модели / нет чекбокса). */
   const [kbGuardMessage, setKbGuardMessage] = useState<string | null>(null);
 
@@ -545,7 +557,10 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
   }, []);
 
   /** Открыть агента из галереи / по id (подтянуть актуальные данные и роль). */
-  const selectExternalAgent = useCallback(async (agentId: number) => {
+  const selectExternalAgent = useCallback(async (
+    agentId: number,
+    relatedAgentIds?: number[],
+  ) => {
     if (!Number.isFinite(agentId) || agentId <= 0) return;
     try {
       const headers: HeadersInit = tokenRef.current
@@ -557,9 +572,37 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
         return;
       }
       const full = (await resp.json()) as Agent;
+      const linkedFromConfig = extractLinkedAgentIdsFromConfig(full.config);
+      const extraIds = Array.from(
+        new Set(
+          [...(relatedAgentIds || []), ...linkedFromConfig].filter(
+            (id) => Number.isFinite(id) && id > 0 && id !== full.id,
+          ),
+        ),
+      );
+      const extras: Agent[] = [];
+      if (extraIds.length > 0) {
+        const fetched = await Promise.all(
+          extraIds.map(async (id) => {
+            try {
+              const r = await authFetch(getApiUrl(`/api/agents/${id}`), { headers });
+              if (!r.ok) return null;
+              return (await r.json()) as Agent;
+            } catch {
+              return null;
+            }
+          }),
+        );
+        for (const a of fetched) {
+          if (a && typeof a.id === 'number') extras.push(a);
+        }
+      }
       setAgents((prev) => {
-        const others = prev.filter((a) => a.id !== full.id);
-        return [...others, full];
+        const byId = new Map<number, Agent>();
+        for (const a of prev) byId.set(a.id, a);
+        byId.set(full.id, full);
+        for (const a of extras) byId.set(a.id, a);
+        return Array.from(byId.values());
       });
       setSelectedAgentId(full.id);
     } catch {
@@ -778,7 +821,8 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
           sessionStorage.removeItem(ASTRA_OPEN_AGENT_CONSTRUCTOR_ID_KEY);
           const id = Number(raw);
           if (Number.isFinite(id) && id > 0) {
-            await selectExternalAgent(id);
+            const related = consumePendingRelatedAgentIds();
+            await selectExternalAgent(id, related);
           }
         }
       } catch {
@@ -790,10 +834,10 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
   // Слушаем событие открытия с agentId (галерея / хоткей с detail)
   useEffect(() => {
     const onOpen = (e: Event) => {
-      const detail = (e as CustomEvent<{ agentId?: number }>).detail;
+      const detail = (e as CustomEvent<OpenAgentConstructorDetail>).detail;
       const id = detail?.agentId;
       if (typeof id === 'number' && Number.isFinite(id) && id > 0) {
-        void selectExternalAgent(id);
+        void selectExternalAgent(id, detail?.relatedAgentIds);
       }
     };
     window.addEventListener(ASTRA_OPEN_AGENT_CONSTRUCTOR, onOpen);
@@ -1484,6 +1528,36 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
       showNotification('error', `Не удалось изменить публикацию: ${msg}`);
     } finally {
       setIsPublishing(false);
+    }
+  };
+
+  // ─── Clone agent ─────────────────────────────────────────────────────────────
+
+  const handleClone = async () => {
+    if (selectedAgentId === 'new' || typeof selectedAgentId !== 'number') return;
+    if (
+      !window.confirm(
+        `Клонировать агента «${name}» со всеми настройками, файлами и полными копиями агентов из цепочки/субагентов? Оригиналы не изменятся.`,
+      )
+    ) {
+      return;
+    }
+    setIsCloning(true);
+    try {
+      const result = await cloneAgentDeep(selectedAgentId, token);
+      await loadAgents();
+      await selectExternalAgent(result.agentId, result.clonedAgentIds);
+      showNotification(
+        'success',
+        result.clonedAgents > 1
+          ? `Склонировано агентов: ${result.clonedAgents} (родитель + цепочка/субагенты)`
+          : 'Агент полностью склонирован',
+      );
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      showNotification('error', `Не удалось клонировать агента: ${msg}`);
+    } finally {
+      setIsCloning(false);
     }
   };
 
@@ -3106,66 +3180,92 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
         </Box>
         */}
 
-        {/* Share + Publish + Delete + Save — дизайн как в GPB_ASTRA */}
+        {/* Clone + Share + Publish + Delete + Save — как в GPB_ASTRA */}
         <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-          {selectedAgentId !== 'new' && isOwner && (
+          {selectedAgentId !== 'new' && (
             <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', width: '100%' }}>
-              <Box component="span" sx={{ flex: '1 1 140px', minWidth: 0, display: 'flex' }}>
-                <Button
-                  size="small"
-                  fullWidth
-                  startIcon={<ShareIcon />}
-                  onClick={() => setShareDialogOpen(true)}
-                  sx={footerNeutralActionBtnSx}
-                >
-                  Поделиться агентом
-                </Button>
-              </Box>
-              <Box component="span" sx={{ flex: '1 1 140px', minWidth: 0, display: 'flex' }}>
-                <Button
-                  size="small"
-                  fullWidth
-                  disabled={isPublishing}
-                  startIcon={
-                    isPublishing ? (
-                      <CircularProgress size={12} sx={{ color: 'inherit' }} />
-                    ) : selectedAgent?.is_public ? (
-                      <PublicOffIcon />
-                    ) : (
-                      <PublicIcon />
-                    )
-                  }
-                  onClick={() => void handleTogglePublish()}
-                  sx={{
-                    ...footerActionBtnSx,
-                    flex: '1 1 auto',
-                    width: '100%',
-                    color: selectedAgent?.is_public ? '#2e7d32' : panelChrome.fgMuted,
-                    border: `1px solid ${selectedAgent?.is_public ? 'rgba(46,125,50,0.45)' : panelChrome.buttonBorder.replace('1px solid ', '')}`,
-                    bgcolor: selectedAgent?.is_public ? 'rgba(46,125,50,0.1)' : 'transparent',
-                    '&:hover': {
-                      bgcolor: selectedAgent?.is_public
-                        ? 'rgba(46,125,50,0.16)'
-                        : panelChrome.hoverBg,
+              {canUseAgents && (
+                <Box component="span" sx={{ flex: '1 1 140px', minWidth: 0, display: 'flex' }}>
+                  <Button
+                    size="small"
+                    fullWidth
+                    disabled={isCloning}
+                    startIcon={
+                      isCloning ? (
+                        <CircularProgress size={12} sx={{ color: 'inherit' }} />
+                      ) : (
+                        <CloneIcon />
+                      )
+                    }
+                    onClick={() => void handleClone()}
+                    sx={footerNeutralActionBtnSx}
+                  >
+                    Клонировать
+                  </Button>
+                </Box>
+              )}
+              {isOwner && (
+                <Box component="span" sx={{ flex: '1 1 140px', minWidth: 0, display: 'flex' }}>
+                  <Button
+                    size="small"
+                    fullWidth
+                    startIcon={<ShareIcon />}
+                    onClick={() => setShareDialogOpen(true)}
+                    sx={footerNeutralActionBtnSx}
+                  >
+                    Поделиться агентом
+                  </Button>
+                </Box>
+              )}
+              {isOwner && (
+                <Box component="span" sx={{ flex: '1 1 140px', minWidth: 0, display: 'flex' }}>
+                  <Button
+                    size="small"
+                    fullWidth
+                    disabled={isPublishing}
+                    startIcon={
+                      isPublishing ? (
+                        <CircularProgress size={12} sx={{ color: 'inherit' }} />
+                      ) : selectedAgent?.is_public ? (
+                        <PublicOffIcon />
+                      ) : (
+                        <PublicIcon />
+                      )
+                    }
+                    onClick={() => void handleTogglePublish()}
+                    sx={{
+                      ...footerActionBtnSx,
+                      flex: '1 1 auto',
+                      width: '100%',
                       color: selectedAgent?.is_public ? '#2e7d32' : panelChrome.fgMuted,
-                    },
-                    '&:disabled': { color: panelChrome.fgSubtle },
-                  }}
-                >
-                  {selectedAgent?.is_public ? 'Снять с публикации' : 'Опубликовать в галерее'}
-                </Button>
-              </Box>
-              <Box component="span" sx={{ flex: '1 1 140px', minWidth: 0, display: 'flex' }}>
-                <Button
-                  size="small"
-                  fullWidth
-                  startIcon={<DeleteIcon />}
-                  onClick={handleDelete}
-                  sx={footerDeleteActionBtnSx}
-                >
-                  Удалить агента
-                </Button>
-              </Box>
+                      border: `1px solid ${selectedAgent?.is_public ? 'rgba(46,125,50,0.45)' : panelChrome.buttonBorder.replace('1px solid ', '')}`,
+                      bgcolor: selectedAgent?.is_public ? 'rgba(46,125,50,0.1)' : 'transparent',
+                      '&:hover': {
+                        bgcolor: selectedAgent?.is_public
+                          ? 'rgba(46,125,50,0.16)'
+                          : panelChrome.hoverBg,
+                        color: selectedAgent?.is_public ? '#2e7d32' : panelChrome.fgMuted,
+                      },
+                      '&:disabled': { color: panelChrome.fgSubtle },
+                    }}
+                  >
+                    {selectedAgent?.is_public ? 'Снять с публикации' : 'Опубликовать в галерее'}
+                  </Button>
+                </Box>
+              )}
+              {isOwner && (
+                <Box component="span" sx={{ flex: '1 1 140px', minWidth: 0, display: 'flex' }}>
+                  <Button
+                    size="small"
+                    fullWidth
+                    startIcon={<DeleteIcon />}
+                    onClick={handleDelete}
+                    sx={footerDeleteActionBtnSx}
+                  >
+                    Удалить агента
+                  </Button>
+                </Box>
+              )}
             </Box>
           )}
           {canEdit ? (

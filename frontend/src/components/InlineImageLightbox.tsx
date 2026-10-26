@@ -6,7 +6,7 @@ import {
   EditOutlined as EditIcon,
 } from '@mui/icons-material';
 import { getInlineAttachmentExtension } from '../utils/inlineAttachmentRules';
-import { getAuthFetchHeaders } from '../config/api';
+import { authFetch } from '../config/api';
 import AuthenticatedInlineImage from './AuthenticatedInlineImage';
 
 export interface InlineImageLightboxProps {
@@ -52,10 +52,10 @@ export default function InlineImageLightbox({
   const handleDownload = useCallback(async () => {
     const fileName = name || `image${ext || '.png'}`;
     try {
-      const headers = src.startsWith('data:') || src.startsWith('blob:')
-        ? undefined
-        : getAuthFetchHeaders();
-      const res = await fetch(src, headers ? { headers } : undefined);
+      const res =
+        src.startsWith('data:') || src.startsWith('blob:')
+          ? await fetch(src)
+          : await authFetch(src);
       if (!res.ok) throw new Error(String(res.status));
       const blob = await res.blob();
       const objectUrl = URL.createObjectURL(blob);

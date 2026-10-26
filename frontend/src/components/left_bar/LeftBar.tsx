@@ -54,6 +54,7 @@ import NewProjectModal from '../NewProjectModal';
 import EditProjectModal from '../EditProjectModal';
 import SidebarRailMenuGlyph from '../../icons/SidebarRailMenuGlyph';
 import UpdatesDialog from './UpdatesDialog';
+import ChatTitleWithGenerating from './ChatTitleWithGenerating';
 import {
   MENU_BORDER_RADIUS_PX,
   getMenuColors,
@@ -1514,19 +1515,11 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
                                       }}
                                     />
                                   ) : (
-                                    <Typography
-                                      variant="body2"
-                                      sx={{
-                                        color: 'white',
-                                        fontWeight: state.currentChatId === chat.id ? 600 : 400,
-                                        overflow: 'hidden',
-                                        textOverflow: 'ellipsis',
-                                        whiteSpace: 'nowrap',
-                                        fontSize: '0.8rem',
-                                      }}
-                                    >
-                                      {chat.title}
-                                    </Typography>
+                                    <ChatTitleWithGenerating
+                                      title={chat.title}
+                                      isGenerating={state.loadingChatIds.includes(chat.id)}
+                                      fontWeight={state.currentChatId === chat.id ? 600 : 400}
+                                    />
                                   )
                                 }
                               />
@@ -1681,19 +1674,11 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
                                     }}
                                   />
                                 ) : (
-                                  <Typography
-                                    variant="body2"
-                                    sx={{
-                                      color: 'white',
-                                      fontWeight: state.currentChatId === chatId ? 600 : 400,
-                                      overflow: 'hidden',
-                                      textOverflow: 'ellipsis',
-                                      whiteSpace: 'nowrap',
-                                      fontSize: '0.8rem',
-                                    }}
-                                  >
-                                    {chat.title}
-                                  </Typography>
+                                  <ChatTitleWithGenerating
+                                    title={chat.title}
+                                    isGenerating={state.loadingChatIds.includes(chatId)}
+                                    fontWeight={state.currentChatId === chatId ? 600 : 400}
+                                  />
                                 )
                               }
                             />
@@ -1818,18 +1803,11 @@ backgroundColor: state.currentChatId === chat.id ? 'var(--sidebar-selected-bg, r
                                     }}
                                   />
                                 ) : (
-                                  <Typography
-                                    variant="body2"
-                                    sx={{
-                                      fontWeight: state.currentChatId === chat.id ? 600 : 400,
-                                      overflow: 'hidden',
-                                      textOverflow: 'ellipsis',
-                                      whiteSpace: 'nowrap',
-                                      fontSize: '0.8rem',
-                                    }}
-                                  >
-                                    {chat.title}
-                                  </Typography>
+                                  <ChatTitleWithGenerating
+                                    title={chat.title}
+                                    isGenerating={state.loadingChatIds.includes(chat.id)}
+                                    fontWeight={state.currentChatId === chat.id ? 600 : 400}
+                                  />
                                 )
                               }
                             />
@@ -1958,19 +1936,11 @@ backgroundColor: state.currentChatId === chat.id ? 'var(--sidebar-selected-bg, r
                                   }}
                                 />
                               ) : (
-                                <Typography
-                                  variant="body2"
-                                  sx={{
-                                    color: 'white',
-                                    fontWeight: state.currentChatId === chatId ? 600 : 400,
-                                    overflow: 'hidden',
-                                    textOverflow: 'ellipsis',
-                                    whiteSpace: 'nowrap',
-                                    fontSize: '0.8rem',
-                                  }}
-                                >
-                                  {chat.title}
-                                </Typography>
+                                <ChatTitleWithGenerating
+                                  title={chat.title}
+                                  isGenerating={state.loadingChatIds.includes(chatId)}
+                                  fontWeight={state.currentChatId === chatId ? 600 : 400}
+                                />
                               )
                             }
                           />

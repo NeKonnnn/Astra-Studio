@@ -11,13 +11,14 @@ import {
 import AgentIcon from '../icons/AgentIcon';
 import { useTheme } from '@mui/material/styles';
 import { useNavigate, Navigate } from 'react-router-dom';
-import { getApiUrl } from '../config/api';
+import { authFetch, getApiUrl } from '../config/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useAppActions } from '../contexts/AppContext';
 import { loadAgentModelOnly } from '../utils/applyAgentServer';
 import { persistAgentMcpConfig } from '../utils/applyAgentMcp';
 import { persistAgentArtifactsEnabled } from '../utils/agentArtifactsEnabled';
 import { openAgentInConstructor } from '../utils/openAgentConstructorNav';
+import { cloneAgentDeep } from '../utils/cloneAgentDeep';
 import {
   GalleryEntityCard,
   GallerySearchBookmarksBar,
@@ -86,6 +87,7 @@ export function AgentGalleryContent({ embedded = false }: { embedded?: boolean }
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [usingId, setUsingId] = useState<number | null>(null);
+  const [cloningId, setCloningId] = useState<number | null>(null);
   const [showBookmarks, setShowBookmarks] = useState(false);
   const loadingRef = useRef(false);
 
@@ -103,9 +105,6 @@ export function AgentGalleryContent({ embedded = false }: { embedded?: boolean }
     loadingRef.current = true;
     setLoading(true);
     try {
-      const headers: HeadersInit = {};
-      if (token) headers.Authorization = `Bearer ${token}`;
-
       let url: string;
       if (showBookmarks) {
         if (!token) {
@@ -126,7 +125,7 @@ export function AgentGalleryContent({ embedded = false }: { embedded?: boolean }
         url = `${getApiUrl('/api/agents/')}?${params}`;
       }
 
-      const resp = await fetch(url, { headers });
+      const resp = await authFetch(url);
       if (!resp.ok) {
         setAgents([]);
         setTotalPages(0);
@@ -155,9 +154,8 @@ export function AgentGalleryContent({ embedded = false }: { embedded?: boolean }
     }
     try {
       const method = agent.is_bookmarked ? 'DELETE' : 'POST';
-      const resp = await fetch(getApiUrl(`/api/agents/${agent.id}/bookmark`), {
+      const resp = await authFetch(getApiUrl(`/api/agents/${agent.id}/bookmark`), {
         method,
-        headers: { Authorization: `Bearer ${token}` },
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
@@ -187,12 +185,9 @@ export function AgentGalleryContent({ embedded = false }: { embedded?: boolean }
       return;
     }
     try {
-      const resp = await fetch(getApiUrl(`/api/agents/${agentId}/rate`), {
+      const resp = await authFetch(getApiUrl(`/api/agents/${agentId}/rate`), {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rating }),
       });
       if (!resp.ok) {
@@ -206,6 +201,37 @@ export function AgentGalleryContent({ embedded = false }: { embedded?: boolean }
     }
   };
 
+  const handleClone = async (agent: GalleryAgent) => {
+    if (!token) {
+      showNotification('error', 'Для клонирования агента нужно войти в систему');
+      return;
+    }
+    if (
+      !window.confirm(
+        `Клонировать агента «${agent.name}» со всеми настройками, файлами и полными копиями агентов из цепочки/субагентов? Оригиналы не изменятся.`,
+      )
+    ) {
+      return;
+    }
+    setCloningId(agent.id);
+    try {
+      const result = await cloneAgentDeep(agent.id, token);
+      showNotification(
+        'success',
+        result.clonedAgents > 1
+          ? `Склонировано агентов: ${result.clonedAgents} (родитель + цепочка/субагенты)`
+          : 'Агент полностью склонирован',
+      );
+      openAgentInConstructor(result.agentId, navigate, {
+        relatedAgentIds: result.clonedAgentIds,
+      });
+    } catch (e: unknown) {
+      showNotification('error', e instanceof Error ? e.message : 'Ошибка клонирования агента');
+    } finally {
+      setCloningId(null);
+    }
+  };
+
   const handleUse = async (agent: GalleryAgent) => {
     if (!token) {
       showNotification('error', 'Для использования агента нужно войти в систему');
@@ -213,26 +239,26 @@ export function AgentGalleryContent({ embedded = false }: { embedded?: boolean }
     }
     setUsingId(agent.id);
     try {
-      const headers: HeadersInit = { Authorization: `Bearer ${token}` };
-
       if (!agent.is_bookmarked) {
-        await fetch(getApiUrl(`/api/agents/${agent.id}/bookmark`), {
+        const bookmarkResp = await authFetch(getApiUrl(`/api/agents/${agent.id}/bookmark`), {
           method: 'POST',
-          headers,
         });
+        if (!bookmarkResp.ok) {
+          const err = await bookmarkResp.json().catch(() => ({}));
+          throw new Error(err.detail || 'Не удалось добавить агента в «Агенты из галереи»');
+        }
         setAgents((prev) =>
           prev.map((a) => (a.id === agent.id ? { ...a, is_bookmarked: true } : a)),
         );
       }
 
-      await fetch(getApiUrl(`/api/agents/${agent.id}/use`), {
+      await authFetch(getApiUrl(`/api/agents/${agent.id}/use`), {
         method: 'POST',
-        headers,
       });
 
       let full = agent;
       try {
-        const detailResp = await fetch(getApiUrl(`/api/agents/${agent.id}`), { headers });
+        const detailResp = await authFetch(getApiUrl(`/api/agents/${agent.id}`));
         if (detailResp.ok) {
           full = { ...agent, ...(await detailResp.json()) };
         }
@@ -306,7 +332,7 @@ export function AgentGalleryContent({ embedded = false }: { embedded?: boolean }
                 </Button>
               </Box>
               <Typography variant="body2" color="text.secondary">
-                Нажмите на карточку, чтобы открыть агента в конструкторе · «Использовать» — добавить в чат
+                «Использовать» — добавить в чат · «Клонировать» — полная копия себе (с цепочкой/субагентами)
               </Typography>
             </Box>
           </Container>
@@ -314,7 +340,7 @@ export function AgentGalleryContent({ embedded = false }: { embedded?: boolean }
       )}
       {embedded && (
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5, textAlign: 'center' }}>
-          Нажмите на карточку, чтобы открыть агента в конструкторе · «Использовать» — добавить в чат
+          «Использовать» — добавить в чат · «Клонировать» — полная копия себе (с цепочкой/субагентами)
         </Typography>
       )}
 
@@ -358,9 +384,12 @@ export function AgentGalleryContent({ embedded = false }: { embedded?: boolean }
                 item={toCardItem(agent)}
                 isDarkMode={isDarkMode}
                 using={usingId === agent.id}
+                cloning={cloningId === agent.id}
+                cloneLabel="Клонировать"
                 onOpen={() => openAgentInConstructor(agent.id, navigate)}
                 onRate={(rating) => void handleRate(agent.id, rating)}
                 onUse={() => void handleUse(agent)}
+                onClone={() => void handleClone(agent)}
                 onToggleBookmark={() => void handleToggleBookmark(agent)}
               />
             ))}

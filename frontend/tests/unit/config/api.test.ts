@@ -1,7 +1,7 @@
 /**
  * @jest-environment jsdom
  */
-import { API_ENDPOINTS, getAuthFetchHeaders, getAuthWsUrl } from '@/config/api';
+import { API_ENDPOINTS, authFetch, getAuthFetchHeaders, getAuthWsUrl } from '@/config/api';
 
 jest.mock('axios', () => ({
   __esModule: true,
@@ -77,6 +77,31 @@ describe('getAuthFetchHeaders', () => {
     expect(
       getAuthFetchHeaders({ 'X-Test': '1', Authorization: 'Bearer spoofed' }),
     ).toEqual({ 'X-Test': '1', Authorization: 'Bearer jwt-1' });
+  });
+});
+
+describe('authFetch', () => {
+  afterEach(() => {
+    localStorage.clear();
+    jest.restoreAllMocks();
+  });
+
+  it('sends Authorization and credentials include for browser session cookie', async () => {
+    localStorage.setItem('auth_token', 'jwt-attach');
+    const fetchMock = jest.fn().mockResolvedValue(new Response('{}', { status: 200 }));
+    global.fetch = fetchMock as typeof fetch;
+
+    await authFetch('https://app.example.com/api/documents/attach', {
+      method: 'POST',
+      body: new FormData(),
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.credentials).toBe('include');
+    expect(init.method).toBe('POST');
+    const headers = init.headers as Headers;
+    expect(headers.get('Authorization')).toBe('Bearer jwt-attach');
   });
 });
 

@@ -1,8 +1,16 @@
 import React, { useEffect, useState } from 'react';
 import { Box, CircularProgress, SxProps, Theme } from '@mui/material';
+import { authFetch, getApiUrl } from '../config/api';
 import { useAuth } from '../contexts/AuthContext';
 
-/** Превью из MinIO с Bearer-токеном (обычный img src не передаёт Authorization). */
+function resolveFetchUrl(src: string): string {
+  if (src.startsWith('data:') || src.startsWith('blob:') || /^https?:\/\//i.test(src)) {
+    return src;
+  }
+  return getApiUrl(src.startsWith('/') ? src : `/${src}`);
+}
+
+/** Превью из MinIO: JWT + cookie client binding (без credentials img/fetch → 401 SEC007). */
 export default function AuthenticatedInlineImage({
   src,
   alt,
@@ -27,7 +35,7 @@ export default function AuthenticatedInlineImage({
     let objectUrl: string | null = null;
     (async () => {
       try {
-        const res = await fetch(src, { headers: { Authorization: `Bearer ${token}` } });
+        const res = await authFetch(resolveFetchUrl(src));
         if (!res.ok || cancelled) return;
         const blob = await res.blob();
         if (cancelled) return;
