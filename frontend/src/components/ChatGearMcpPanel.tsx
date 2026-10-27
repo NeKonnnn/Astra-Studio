@@ -77,10 +77,13 @@ export default function ChatGearMcpPanel({ isDarkMode, chatId }: ChatGearMcpPane
     try {
       const tools = await fetchMcpTools(serverId);
       setToolsByServer((prev) => ({ ...prev, [serverId]: tools }));
-    } catch {
+    } catch (err) {
+      const detail = err instanceof Error && err.message.trim()
+        ? err.message.trim()
+        : 'Не удалось загрузить инструменты';
       setToolsErrorByServer((prev) => ({
         ...prev,
-        [serverId]: 'Не удалось загрузить инструменты',
+        [serverId]: detail,
       }));
       setToolsByServer((prev) => ({ ...prev, [serverId]: [] }));
     } finally {

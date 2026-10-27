@@ -144,8 +144,14 @@ export function extractReasoningBlock(
   if (peel.isPlainThinkingStreaming) isThinkingStreaming = true;
 
   return {
-    visibleContent: visible || (reasoningParts.length > 0 ? '' : rawText),
-    reasoningContent: reasoningParts.length > 0 ? reasoningParts.join('\n\n') : null,
+    visibleContent: visible || (reasoningParts.length > 0 || isThinkingStreaming ? '' : rawText),
+    // Пустая строка при незакрытом <think> — чтобы UI мог смонтировать рамку до первого токена.
+    reasoningContent:
+      reasoningParts.length > 0
+        ? reasoningParts.join('\n\n')
+        : isThinkingStreaming
+          ? ''
+          : null,
     isThinkingStreaming,
   };
 }

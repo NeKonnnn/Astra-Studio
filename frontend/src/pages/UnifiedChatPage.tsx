@@ -843,18 +843,50 @@ const MessageCardComponent = ({
 
   // Автораскрытие блока рассуждений — только ОДИН РАЗ при старте рассуждения.
   // Ref-флаг гарантирует, что после ручного сворачивания последующие чанки
-  // блок НЕ переоткрывают.
+  // блок НЕ переоткрывают. Смотрим на parsed/visibleBody, а не только на
+  // message.content: при regenerate мысли живут в alternativeResponses.
   const hasAutoExpandedRef = useRef(false);
+  const hasMultiAutoExpandedRef = useRef<Record<number, boolean>>({});
   useEffect(() => {
-    if (message.isStreaming && message.content.includes('<think>') && !hasAutoExpandedRef.current) {
+    const hasReasoning =
+      Boolean(parsedMessage.reasoningContent) ||
+      Boolean(parsedMessage.isThinkingStreaming) ||
+      /<(?:think|redacted_thinking)>/i.test(visibleBody) ||
+      /^\s*(Thinking Process|Chain of Thought|Рассуждение)/i.test(visibleBody);
+    if (message.isStreaming && hasReasoning && !hasAutoExpandedRef.current) {
       hasAutoExpandedRef.current = true;
       setReasoningExpanded(true);
     }
     // При завершении генерации сбрасываем флаг для следующей генерации
     if (!message.isStreaming) {
       hasAutoExpandedRef.current = false;
+      hasMultiAutoExpandedRef.current = {};
     }
-  }, [message.isStreaming, message.content]);
+  }, [
+    message.isStreaming,
+    visibleBody,
+    parsedMessage.reasoningContent,
+    parsedMessage.isThinkingStreaming,
+  ]);
+
+  // Multi-LLM: раскрываем рамку мышления по мере стрима в каждой колонке.
+  useEffect(() => {
+    if (!message.multiLLMResponses?.length) return;
+    message.multiLLMResponses.forEach((response, respIndex) => {
+      if (!response.isStreaming || hasMultiAutoExpandedRef.current[respIndex]) return;
+      const displayBody = getMultiLlmColumnDisplayBody(response);
+      const parsed = extractReasoningBlock(displayBody, true);
+      const hasReasoning =
+        Boolean(parsed.reasoningContent) ||
+        Boolean(parsed.isThinkingStreaming) ||
+        /<(?:think|redacted_thinking)>/i.test(displayBody);
+      if (!hasReasoning) return;
+      hasMultiAutoExpandedRef.current[respIndex] = true;
+      setMultiReasoningExpanded((prev) =>
+        prev[respIndex] ? prev : { ...prev, [respIndex]: true },
+      );
+    });
+  }, [message.multiLLMResponses]);
 
   const hideOuterActionBar = !isUser && (message.multiLLMResponses?.length ?? 0) > 0;
   const showFollowUpSuggestions =
@@ -1050,13 +1082,20 @@ const MessageCardComponent = ({
                       </Alert>
                     ) : (
                       <>
-                        {parsedResponse.reasoningContent ? (
+                        {parsedResponse.reasoningContent || isResponseReasoningStreaming ? (
                           <ReasoningBlock
-                            reasoningContent={parsedResponse.reasoningContent}
+                            reasoningContent={parsedResponse.reasoningContent || ''}
                             isThinkingStreaming={isResponseReasoningStreaming}
-                            isExpanded={Boolean(multiReasoningExpanded[respIndex])}
+                            isExpanded={
+                              Boolean(multiReasoningExpanded[respIndex]) || isResponseReasoningStreaming
+                            }
                             onToggle={() =>
-                              setMultiReasoningExpanded((prev) => ({ ...prev, [respIndex]: !prev[respIndex] }))
+                              setMultiReasoningExpanded((prev) => ({
+                                ...prev,
+                                [respIndex]: !(
+                                  Boolean(prev[respIndex]) || isResponseReasoningStreaming
+                                ),
+                              }))
                             }
                             durationSec={multiThinkingDurationSec[respIndex] ?? null}
                             liveThinkingSec={multiLiveThinkingSec[respIndex] ?? null}
@@ -1311,12 +1350,12 @@ const MessageCardComponent = ({
           </>
         ) : (
           <>
-            {parsedMessage.reasoningContent ? (
+            {parsedMessage.reasoningContent || isReasoningStreaming ? (
               <ReasoningBlock
-                reasoningContent={parsedMessage.reasoningContent}
+                reasoningContent={parsedMessage.reasoningContent || ''}
                 isThinkingStreaming={isReasoningStreaming}
-                isExpanded={reasoningExpanded}
-                onToggle={() => setReasoningExpanded((p) => !p)}
+                isExpanded={reasoningExpanded || isReasoningStreaming}
+                onToggle={() => setReasoningExpanded((p) => !(p || isReasoningStreaming))}
                 durationSec={thinkingDurationSec}
                 liveThinkingSec={liveThinkingSec}
                 isDarkMode={isDarkMode}

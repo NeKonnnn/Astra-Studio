@@ -31,6 +31,7 @@ import { getApprovedPlan, setApprovedPlan, setDraftPlan } from '../coding/planSt
 import { extractSkillIds } from '../utils/skillMentions';
 import { extractTagIds } from '../utils/tagMentions';
 import { getActiveSkillIds } from '../utils/skillSelectionStorage';
+import { getActiveKnowledgeBaseIds } from '../utils/knowledgeBaseSelectionStorage';
 import { skillImpliesPresentation } from '../utils/messageArtifactsViewerStorage';
 import { readAgentPresentationSkills } from '../utils/agentArtifactsEnabled';
 import { getApiUrl } from '../config/api';
@@ -480,10 +481,14 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     return 'auto';
   };
 
-  /** Собирает итоговое содержимое сообщения из thinking + response для отображения. */
+  /**
+   * Собирает итоговое содержимое сообщения из thinking + response для отображения.
+   * Пока ответа ещё нет — оставляем незакрытый <think>, чтобы UI сразу показал
+   * рамку «Думает…» (isThinkingStreaming), а не ждал </think>.
+   */
   const buildCombinedContent = (thinking: string, response: string): string => {
     if (!thinking.trim()) return response;
-    if (!response.trim()) return `<think>${thinking}</think>`;
+    if (!response.trim()) return `<think>${thinking}`;
     return `<think>${thinking}</think>\n\n${response}`;
   };
 
@@ -2014,6 +2019,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     // Отправляем сообщение через Socket.IO
     const skillIds = resolveSkillIds(chatId, message);
     const tagIds = resolveTagIds(message);
+    const knowledgeBaseIds = getActiveKnowledgeBaseIds(chatId);
     const messageData = {
       message,
       streaming: useStreaming,
@@ -2034,6 +2040,8 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       model_path: resolveChatModelPath(),
       enable_thinking: resolveEnableThinking(),
       skill_ids: skillIds.length ? skillIds : undefined,
+      /** БЗ из «Инструменты → Базы знаний» (scoped KB RAG на бэкенде). */
+      knowledge_base_ids: knowledgeBaseIds.length ? knowledgeBaseIds : undefined,
       tag_ids: tagIds.length ? tagIds : undefined,
       // Inline-вложения (без RAG/эмбединга)
       inline_context: inlineData?.inline_context || undefined,
@@ -2182,6 +2190,10 @@ export function SocketProvider({ children }: { children: ReactNode }) {
         const ids = resolveSkillIds(chatId, userMessage);
         return ids.length ? ids : undefined;
       })(),
+      knowledge_base_ids: (() => {
+        const ids = getActiveKnowledgeBaseIds(chatId);
+        return ids.length ? ids : undefined;
+      })(),
       tag_ids: (() => {
         const ids = resolveTagIds(userMessage);
         return ids.length ? ids : undefined;
@@ -2272,6 +2284,8 @@ export function SocketProvider({ children }: { children: ReactNode }) {
         ? (localStorage.getItem('active_agent_name') || '').trim() || null
         : null;
     const ragStrategy = readUserRagStrategy();
+    const useKbRag = localStorage.getItem('use_kb_rag') === 'true';
+    const useMemoryLibraryRag = localStorage.getItem('use_memory_library_rag') === 'true';
 
     const messageData = {
       message: userMessage,
@@ -2284,11 +2298,17 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       conversation_id: chatId,
       agent_id: agentIdForChat,
       agent_name: agentNameForChat,
+      use_kb_rag: useKbRag,
+      use_memory_library_rag: useMemoryLibraryRag,
       rag_strategy: ragStrategy,
       model_path: resolveChatModelPath(),
       enable_thinking: resolveEnableThinking(),
       skill_ids: (() => {
         const ids = resolveSkillIds(chatId, userMessage);
+        return ids.length ? ids : undefined;
+      })(),
+      knowledge_base_ids: (() => {
+        const ids = getActiveKnowledgeBaseIds(chatId);
         return ids.length ? ids : undefined;
       })(),
       tag_ids: (() => {

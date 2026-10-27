@@ -1239,13 +1239,18 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
 
   const handleKbDelete = async (docId: number) => {
     try {
-      const url = `${getApiUrl(API_ENDPOINTS.KB_DOCUMENTS_DELETE)}/${docId}`;
+      const qs =
+        typeof selectedAgentId === 'number' && selectedAgentId > 0
+          ? `?agent_id=${selectedAgentId}`
+          : '';
+      const url = `${getApiUrl(API_ENDPOINTS.KB_DOCUMENTS_DELETE)}/${docId}${qs}`;
       const resp = await authFetch(url, { method: 'DELETE' });
       // Ответ проверяем до правки списков и до persist.
       if (!resp.ok) {
         const detail = await resp.json().then(d => d?.detail).catch(() => null);
         throw new Error(detail || `HTTP ${resp.status}`);
       }
+      const body = await resp.json().catch(() => ({} as { unbound_only?: boolean }));
       setKbDocuments(prev => prev.filter(d => d.id !== docId));
       let nextIds: number[] = [];
       setKbDocumentIds(prev => {
@@ -1253,7 +1258,14 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
         return nextIds;
       });
       if (typeof selectedAgentId === 'number') {
+        // Бэкенд при unbound_only уже убрал id из config; persist дублирует для UI.
         await persistAgentKbDocumentIds(selectedAgentId, nextIds);
+      }
+      if (body?.unbound_only) {
+        showNotification(
+          'success',
+          'Файл отвязан от этого агента; у других агентов он сохранён',
+        );
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -1310,7 +1322,9 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
         // (поиск в чате — per-KB). Сами файлы остаются в kb_document_ids
         // до фоновой миграции metadata.knowledge_base_id.
         knowledge_bases_enabled:
-          knowledgeBasesEnabled || (fileSearchEnabled && kbDocumentIds.length > 0),
+          knowledgeBasesEnabled
+          || knowledgeBaseIds.length > 0
+          || (fileSearchEnabled && kbDocumentIds.length > 0),
         knowledge_base_ids: knowledgeBaseIds,
         support_name: supportName,
         support_email: supportEmail,
