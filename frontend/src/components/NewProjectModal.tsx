@@ -37,6 +37,9 @@ import {
 import {
   PROJECT_DEFAULT_ICON as FolderIcon,
   PROJECT_ICON_OPTIONS as iconOptions,
+  getDefaultProjectIconColor,
+  getProjectIconColorOptions,
+  resolveProjectIconColor,
 } from '../constants/projectIcons';
 
 export interface DraftProjectPayload {
@@ -75,16 +78,6 @@ export interface ProjectData {
   knowledgeBaseIds?: number[];
 }
 
-const colorOptions = [
-  { name: 'white', value: '#ffffff' },
-  { name: 'red', value: '#f44336' },
-  { name: 'orange', value: '#ff9800' },
-  { name: 'green', value: '#4caf50' },
-  { name: 'blue', value: '#2196f3' },
-  { name: 'purple', value: '#9c27b0' },
-  { name: 'dark-purple', value: '#673ab7' },
-];
-
 const emojiOptions = [
   '📁', '💰', '📝', '❤️', '✈️', '🎯', '🚀', '💡', '📊', '🎨', '🏠', '🎓', '💼', '🏥', '🍕', '☕',
   '💻', '🌱', '🐱', '🐶', '🚗', '📚', '☂️', '📅', '🖥️', '🔊', '📈', '✉️', '🎮', '🎬', '🎵', '🎤',
@@ -101,12 +94,14 @@ export default function NewProjectModal({
   cancelDraftProject,
 }: NewProjectModalProps) {
   const theme = useTheme();
+  const isDarkMode = theme.palette.mode === 'dark';
+  const colorOptions = getProjectIconColorOptions(isDarkMode);
   const { notifyReindexStarted } = useRagReindexStatus();
   const [projectName, setProjectName] = useState('');
   const [selectedIcon, setSelectedIcon] = useState<string | null>(null);
   const [selectedEmoji, setSelectedEmoji] = useState<string | null>(null);
   const [iconType, setIconType] = useState<'icon' | 'emoji'>('icon');
-  const [selectedColor, setSelectedColor] = useState('#ffffff');
+  const [selectedColor, setSelectedColor] = useState(() => getDefaultProjectIconColor(false));
   const [memory, setMemory] = useState<'default' | 'project-only'>('default');
   const [instructions, setInstructions] = useState('');
   /** Черновик настроек РАГ: уезжает в БД вместе с созданием проекта. */
@@ -125,8 +120,13 @@ export default function NewProjectModal({
     if (open) {
       createCompletedRef.current = false;
       setRagDraftProjectId(null);
+      setSelectedColor(getDefaultProjectIconColor(theme.palette.mode === 'dark'));
     }
-  }, [open]);
+  }, [open, theme.palette.mode]);
+
+  useEffect(() => {
+    setSelectedColor((prev) => resolveProjectIconColor(prev, isDarkMode));
+  }, [isDarkMode]);
 
   // Закрываем попап при клике вне его
   useEffect(() => {
@@ -150,7 +150,7 @@ export default function NewProjectModal({
     setSelectedIcon(null);
     setSelectedEmoji(null);
     setIconType('icon');
-    setSelectedColor('#ffffff');
+    setSelectedColor(getDefaultProjectIconColor(theme.palette.mode === 'dark'));
     setMemory('default');
     setInstructions('');
     setShowIconPicker(false);
@@ -263,13 +263,15 @@ export default function NewProjectModal({
   };
 
   const renderIcon = () => {
+    const previewColor = resolveProjectIconColor(selectedColor, isDarkMode);
     if (iconType === 'emoji' && selectedEmoji) {
       return (
         <Avatar
           sx={{
             width: 48,
             height: 48,
-            bgcolor: selectedColor === '#ffffff' ? 'rgba(255,255,255,0.1)' : selectedColor,
+            bgcolor: 'transparent',
+            color: previewColor,
             fontSize: 24,
           }}
         >
@@ -284,11 +286,11 @@ export default function NewProjectModal({
           sx={{
             width: 48,
             height: 48,
-            bgcolor: selectedColor === '#ffffff' ? 'rgba(255,255,255,0.1)' : selectedColor,
-            color: selectedColor === '#ffffff' ? 'white' : 'white',
+            bgcolor: 'transparent',
+            color: previewColor,
           }}
         >
-          <IconComponent />
+          <IconComponent sx={{ color: 'inherit' }} />
         </Avatar>
       );
     }
@@ -297,11 +299,11 @@ export default function NewProjectModal({
         sx={{
           width: 48,
           height: 48,
-          bgcolor: 'rgba(255,255,255,0.1)',
-          color: 'white',
+          bgcolor: 'transparent',
+          color: previewColor,
         }}
       >
-        <AddIcon />
+        <AddIcon sx={{ color: 'inherit' }} />
       </Avatar>
     );
   };
@@ -420,7 +422,7 @@ export default function NewProjectModal({
                       {iconOptions.map((option) => {
                         const IconComponent = option.icon;
                         const previewColor =
-                          selectedColor === '#ffffff' ? '#9ca3af' : selectedColor;
+                          resolveProjectIconColor(selectedColor, isDarkMode);
                         return (
                           <IconButton
                             key={option.name}

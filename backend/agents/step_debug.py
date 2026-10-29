@@ -54,6 +54,7 @@ _END_REASON_RU: Mapping[str, str] = {
     "exhausted": "лимит шагов исчерпан",
     "no_tools": "инструментов нет, один вызов модели",
     "unparsed_fc_json": "не удалось разобрать ответ модели с вызовом инструментов",
+    "stopped": "генерация остановлена пользователем",
 }
 
 _TOOL_KIND_RU: Mapping[str, str] = {

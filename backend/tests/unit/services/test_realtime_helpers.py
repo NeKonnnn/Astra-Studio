@@ -273,3 +273,109 @@ class TestBanner:
         caplog.set_level(logging.INFO, logger=h.logger.name)
         h._terminal_chat_inference_banner(sid="s", conversation_id=1, user_preview="", mode_label="m")
         assert "Генерация ответа" not in caplog.text
+
+
+class TestResolveAgentKbDocumentIds:
+    class Client:
+        def __init__(self, rows):
+            self.rows = rows
+
+        async def kb_list_documents(self, **_kw):
+            return self.rows
+
+    async def test_expands_kb_ids_even_when_flag_false(self):
+        c = self.Client([
+            {"id": 24, "metadata": {"knowledge_base_id": 1}},
+            {"id": 99, "metadata": {"knowledge_base_id": 9}},
+        ])
+        out = await h.resolve_agent_kb_document_ids(
+            c,
+            {
+                "knowledge_bases_enabled": False,
+                "knowledge_base_ids": [1],
+                "file_search_enabled": True,
+                "kb_document_ids": [7],
+            },
+        )
+        assert out == [7, 24]
+
+    async def test_warns_when_kb_ids_do_not_expand(self, caplog):
+        caplog.set_level(logging.WARNING, logger=h.logger.name)
+        out = await h.resolve_agent_kb_document_ids(
+            self.Client([]),
+            {"knowledge_bases_enabled": True, "knowledge_base_ids": [1]},
+        )
+        assert out == []
+        assert "не развернулись" in caplog.text
+
+
+class TestKbSearchKnowledgeBases:
+    class Client:
+        def __init__(self, behavior):
+            """behavior: list of return values or exceptions per call."""
+            self.behavior = list(behavior)
+            self.calls = []
+
+        async def kb_search(self, query, **kw):
+            self.calls.append({"query": query, **kw})
+            item = self.behavior.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+    async def test_timeout_with_rerank_retries_without(self, monkeypatch):
+        import httpx
+
+        async def fake_settings(scope, entity_id):
+            return {
+                "rag_chat_top_k": 5,
+                "rag_similarity_threshold": 0.0,
+                "rag_reranking_enabled": True,
+                "rag_embedding_model_path": "corsur/embed/FRIDA",
+            }
+
+        monkeypatch.setattr(
+            "backend.services.user_rag_settings.get_entity_rag_settings",
+            fake_settings,
+        )
+        c = self.Client([
+            httpx.ReadTimeout("slow rerank"),
+            [("chunk", 0.9, 24, 0)],
+        ])
+        out = await h.kb_search_knowledge_bases(
+            c, "какие документы?", [1], k=3, docs_by_kb={1: [24]}
+        )
+        assert len(out) == 1 and out[0][2] == 24
+        assert len(c.calls) == 2
+        assert c.calls[1].get("use_reranking") is False
+        assert c.calls[1]["settings_override"]["rag_reranking_enabled"] is False
+
+    async def test_empty_hits_with_docs_logs_mismatch_hint(self, monkeypatch, caplog):
+        async def fake_settings(scope, entity_id):
+            return {
+                "rag_chat_top_k": 5,
+                "rag_similarity_threshold": 0.0,
+                "rag_reranking_enabled": False,
+                "rag_embedding_model_path": "corsur/embed/FRIDA",
+            }
+
+        monkeypatch.setattr(
+            "backend.services.user_rag_settings.get_entity_rag_settings",
+            fake_settings,
+        )
+        caplog.set_level(logging.WARNING, logger=h.logger.name)
+        c = self.Client([[]])
+        out = await h.kb_search_knowledge_bases(
+            c, "q", [2], k=3, docs_by_kb={2: [20, 21]}
+        )
+        assert out == []
+        assert "hits=0" in caplog.text and "mismatch" in caplog.text
+
+
+class TestRagSearchTimeoutHelper:
+    def test_detects_httpx_and_message(self):
+        import httpx
+
+        assert h._is_rag_search_timeout(httpx.ReadTimeout("x")) is True
+        assert h._is_rag_search_timeout(TimeoutError("READ_TIMEOUT")) is True
+        assert h._is_rag_search_timeout(ValueError("bad")) is False

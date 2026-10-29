@@ -92,11 +92,18 @@ class McpClient:
         result = await self.session.list_tools()
         specs: List[Dict[str, Any]] = []
         for tool in result.tools:
+            # MCP SDK: раньше inputSchema (alias), в новых — input_schema.
+            schema = getattr(tool, "inputSchema", None)
+            if schema is None:
+                schema = getattr(tool, "input_schema", None)
+            if schema is None and hasattr(tool, "model_dump"):
+                dumped = tool.model_dump(by_alias=True)
+                schema = dumped.get("inputSchema") or dumped.get("input_schema")
             specs.append(
                 {
                     "name": tool.name,
                     "description": tool.description or "",
-                    "parameters": tool.inputSchema or {},
+                    "parameters": schema or {},
                 }
             )
         return specs
@@ -109,9 +116,17 @@ class McpClient:
         if not result:
             msg = "No result returned from MCP tool call."
             raise RuntimeError(msg)
+        # Новый MCP SDK: is_error / model_dump snake_case; старый — isError.
         result_dict = result.model_dump(mode="json")
         content = result_dict.get("content", result_dict)
-        if result.isError:
+        is_error = getattr(result, "is_error", None)
+        if is_error is None:
+            is_error = getattr(result, "isError", None)
+        if is_error is None:
+            is_error = bool(
+                result_dict.get("is_error", result_dict.get("isError", False))
+            )
+        if is_error:
             msg = str(content)
             raise RuntimeError(msg)
         return content

@@ -15,14 +15,18 @@ _FETCH_CONTENT_MAX_CHARS = 3500
 
 _URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 _FILE_PATH_RE = re.compile(r"[^\s<>\"']+\.(?:pptx|ppt|pdf|docx|xlsx)\b", re.IGNORECASE)
-_LINK_KEYS = (
+# Расширения, которые считаем файлом для скачивания (не обычные страницы поиска).
+_FILE_URL_EXT_RE = re.compile(
+    r"\.(?:pptx|ppt|pdf|docx|doc|xlsx|xls|csv|zip|7z|rar|tar|gz|"
+    r"png|jpe?g|gif|webp|mp3|mp4|wav|txt|json|xml)(?:\?|#|$)",
+    re.IGNORECASE,
+)
+# Явные ключи download — берём даже без расширения в URL.
+_EXPLICIT_DOWNLOAD_KEYS = (
     "download_url",
     "downloadUrl",
     "file_url",
     "fileUrl",
-    "url",
-    "href",
-    "link",
     "download_link",
     "downloadLink",
     "s3_url",
@@ -30,6 +34,8 @@ _LINK_KEYS = (
     "presigned_url",
     "presignedUrl",
 )
+# Общие url/href — только если это файл или рядом указано имя файла.
+_GENERIC_URL_KEYS = ("url", "href", "link")
 _NAME_KEYS = ("filename", "file_name", "fileName", "name", "title")
 _STORAGE_KEY_KEYS = (
     "s3_key",
@@ -268,8 +274,20 @@ def parsed_to_api_dict(parsed: ParsedMcpResult, *, include_binary: bool = False)
     }
 
 
+def _looks_like_downloadable_file(url: str) -> bool:
+    """True только для URL/пути к файлу, не для обычных веб-страниц (погода, поиск)."""
+    cleaned = (url or "").strip()
+    if not cleaned:
+        return False
+    path = cleaned.split("?", 1)[0].split("#", 1)[0]
+    return bool(_FILE_URL_EXT_RE.search(path) or _FILE_PATH_RE.search(path))
+
+
 def extract_download_links(parsed: ParsedMcpResult) -> List[Dict[str, str]]:
-    """Ссылки на файлы из текста/JSON MCP tool result (pptx и др.)."""
+    """Ссылки на файлы из текста/JSON MCP tool result (pptx и др.).
+
+    Не превращает обычные URL из websearch (yandex/gismeteo/…) в «Скачать».
+    """
     links: List[Dict[str, str]] = []
     seen: set[str] = set()
 
@@ -293,9 +311,20 @@ def extract_download_links(parsed: ParsedMcpResult) -> List[Dict[str, str]]:
                 label = next(
                     (str(data[k]) for k in _NAME_KEYS if data.get(k)), "Скачать файл"
                 )
-                for key in _LINK_KEYS:
+                has_filename = any(
+                    isinstance(data.get(k), str) and str(data.get(k)).strip()
+                    for k in ("filename", "file_name", "fileName")
+                )
+                for key in _EXPLICIT_DOWNLOAD_KEYS:
                     value = data.get(key)
                     if isinstance(value, str) and value.strip():
+                        _add(value, label)
+                for key in _GENERIC_URL_KEYS:
+                    value = data.get(key)
+                    if not isinstance(value, str) or not value.strip():
+                        continue
+                    # url рядом с filename (office MCP) или сам url — файл
+                    if has_filename or _looks_like_downloadable_file(value):
                         _add(value, label)
                 for key in (
                     "path",
@@ -308,7 +337,9 @@ def extract_download_links(parsed: ParsedMcpResult) -> List[Dict[str, str]]:
                     if isinstance(value, str) and _FILE_PATH_RE.search(value):
                         _add(value, label or value.rsplit("/", 1)[-1])
         for match in _URL_RE.findall(text):
-            name = match.rsplit("/", 1)[-1]
+            if not _looks_like_downloadable_file(match):
+                continue
+            name = match.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
             _add(match, name or "Скачать файл")
         for match in _FILE_PATH_RE.findall(text):
             if match.startswith("http"):

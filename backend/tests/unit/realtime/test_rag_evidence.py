@@ -106,6 +106,26 @@ class TestInventory:
         monkeypatch.setattr("backend.rag_query.prompts.documents_inventory_enabled", broken)
         assert "a" in ev.build_rag_inventory_block([("x", ["a"])])
 
+    def test_prepend_inventory_without_hits_scopes_kb(self, monkeypatch):
+        monkeypatch.setattr("backend.rag_query.prompts.documents_inventory_enabled", lambda: True)
+        msg, added = ev.prepend_rag_inventory(
+            "какие документы ты видишь?",
+            proj_id_name={1: "proj.pdf"},
+            kb_id_name={10: "Astra.pdf", 11: "чужой.pdf"},
+            mem_id_name={20: "mem.txt"},
+            agent_kb_doc_ids=[10],
+        )
+        assert added is True
+        assert msg.startswith("ДОСТУПНЫЕ ФАЙЛЫ")
+        assert "Astra.pdf" in msg and "proj.pdf" in msg and "mem.txt" in msg
+        assert "чужой.pdf" not in msg
+        assert msg.endswith("какие документы ты видишь?")
+
+    def test_prepend_inventory_empty_when_no_names(self, monkeypatch):
+        monkeypatch.setattr("backend.rag_query.prompts.documents_inventory_enabled", lambda: True)
+        msg, added = ev.prepend_rag_inventory("вопрос", agent_kb_doc_ids=[1])
+        assert added is False and msg == "вопрос"
+
 
 # ------------------------------------------------------------ active sources
 
@@ -129,9 +149,10 @@ class TestActiveSources:
         assert self.resolve(use_agent_scoped_kb=True, agent_kb_doc_ids=[1]).store_list() == ["kb"]
         assert self.resolve(use_memory_library_rag=True).store_list() == ["memory"]
 
-    def test_agent_kb_needs_documents(self):
-        assert self.resolve(use_agent_scoped_kb=True, agent_kb_doc_ids=[]).agent_kb is False
-        assert self.resolve(use_agent_scoped_kb=True, agent_kb_doc_ids=None).agent_kb is False
+    def test_agent_kb_follows_scoped_flag(self):
+        # Флаг уже учитывает Tools kb_ids / expand в handlers — здесь не режем.
+        assert self.resolve(use_agent_scoped_kb=True, agent_kb_doc_ids=[]).agent_kb is True
+        assert self.resolve(use_agent_scoped_kb=True, agent_kb_doc_ids=None).agent_kb is True
         assert self.resolve(use_agent_scoped_kb=False, agent_kb_doc_ids=[1]).agent_kb is False
 
     def test_either_library_flag_enables_memory(self):

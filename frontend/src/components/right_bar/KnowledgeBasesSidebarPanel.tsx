@@ -120,12 +120,6 @@ function getFileIcon(filename: string) {
   return <FileIcon sx={fileIconSx} />;
 }
 
-function shortFileName(name: string, max = 16): string {
-  if (name.length <= max) return name;
-  const ext = name.includes('.') ? `.${name.split('.').pop()}` : '';
-  return `${name.slice(0, Math.max(1, max - ext.length - 3))}...${ext}`;
-}
-
 interface KbRow {
   id: number;
   name: string;
@@ -1047,7 +1041,7 @@ export default function KnowledgeBasesSidebarPanel({
                           }}
                           title={pending.filename}
                         >
-                          {shortFileName(pending.filename, 16)}
+                          {pending.filename}
                         </Typography>
                         <Typography
                           variant="caption"
@@ -1108,7 +1102,7 @@ export default function KnowledgeBasesSidebarPanel({
                                 lineHeight: 1.3,
                               }}
                             >
-                              {shortFileName(displayName, 16)}
+                              {displayName}
                             </Typography>
                           </Tooltip>
                           <Typography

@@ -1341,6 +1341,28 @@ def _try_upload_bytes_to_minio(
         return (None, None)
 
 
+def _persist_inline_attachment(
+    request: Request,
+    content: bytes,
+    filename: str,
+    content_type: str,
+    *,
+    username: str,
+) -> tuple[str | None, str | None]:
+    """Сначала MinIO (локальный docker / прод), иначе INLINE_ATTACH_DIR (K8s PVC)."""
+    minio_object, minio_bucket = _try_upload_bytes_to_minio(
+        request, content, filename, content_type
+    )
+    if minio_object:
+        return minio_object, minio_bucket
+    attach_object = _try_save_bytes_to_pod_attachments(
+        content, filename, content_type, username=username
+    )
+    if attach_object:
+        return attach_object, INLINE_ATTACH_POD_TMP_BUCKET
+    return None, None
+
+
 _GLOBAL_RAG_GONE = "Global documents store отключён. Используйте Базу Знаний, библиотеку памяти или RAG проекта."
 
 
@@ -1405,8 +1427,8 @@ async def attach_document_for_message(
     current_user: Annotated[dict, Depends(get_current_user)],
 ):
     """
-    Прикрепление к сообщению: сохранение в INLINE_ATTACH_DIR + извлечение содержимого для модели.
-    Без RAG, эмбеддингов и PostgreSQL — только каталог пода и inline-контент.
+    Прикрепление к сообщению: сохранение в MinIO (или INLINE_ATTACH_DIR как fallback)
+    + извлечение содержимого для модели. Без RAG/эмбеддингов.
     """
     username = (
         current_user.get("username") or current_user.get("user_id") or "anonymous"
@@ -1477,29 +1499,19 @@ async def attach_document_for_message(
     if not analysis["model_compatible"]:
         _log_inline_attachment_debug("model-incompatible", analysis)
     _log_inline_attach_upload_success(filename)
-    # --- MinIO для inline «+»: временно отключено, файлы пишутся в INLINE_ATTACH_DIR пода ---
-    # minio_object, minio_bucket = _try_upload_bytes_to_minio(request, content, filename, content_type)
-    attach_object = _try_save_bytes_to_pod_attachments(
-        content, filename, content_type, username=username
+    minio_object, minio_bucket = _persist_inline_attachment(
+        request, content, filename, content_type, username=username
     )
-    minio_object = attach_object
-    minio_bucket = INLINE_ATTACH_POD_TMP_BUCKET if attach_object else None
     _log_inline_attachment_debug(
-        "pod-attachments-save",
+        "attachments-save",
         analysis,
-        attachments_saved=bool(attach_object),
-        attach_object=attach_object,
-        attachments_dir=_inline_attach_pod_dir(),
+        attachments_saved=bool(minio_object),
+        minio_object=minio_object,
+        minio_bucket=minio_bucket,
+        attachments_dir=_inline_attach_pod_dir(required=False),
         upload_user=username,
         upload_date_dir=_inline_attach_date_dir(),
     )
-    # if attach_object:
-    #     _log_inline_attach_pod_structure(filename=filename, highlight_object=attach_object)
-    # else:
-    #     _log_inline_attach_pod_structure(filename=filename, stage="attachments-storage-structure-save-failed")
-    # _log_inline_attachment_debug(
-    #     "minio-upload", analysis, minio_saved=bool(minio_object), minio_object=minio_object, minio_bucket=minio_bucket
-    # )
     try:
         payload = _extract_inline_payload(content, filename, content_type)
         ocr_warning = None
@@ -1534,12 +1546,11 @@ async def attach_document_for_message(
             status_code=500,
             reject_code="extract_error",
         )
-        # if minio_object and minio_bucket and minio_client:
-        #     with logged_suppress(logger):
-        #         minio_client.delete_file(minio_object, bucket_name=minio_bucket)
-        if minio_bucket == INLINE_ATTACH_POD_TMP_BUCKET and minio_object:
+        if minio_object and minio_bucket == INLINE_ATTACH_POD_TMP_BUCKET:
             _delete_pod_attach(minio_object)
-        # _log_inline_attach_pod_structure(filename=filename, stage="attachments-storage-structure-after-extract-error")
+        elif minio_object and minio_bucket and minio_client:
+            with logged_suppress(logger):
+                minio_client.delete_file(minio_object, bucket_name=minio_bucket)
         raise HTTPException(
             status_code=500,
             detail=public_error_detail(e, "Не удалось извлечь содержимое файла"),
@@ -1579,16 +1590,15 @@ async def attach_document_for_message(
         # "minio_saved": bool(minio_object),
     }
     if minio_object:
-        # Поля minio_* переиспользуются фронтом/MongoDB: bucket=__pod_tmp__, object=имя файла в INLINE_ATTACH_DIR.
         result["minio_object"] = minio_object
         result["minio_bucket"] = minio_bucket
-        result["attachments_path"] = _inline_attach_pod_file_path(minio_object) or ""
+        if minio_bucket == INLINE_ATTACH_POD_TMP_BUCKET:
+            result["attachments_path"] = _inline_attach_pod_file_path(minio_object) or ""
     if not minio_object:
         result["warning"] = (
-            f"Не удалось сохранить файл — проверьте {INLINE_ATTACH_DIR_ENV} и mount каталога в поде; "
-            "прикрепление работает только inline"
+            "Не удалось сохранить файл в MinIO и на диск "
+            f"({INLINE_ATTACH_DIR_ENV}); прикрепление работает только inline"
         )
-        # result["warning"] = "MinIO недоступен — файл прикреплён к сообщению, но не сохранён в хранилище"
     if ocr_warning:
         result["warning"] = (
             f"{result['warning']} {ocr_warning}".strip()

@@ -28,6 +28,7 @@ from backend.settings.logging import get_logger
 log = get_logger(__name__)
 
 McpEventCallback = Callable[[Dict[str, Any]], Awaitable[None]]
+StopCheck = Callable[[], bool]
 
 
 def _extract_provider_id(model_path: Optional[str]) -> str:
@@ -90,6 +91,7 @@ async def maybe_run_mcp_agent(
     subagent_ctx: Optional[SubagentRunContext] = None,
     subagent_config=None,
     agent_profile: Optional[dict] = None,
+    should_stop: Optional[StopCheck] = None,
 ) -> Optional[AgentLoopResult]:
     platform = get_mcp_platform()
     sub_ctx = subagent_ctx
@@ -201,6 +203,7 @@ async def maybe_run_mcp_agent(
             native_tools=native_tools,
             subagent_ctx=sub_ctx,
             subagent_config=sub_cfg,
+            should_stop=should_stop,
         )
 
     result = await _run_loop()
@@ -227,6 +230,7 @@ async def run_mcp_for_chat(
     subagent_executor=None,
     inline_attachments: Optional[List[Any]] = None,
     user_question: Optional[str] = None,
+    should_stop: Optional[StopCheck] = None,
 ) -> Optional[AgentLoopResult]:
     """
     Единая точка входа MCP для socket и REST chat (B-40).
@@ -261,4 +265,5 @@ async def run_mcp_for_chat(
         agent_profile=agent_profile,
         subagent_ctx=sub_ctx,
         subagent_config=sub_cfg,
+        should_stop=should_stop,
     )

@@ -2452,7 +2452,11 @@ async def kb_upload_document(
                     f"Сначала выберите модель эмбеддингов в настройках РАГ для {entity_scope_label}"
                 ),
             )
-        if has_entity and bool(entity_rag.get("rag_reranking_enabled", True)):
+        from backend.services.entity_rag_env import get_entity_reranking_enabled
+
+        if has_entity and bool(
+            entity_rag.get("rag_reranking_enabled", get_entity_reranking_enabled())
+        ):
             rer_fields = reranker_fields_from_rag_settings(entity_rag)
             if not rer_fields.get("reranker_model"):
                 raise HTTPException(
@@ -2563,50 +2567,74 @@ async def kb_delete_document(
     current_user: Annotated[dict, Depends(get_current_user)],
     agent_id: Annotated[Optional[int], Query()] = None,
 ):
-    """Удалить KB-документ.
+    """Удалить или отвязать KB-документ.
 
-    ``agent_id`` — агент, из карточки которого удаляют. Если файл ещё числится
-    за ДРУГИМ агентом (типичный случай старого clone с общими id), физически
-    не удаляем — иначе пропадёт у исходника.
+    ``agent_id`` — карточка агента, из которой удаляют:
+    * файл ещё у другого агента → только отвязка у текущего (хранилище целое);
+    * больше никто не ссылается → физическое удаление из SVC-RAG/MinIO.
+
+    Без ``agent_id`` (панель БЗ) — всегда физическое удаление.
     """
     require_service("rag")  # FEATURE-FLAG
     if not rag_client:
         raise HTTPException(status_code=503, detail="RAG service недоступен")
     _require_storage_for_delete()
     try:
-        try:
-            from backend.database.init_db import get_agent_repository
+        doc_id = int(document_id)
+        if agent_id is not None:
+            try:
+                from backend.database.init_db import get_agent_repository
 
-            agent_repo = get_agent_repository()
-            if agent_repo is not None:
-                foreign = await agent_repo.find_documents_claimed_by_other_agents(
-                    int(agent_id) if agent_id is not None else None,
-                    [int(document_id)],
-                )
-                if foreign:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=(
-                            "Документ ещё привязан к другому агенту и не может "
-                            "быть удалён из хранилища. Отвяжите его только в "
-                            "своей карточке — файл у другого агента сохранится."
-                        ),
+                agent_repo = get_agent_repository()
+                if agent_repo is not None:
+                    aid = int(agent_id)
+                    foreign = await agent_repo.find_documents_claimed_by_other_agents(
+                        aid, [doc_id]
                     )
-        except HTTPException:
-            raise
-        except Exception:
-            logger.exception(
-                "Не удалось проверить ссылки на KB-документ %s перед удалением",
-                document_id,
-            )
+                    if foreign:
+                        # Отвязка только у этого агента — чужие карточки не трогаем.
+                        removed = await agent_repo.remove_kb_document_ids(aid, [doc_id])
+                        logger.info(
+                            "KB-документ %s отвязан от агента %s "
+                            "(ещё используется другими, physical delete пропущен), "
+                            "config_updated=%s",
+                            doc_id,
+                            aid,
+                            removed,
+                        )
+                        return {
+                            "ok": True,
+                            "document_id": doc_id,
+                            "unbound_only": True,
+                        }
+            except Exception:
+                logger.exception(
+                    "Не удалось проверить/отвязать KB-документ %s у агента %s",
+                    document_id,
+                    agent_id,
+                )
 
-        out = await rag_client.kb_delete_document(document_id)
+        out = await rag_client.kb_delete_document(doc_id)
         if isinstance(out, dict) and out.get("ok") is False:
             raise HTTPException(status_code=404, detail="Документ не найден")
         if isinstance(out, dict):
             _delete_rag_source_file(out.get("minio_object"), out.get("minio_bucket"))
+        # На всякий случай убрать id из config текущего агента после физического delete.
+        if agent_id is not None:
+            try:
+                from backend.database.init_db import get_agent_repository
+
+                agent_repo = get_agent_repository()
+                if agent_repo is not None:
+                    await agent_repo.remove_kb_document_ids(int(agent_id), [doc_id])
+            except Exception:
+                logger.exception(
+                    "Не удалось убрать kb_document_id=%s из config агента %s",
+                    doc_id,
+                    agent_id,
+                )
         bump_rag_semantic_cache()
-        return {"ok": True, "document_id": document_id}
+        return {"ok": True, "document_id": doc_id, "unbound_only": False}
     except HTTPException:
         raise
     except Exception as e:

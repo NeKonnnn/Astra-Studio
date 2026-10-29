@@ -39,7 +39,67 @@ from backend.settings.logging import get_logger
 
 log = get_logger(__name__)
 
-DEFAULT_PROMPT_TEMPLATE = 'Available Tools: {{TOOLS}}\n\nYour task is to choose and return the correct tool(s) from the list of available tools based on the query.\n\nRules:\n- Return only the JSON object, without any additional text.\n- If no tools match, return: {"tool_calls": []}\n- For multi-step tasks (presentations, documents, several edits), call ALL required tools across iterations until the task is fully complete.\n- Do NOT return empty tool_calls until every step is done (e.g. create → add slides/content → save/export).\n- You may return multiple tools in one response when they are independent.\n- Format:\n{\n  "tool_calls": [\n    {"name": "toolName1", "parameters": {"key1": "value1"}}\n  ]\n}\n'
+
+def _is_stopped(should_stop) -> bool:
+    if not should_stop:
+        return False
+    try:
+        return bool(should_stop())
+    except Exception:
+        log.debug("should_stop check failed", exc_info=True)
+        return False
+
+
+DEFAULT_PROMPT_TEMPLATE = (
+    "Available Tools: {{TOOLS}}\n\n"
+    "Your task is to choose and return the correct tool(s) from the list of available tools based on the query.\n\n"
+    "Rules:\n"
+    "- Return only the JSON object, without any additional text.\n"
+    "- Strictly follow the user's instructions and the wording of their query; do not add your own assumptions.\n"
+    "- Do not invent facts, dates, years, names, places, or parameters that the user did not provide.\n"
+    "- Decide from the tool descriptions and the user query which tools (if any) are useful.\n"
+    "- If a tool can help answer the query, call it. If none fit, return: {\"tool_calls\": []}\n"
+    "- For multi-step tasks (presentations, documents, several edits), call ALL required tools across iterations until the task is fully complete.\n"
+    "- Do NOT return empty tool_calls until every required step is done (e.g. create → add slides/content → save/export).\n"
+    "- Do not repeat an identical tool call with the same parameters.\n"
+    "- Pass tool parameters close to the user request; do not invent unrelated details.\n"
+    "- You may return multiple tools in one response when they are independent.\n"
+    "- Format:\n"
+    "{\n"
+    "  \"tool_calls\": [\n"
+    "    {\"name\": \"toolName1\", \"parameters\": {\"key1\": \"value1\"}}\n"
+    "  ]\n"
+    "}\n"
+)
+
+# Напоминание перед финальным ответом после tool results.
+_FINAL_ANSWER_REMINDER = (
+    "Answer the user's request using only the tool results above and the user's instructions. "
+    "Do not invent facts, dates, years, or details that are not in the tool results or the user query. "
+    "Stay faithful to what the user asked — no extra commentary or assumptions."
+)
+
+
+def _tools_need_completion_nudge(tools: List[McpToolInfo]) -> bool:
+    """Толчок «задача не закончена» — для длинных сценариев (презентации/экспорт/субагенты)."""
+    markers = (
+        "present",
+        "slide",
+        "export",
+        "download",
+        "artifact",
+        "pptx",
+        "docx",
+        "subagent",
+        "coding",
+    )
+    for tool in tools:
+        blob = f"{tool.server_id} {tool.qualified_name or ''} {tool.name or ''} {tool.description or ''}".lower()
+        if any(m in blob for m in markers):
+            return True
+        if tool.server_id == NATIVE_SERVER_ID:
+            return True
+    return False
 
 
 def _render_tools_prompt(tools: List[McpToolInfo]) -> str:
@@ -92,6 +152,7 @@ async def run_prompt_json_fc(
     event_callback: Optional[McpEventCallback] = None,
     subagent_ctx=None,
     subagent_config=None,
+    should_stop=None,
 ) -> AgentLoopResult:
     settings = get_settings()
     effective_model_path = (
@@ -116,6 +177,23 @@ async def run_prompt_json_fc(
     limit = max(1, max_iterations)
     model_label = f"{getattr(provider, 'id', '')}/{model_id}".strip("/")
     for iteration in range(limit):
+        if _is_stopped(should_stop):
+            log_run_end(
+                mode="prompt_json_fc",
+                steps_used=iteration,
+                limit=limit,
+                tool_calls_executed=tool_calls_executed,
+                reason="stopped",
+                content_preview="",
+            )
+            return AgentLoopResult(
+                content="",
+                tool_calls_executed=tool_calls_executed,
+                mode="stopped",
+                iterations=iteration,
+                attachments=attachments,
+                new_messages=working_messages[len(messages) :],
+            )
         step = iteration + 1
         prompt = _render_tools_prompt(tools)
         fc_messages = [
@@ -175,31 +253,55 @@ async def run_prompt_json_fc(
                 content_preview=result.content or "",
                 duration_ms=llm_ms,
             )
-            # Раньше толчок срабатывал на каждом шаге без вызовов: модель
-            # говорила «готово», ей отвечали «вероятно, не закончено» - и так
-            # до лимита шагов. Маленькая модель на это вызывает инструменты
-            # заново: 25.09 оба проверочных субагента отработали по два раза.
-            # Один толчок сохраняет смысл (экспорт после поиска и т.п.), дальше
-            # слово модели «готово» - окончательное.
-            if tool_calls_executed > 0 and step < limit and not nudged:
+            # Пустой tool_calls до любого вызова: один раз просим пересмотреть
+            # список инструментов относительно запроса (без привязки к домену).
+            if tool_calls_executed == 0 and step < limit and not nudged and tools:
                 nudged = True
                 working_messages.append(
                     {
                         "role": "user",
-                        "content": "The task is likely not finished yet. If more MCP tools are required, respond with tool_calls JSON only. Return empty tool_calls only when the user request is fully completed (including export/download if applicable).",
+                        "content": (
+                            "Re-read Available Tools and the user query. "
+                            "If any tool can help, respond with tool_calls JSON only. "
+                            "Return {\"tool_calls\": []} only if no tool is useful."
+                        ),
                     }
                 )
                 continue
+            # После уже выполненных tools — толчок только для длинных сценариев.
+            if (
+                tool_calls_executed > 0
+                and step < limit
+                and not nudged
+                and _tools_need_completion_nudge(tools)
+            ):
+                nudged = True
+                working_messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "The task is likely not finished yet. If more tools are required, "
+                            "respond with tool_calls JSON only. Return empty tool_calls only when "
+                            "the user request is fully completed."
+                        ),
+                    }
+                )
+                continue
+            final_messages = list(working_messages)
+            if tool_calls_executed > 0:
+                final_messages.append(
+                    {"role": "user", "content": _FINAL_ANSWER_REMINDER}
+                )
             log_llm_call(
                 step=step,
                 limit=limit,
                 kind="chat_final",
                 model=model_label,
-                messages_count=len(working_messages),
+                messages_count=len(final_messages),
             )
             t_final = time.perf_counter()
             final = await provider.chat(
-                working_messages,
+                final_messages,
                 model_id,
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -238,6 +340,23 @@ async def run_prompt_json_fc(
             content_preview=result.content or "",
             duration_ms=llm_ms,
         )
+        if _is_stopped(should_stop):
+            log_run_end(
+                mode="prompt_json_fc",
+                steps_used=step,
+                limit=limit,
+                tool_calls_executed=tool_calls_executed,
+                reason="stopped",
+                content_preview="",
+            )
+            return AgentLoopResult(
+                content="",
+                tool_calls_executed=tool_calls_executed,
+                mode="stopped",
+                iterations=step,
+                attachments=attachments,
+                new_messages=working_messages[len(messages) :],
+            )
 
         # Один вызов шага → строка результата для модели. Вызовы subagent
         # шага идут одновременно (run_tool_calls), остальные - по очереди.
@@ -451,16 +570,19 @@ async def run_prompt_json_fc(
         working_messages.append(
             {"role": "user", "content": "Tool results:\n" + "\n".join(tool_results)}
         )
+    final_messages = list(working_messages)
+    if tool_calls_executed > 0:
+        final_messages.append({"role": "user", "content": _FINAL_ANSWER_REMINDER})
     log_llm_call(
         step=limit,
         limit=limit,
         kind="chat_final",
         model=model_label,
-        messages_count=len(working_messages),
+        messages_count=len(final_messages),
     )
     t_final = time.perf_counter()
     final = await provider.chat(
-        working_messages,
+        final_messages,
         model_id,
         temperature=temperature,
         max_tokens=max_tokens,

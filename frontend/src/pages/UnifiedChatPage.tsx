@@ -65,7 +65,6 @@ import { useNavigate } from 'react-router-dom';
 import ModelSelector from '../components/ModelSelector';
 import MessageNavigationBar from '../components/MessageNavigationBar';
 import { ASTRA_INSERT_CHAT_TEXT, ASTRA_INSERT_CHAT_TEXT_KEY } from '../components/right_bar';
-import ShareConfirmDialog from '../components/ShareConfirmDialog';
 import ChatInputBar, { InlineAttachment } from '../components/ChatInputBar';
 import { prepareInlineImageFile, formatFileSize, dataUrlToFile, getClipboardImageFile } from '../utils/inlineImage';
 import {
@@ -441,7 +440,8 @@ interface MessageCardData {
     },
   ) => void | Promise<void>;
   synthesizeSpeech: (text: string) => void;
-  handleEnterShareMode: () => void;
+  /** Вход в инлайн-режим «Поделиться»; якорь — assistant-сообщение, чью пару выбрать. */
+  handleEnterShareMode: (anchorMessage?: Message) => void;
   handleBranchToNewChat: (message: Message, multiLlmSlotIndex?: number) => void;
   handleToggleMessage: (userMsgId: string, assistantMsgId: string) => void;
   handleFollowUpSelect: (content: string) => void;
@@ -1254,7 +1254,7 @@ const MessageCardComponent = ({
                         <Tooltip title="Поделиться">
                           <IconButton
                             size="small"
-                            onClick={() => dataRef.current.handleEnterShareMode()}
+                            onClick={() => dataRef.current.handleEnterShareMode(message)}
                             sx={multiLlmActionIconSx}
                           >
                             <ShareIcon />
@@ -1379,15 +1379,30 @@ const MessageCardComponent = ({
     <Box
       ref={(el: HTMLDivElement | null) => { dataRef.current.messageRefs.current[navIndex] = el; }}
       data-message-index={navIndex}
-      sx={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-start', mb: 1.5, width: '100%', minWidth: 0, maxWidth: '100%' }}
+      sx={{
+        display: 'flex',
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        mb: shareMode ? 0 : 1.5,
+        width: '100%',
+        minWidth: 0,
+        maxWidth: '100%',
+      }}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
       {shareMode && isPairStart && (
         <Checkbox
           checked={isSelected}
+          disableRipple
           onChange={() => dataRef.current.handleToggleMessage(message.id, nextMessageId!)}
-          sx={{ mt: 1, mr: 1, p: 0.5 }}
+          sx={{
+            mt: 1,
+            mr: 1,
+            p: 0.5,
+            '&:hover': { bgcolor: 'transparent' },
+            '&.Mui-focusVisible': { bgcolor: 'transparent' },
+          }}
         />
       )}
 
@@ -1544,7 +1559,7 @@ const MessageCardComponent = ({
             <Tooltip title="Поделиться">
               <IconButton
                 size="small"
-                onClick={() => dataRef.current.handleEnterShareMode()}
+                onClick={() => dataRef.current.handleEnterShareMode(message)}
                 className="message-share-button"
                 data-theme={isDarkMode ? 'dark' : 'light'}
                 sx={{ opacity: 0.7, p: 0.5, borderRadius: '6px', minWidth: '28px', width: '28px', height: '28px',
@@ -1791,11 +1806,16 @@ export default function UnifiedChatPage({
     memoryRagEnabled,
   } = useRagReindexStatus();
 
-  // Состояние для режима "Поделиться"
+  // Инлайн-режим «Поделиться» (не модалка): чекбоксы у пар + панель вместо поля ввода.
   const [shareMode, setShareMode] = useState(false);
   const [selectedMessages, setSelectedMessages] = useState<Set<string>>(new Set());
   const [isCreatingShareLink, setIsCreatingShareLink] = useState(false);
-  const [shareDialogOpen, setShareDialogOpen] = useState(false);
+
+  useEffect(() => {
+    if (!shareMode) return;
+    // Grok-spacer под инпут в share не нужен — иначе дыра над кнопками.
+    setGrokBottomSpacerPx(0);
+  }, [shareMode]);
   
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -2016,7 +2036,23 @@ export default function UnifiedChatPage({
     return visibleMessages.length > 0;
   }, [visibleMessages.length]);
 
-  const virtuosoData = visibleMessages;
+  // В shareMode ассистент пары рендерится вместе с user — отдельный item не нужен.
+  const virtuosoData = useMemo(() => {
+    if (!shareMode) return visibleMessages;
+    const out: typeof visibleMessages = [];
+    for (let i = 0; i < visibleMessages.length; i += 1) {
+      const msg = visibleMessages[i];
+      if (
+        msg.role === 'assistant' &&
+        i > 0 &&
+        visibleMessages[i - 1].role === 'user'
+      ) {
+        continue;
+      }
+      out.push(msg);
+    }
+    return out;
+  }, [visibleMessages, shareMode]);
 
   const showVirtuosoList = wantVirtuosoList;
   const showPlainList = false;
@@ -4228,10 +4264,53 @@ export default function UnifiedChatPage({
   // ФУНКЦИИ ДЛЯ РЕЖИМА "ПОДЕЛИТЬСЯ"
   // ================================
 
-  const handleEnterShareMode = () => {
-    setShareMode(true);
-    setSelectedMessages(new Set());
-  };
+  const resolveSharePairIds = useCallback(
+    (anchorMessage?: Message): string[] => {
+      if (!anchorMessage) return [];
+      const list = messages;
+      let assistantIdx = -1;
+      if (anchorMessage.role === 'assistant') {
+        assistantIdx = list.findIndex((m) => m.id === anchorMessage.id);
+      } else if (anchorMessage.role === 'user') {
+        const userIdx = list.findIndex((m) => m.id === anchorMessage.id);
+        if (userIdx >= 0 && userIdx < list.length - 1 && list[userIdx + 1].role === 'assistant') {
+          return [list[userIdx].id, list[userIdx + 1].id];
+        }
+        return [];
+      }
+      if (assistantIdx <= 0) return [];
+      for (let i = assistantIdx - 1; i >= 0; i -= 1) {
+        if (list[i].role === 'user') {
+          return [list[i].id, list[assistantIdx].id];
+        }
+      }
+      return [];
+    },
+    [messages],
+  );
+
+  const handleEnterShareMode = useCallback(
+    (anchorMessage?: Message) => {
+      const pairIds = resolveSharePairIds(anchorMessage);
+      setSelectedMessages(new Set(pairIds));
+      setShareMode(true);
+      setGrokBottomSpacerPx(0);
+      // Подтянуть выбранную пару к панели кнопок — без пустого «колодца» снизу.
+      window.requestAnimationFrame(() => {
+        const assistantId = pairIds[1] || pairIds[0];
+        if (assistantId) {
+          const idx = messages.findIndex((m) => m.id === assistantId);
+          const el = idx >= 0 ? messageRefs.current[idx] : null;
+          if (el) {
+            el.scrollIntoView({ block: 'end', behavior: 'smooth' });
+            return;
+          }
+        }
+        scrollChatToBottom();
+      });
+    },
+    [resolveSharePairIds, messages, scrollChatToBottom],
+  );
 
   const handleBranchToNewChat = useCallback(
     async (message: Message, multiLlmSlotIndex?: number): Promise<void> => {
@@ -4263,92 +4342,62 @@ export default function UnifiedChatPage({
   const handleExitShareMode = () => {
     setShareMode(false);
     setSelectedMessages(new Set());
+    setIsCreatingShareLink(false);
   };
 
   const handleToggleMessage = (userMsgId: string, assistantMsgId: string) => {
     const newSelected = new Set(selectedMessages);
-    
     if (newSelected.has(userMsgId) && newSelected.has(assistantMsgId)) {
-      // Если оба выбраны, снимаем выбор
       newSelected.delete(userMsgId);
       newSelected.delete(assistantMsgId);
     } else {
-      // Выбираем оба
       newSelected.add(userMsgId);
       newSelected.add(assistantMsgId);
     }
-    
     setSelectedMessages(newSelected);
   };
 
-  const handleSelectAll = () => {
-    // Получаем все пары вопрос-ответ
+  const handleSelectAllSharePairs = () => {
     const allPairs: string[] = [];
-    for (let i = 0; i < messages.length - 1; i++) {
+    for (let i = 0; i < messages.length - 1; i += 1) {
       if (messages[i].role === 'user' && messages[i + 1].role === 'assistant') {
         allPairs.push(messages[i].id, messages[i + 1].id);
       }
     }
-    
-    if (selectedMessages.size === allPairs.length) {
-      // Если все выбраны, снимаем выбор
+    if (selectedMessages.size === allPairs.length && allPairs.length > 0) {
       setSelectedMessages(new Set());
     } else {
-      // Выбираем все
       setSelectedMessages(new Set(allPairs));
     }
   };
 
-  const handleCreateShareLink = () => {
+  const handleCopyShareLink = async () => {
     if (selectedMessages.size === 0) {
       showNotification('error', 'Выберите хотя бы одно сообщение');
       return;
     }
-    // Открываем диалог подтверждения
-    setShareDialogOpen(true);
-  };
-
-  const createShareLinkConfirmed = async (): Promise<string> => {
+    if (isCreatingShareLink) return;
+    setIsCreatingShareLink(true);
     try {
-      // Фильтруем выбранные сообщения в правильном порядке
-      const selectedMessagesArray = messages.filter(msg => selectedMessages.has(msg.id));
-
-      // Получаем токен для авторизации
-      const token = localStorage.getItem('auth_token') || localStorage.getItem('token');
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-      };
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-
-      const response = await fetch(getApiUrl('/api/share/create'), {
+      const selectedMessagesArray = messages.filter((msg) => selectedMessages.has(msg.id));
+      const response = await authFetch(getApiUrl('/api/share/create'), {
         method: 'POST',
-        headers,
-        credentials: 'include',
-        body: JSON.stringify({
-          messages: selectedMessagesArray,
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: selectedMessagesArray }),
       });
-
       if (!response.ok) {
         throw new Error('Ошибка создания публичной ссылки');
       }
-
       const data = await response.json();
       const fullUrl = `${window.location.origin}/share/${data.share_id}`;
-      
-      return fullUrl;
+      await navigator.clipboard.writeText(fullUrl);
+      showNotification('success', 'Ссылка скопирована');
+      handleExitShareMode();
     } catch (err) {
       showNotification('error', err instanceof Error ? err.message : 'Произошла ошибка');
-      throw err;
+    } finally {
+      setIsCreatingShareLink(false);
     }
-  };
-
-  const handleCloseShareDialog = () => {
-    setShareDialogOpen(false);
-    // Выходим из режима выбора после закрытия диалога
-    handleExitShareMode();
   };
 
   // ================================
@@ -4454,34 +4503,133 @@ export default function UnifiedChatPage({
     message: (typeof visibleMessages)[number],
     list: typeof visibleMessages = visibleMessages,
   ) => {
+    const fullIdx = visibleMessages.findIndex((m) => m.id === message.id);
+    const pairedAssistant =
+      shareMode &&
+      message.role === 'user' &&
+      fullIdx >= 0 &&
+      fullIdx < visibleMessages.length - 1 &&
+      visibleMessages[fullIdx + 1].role === 'assistant'
+        ? visibleMessages[fullIdx + 1]
+        : null;
+
     const isUserMsg = message.role === 'user';
-    const isPairStart =
+    const isPairStart = Boolean(pairedAssistant) || (
+      !shareMode &&
       isUserMsg &&
       index < list.length - 1 &&
-      list[index + 1].role === 'assistant';
+      list[index + 1].role === 'assistant'
+    );
+    const nextMessageId = pairedAssistant
+      ? pairedAssistant.id
+      : isPairStart && !shareMode
+        ? list[index + 1].id
+        : null;
     const isSelected =
-      isPairStart &&
+      Boolean(nextMessageId) &&
       selectedMessages.has(message.id) &&
-      selectedMessages.has(list[index + 1].id);
-    const nextMessageId = isPairStart ? list[index + 1].id : null;
+      selectedMessages.has(nextMessageId!);
     const navIndex = messages.findIndex((m) => m.id === message.id);
-    return (
+
+    const userCard = (
       <MessageCard
         key={message.id || String(index)}
         message={message}
-        index={index}
+        index={fullIdx >= 0 ? fullIdx : index}
         navIndex={navIndex >= 0 ? navIndex : index}
-        isPairStart={isPairStart}
-        isSelected={isSelected}
-        nextMessageId={nextMessageId}
+        isPairStart={pairedAssistant ? false : isPairStart}
+        isSelected={pairedAssistant ? false : isSelected}
+        nextMessageId={pairedAssistant ? null : nextMessageId}
+        // shareMode=true прячет actions; checkbox только у isPairStart — в рамке он снаружи
         shareMode={shareMode}
         isSpeaking={isSpeaking}
         isDarkMode={isDarkMode}
-        isLastChatMessage={index === list.length - 1}
+        isLastChatMessage={
+          pairedAssistant
+            ? false
+            : (fullIdx >= 0 ? fullIdx : index) === visibleMessages.length - 1
+        }
         interfaceSettings={interfaceSettings}
         username={user?.username}
         dataRef={messageCardDataRef}
       />
+    );
+
+    if (!pairedAssistant) {
+      return userCard;
+    }
+
+    const assistantNav = messages.findIndex((m) => m.id === pairedAssistant.id);
+    const assistantFullIdx = fullIdx + 1;
+
+    return (
+      <Box
+        key={`share-pair-${message.id}`}
+        onClick={() =>
+          messageCardDataRef.current.handleToggleMessage(message.id, pairedAssistant.id)
+        }
+        sx={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: 0.75,
+          width: '100%',
+          mb: 2,
+          px: 1.25,
+          pt: 1.25,
+          pb: 1.5,
+          borderRadius: '18px',
+          border: '1px solid',
+          borderColor: isDarkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)',
+          bgcolor: isDarkMode ? 'rgba(22,22,24,0.95)' : 'rgba(0,0,0,0.035)',
+          boxShadow: isDarkMode ? 'inset 0 0 0 1px rgba(0,0,0,0.35)' : 'none',
+          boxSizing: 'border-box',
+          cursor: 'pointer',
+          transition: 'border-color 0.15s ease, background-color 0.15s ease',
+          '&:hover': {
+            borderColor: isDarkMode ? 'rgba(255,255,255,0.18)' : 'rgba(0,0,0,0.18)',
+            bgcolor: isDarkMode ? 'rgba(28,28,30,0.98)' : 'rgba(0,0,0,0.05)',
+          },
+        }}
+      >
+        <Checkbox
+          checked={isSelected}
+          disableRipple
+          onClick={(e) => e.stopPropagation()}
+          onChange={() =>
+            messageCardDataRef.current.handleToggleMessage(message.id, pairedAssistant.id)
+          }
+          sx={{
+            mt: 0.5,
+            p: 0.5,
+            flexShrink: 0,
+            color: isDarkMode ? 'rgba(255,255,255,0.45)' : undefined,
+            '&.Mui-checked': {
+              color: isDarkMode ? '#fff' : undefined,
+            },
+            '&:hover': { bgcolor: 'transparent' },
+            '&.Mui-focusVisible': { bgcolor: 'transparent' },
+          }}
+        />
+        <Box sx={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 1 }}>
+          {userCard}
+          <MessageCard
+            key={pairedAssistant.id}
+            message={pairedAssistant}
+            index={assistantFullIdx}
+            navIndex={assistantNav >= 0 ? assistantNav : assistantFullIdx}
+            isPairStart={false}
+            isSelected={false}
+            nextMessageId={null}
+            shareMode
+            isSpeaking={isSpeaking}
+            isDarkMode={isDarkMode}
+            isLastChatMessage={assistantFullIdx === visibleMessages.length - 1}
+            interfaceSettings={interfaceSettings}
+            username={user?.username}
+            dataRef={messageCardDataRef}
+          />
+        </Box>
+      </Box>
     );
   };
 
@@ -5055,7 +5203,8 @@ export default function UnifiedChatPage({
               bgcolor: isDragging ? 'action.hover' : 'transparent',
               ...(!showNewChatWelcome && {
                 pt: 0,
-                pb: 2,
+                // В shareMode без лишнего «воздуха» под кнопками
+                pb: shareMode ? 0.5 : 2,
                 // Те же боковые отступы, что у chat-messages-area — иначе пилюля и карточки разъезжаются по ширине
                 pl: 2,
                 pr: 'calc(16px + var(--right-sidebar-rail-overlap, 0px))',
@@ -5158,10 +5307,10 @@ export default function UnifiedChatPage({
                        </Box>
                      ) : null}
 
-                     {/* Поле ввода снизу (есть сообщения или идёт загрузка истории) */}
+                     {/* Поле ввода / панель «Поделиться» (инлайн, не модалка). */}
            {!showNewChatWelcome && (messages.length > 0 || showChatHistoryLoadingDelayed) ? (
            <>
-             {renderMultiLlmModelToolbar()}
+             {!shareMode ? renderMultiLlmModelToolbar() : null}
              {/* Та же колонка, что у карточек сообщений: maxWidth 1000 + px — пилюля не шире ленты */}
              <Box
                sx={{
@@ -5174,7 +5323,7 @@ export default function UnifiedChatPage({
                  boxSizing: 'border-box',
                }}
              >
-               {showScrollToBottomButton ? (
+               {!shareMode && showScrollToBottomButton ? (
                  <Box
                    sx={{
                      position: 'absolute',
@@ -5238,6 +5387,99 @@ export default function UnifiedChatPage({
                    </IconButton>
                  </Box>
                ) : null}
+             {shareMode ? (
+               <Box
+                 sx={{
+                   display: 'flex',
+                   alignItems: 'center',
+                   justifyContent: 'space-between',
+                   gap: 2,
+                   width: '100%',
+                   py: 0.75,
+                   px: 0,
+                   mb: 0,
+                   bgcolor: 'transparent',
+                   boxSizing: 'border-box',
+                 }}
+               >
+                 <FormControlLabel
+                   control={
+                     <Checkbox
+                       size="small"
+                       disableRipple
+                       checked={(() => {
+                         let totalPairs = 0;
+                         for (let i = 0; i < messages.length - 1; i += 1) {
+                           if (messages[i].role === 'user' && messages[i + 1].role === 'assistant') {
+                             totalPairs += 1;
+                           }
+                         }
+                         return totalPairs > 0 && selectedMessages.size === totalPairs * 2;
+                       })()}
+                       indeterminate={(() => {
+                         let totalPairs = 0;
+                         for (let i = 0; i < messages.length - 1; i += 1) {
+                           if (messages[i].role === 'user' && messages[i + 1].role === 'assistant') {
+                             totalPairs += 1;
+                           }
+                         }
+                         const selectedPairs = selectedMessages.size / 2;
+                         return selectedPairs > 0 && selectedPairs < totalPairs;
+                       })()}
+                       onChange={handleSelectAllSharePairs}
+                       disabled={isCreatingShareLink}
+                       sx={{
+                         '&:hover': { bgcolor: 'transparent' },
+                         '&.Mui-focusVisible': { bgcolor: 'transparent' },
+                       }}
+                     />
+                   }
+                   label="Выбрать все"
+                   sx={{
+                     m: 0,
+                     flexShrink: 0,
+                     '& .MuiFormControlLabel-label': {
+                       fontSize: '0.9rem',
+                       whiteSpace: 'nowrap',
+                     },
+                   }}
+                 />
+                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, flexShrink: 0 }}>
+                   <Button
+                     variant="outlined"
+                     onClick={handleExitShareMode}
+                     disabled={isCreatingShareLink}
+                     sx={{
+                       textTransform: 'none',
+                       whiteSpace: 'nowrap',
+                       borderRadius: '10px',
+                       px: 2,
+                     }}
+                   >
+                     Отменить
+                   </Button>
+                   <Button
+                     variant="contained"
+                     onClick={() => void handleCopyShareLink()}
+                     disabled={selectedMessages.size === 0 || isCreatingShareLink}
+                     sx={{
+                       textTransform: 'none',
+                       whiteSpace: 'nowrap',
+                       borderRadius: '10px',
+                       px: 2,
+                       bgcolor: isDarkMode ? '#ffffff' : undefined,
+                       color: isDarkMode ? 'rgba(0,0,0,0.87)' : undefined,
+                       '&:hover': isDarkMode ? { bgcolor: 'rgba(255,255,255,0.9)' } : undefined,
+                       '&.Mui-disabled': isDarkMode
+                         ? { bgcolor: 'rgba(255,255,255,0.28)', color: 'rgba(0,0,0,0.4)' }
+                         : undefined,
+                     }}
+                   >
+                     {isCreatingShareLink ? 'Создание…' : 'Копировать ссылку'}
+                   </Button>
+                 </Box>
+               </Box>
+             ) : (
              <ChatInputBar
                toolsMenuAnchorRef={chatInputToolsAnchorRef}
                value={inputMessage}
@@ -5281,6 +5523,7 @@ export default function UnifiedChatPage({
                extraActions={multiLlmSettingsExtraAction}
                contextCounter={chatContextCounter}
              />
+             )}
              </Box>
            </>
            ) : null}
@@ -5777,73 +6020,6 @@ export default function UnifiedChatPage({
 
       </Box>
 
-      {/* Нижняя панель в режиме "Поделиться" */}
-      {shareMode && (
-        <Paper
-          sx={{
-            position: 'fixed',
-            bottom: 0,
-            left: sidebarHidden ? 0 : sidebarOpen ? 240 : 64,
-            right: 0,
-            zIndex: 1200,
-            borderRadius: 0,
-            boxShadow: '0 -4px 12px rgba(0, 0, 0, 0.1)',
-            backgroundColor: isDarkMode ? '#2d2d2d' : '#ffffff',
-            transition: 'left 0.3s ease',
-          }}
-        >
-          <Box
-            sx={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              px: 3,
-              py: 2,
-            }}
-          >
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-              <FormControlLabel
-                control={
-                  <Checkbox
-                    checked={selectedMessages.size > 0 && (() => {
-                      let totalPairs = 0;
-                      for (let i = 0; i < messages.length - 1; i++) {
-                        if (messages[i].role === 'user' && messages[i + 1].role === 'assistant') {
-                          totalPairs++;
-                        }
-                      }
-                      return selectedMessages.size === totalPairs * 2;
-                    })()}
-                    onChange={handleSelectAll}
-                  />
-                }
-                label="Выбрать все"
-              />
-              <Typography variant="body2" color="text.secondary">
-                Выбрано пар: {selectedMessages.size / 2}
-              </Typography>
-            </Box>
-
-            <Box sx={{ display: 'flex', gap: 1 }}>
-              <Button
-                variant="outlined"
-                onClick={handleExitShareMode}
-                disabled={isCreatingShareLink}
-              >
-                Отмена
-              </Button>
-              <Button
-                variant="contained"
-                onClick={handleCreateShareLink}
-                disabled={selectedMessages.size === 0}
-              >
-                Создать публичную ссылку
-              </Button>
-            </Box>
-          </Box>
-        </Paper>
-      )}
-
       {/* Навигационная панель для сообщений (панель с диалогами) */}
       {messages.length > 0 && showDialoguesPanel && (
         <MessageNavigationBar
@@ -5852,15 +6028,6 @@ export default function UnifiedChatPage({
           onNavigate={scrollToMessage}
         />
       )}
-
-      {/* Диалог подтверждения создания публичной ссылки */}
-      <ShareConfirmDialog
-        open={shareDialogOpen}
-        onClose={handleCloseShareDialog}
-        onConfirm={createShareLinkConfirmed}
-        isDarkMode={isDarkMode}
-        selectedCount={selectedMessages.size}
-      />
       </Box>
     </Box>
   );

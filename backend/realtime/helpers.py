@@ -479,6 +479,105 @@ async def expand_knowledge_base_document_ids(
     return sorted(set(out))
 
 
+def document_ids_from_kb_rows(
+    rows: Optional[List[Any]],
+    knowledge_base_ids: Optional[List[Any]],
+) -> List[int]:
+    """Вытащить document_id из уже загруженного kb_list по metadata.knowledge_base_id."""
+    want = set(_normalize_kb_ids(knowledge_base_ids))
+    if not want or not rows:
+        return []
+    out: List[int] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        raw_kb = meta.get("knowledge_base_id", row.get("knowledge_base_id"))
+        try:
+            kid = int(raw_kb)
+            did = int(row["id"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        if kid in want:
+            out.append(did)
+    return sorted(set(out))
+
+
+def _is_rag_search_timeout(exc: BaseException) -> bool:
+    try:
+        import httpx
+
+        if isinstance(exc, (httpx.ReadTimeout, httpx.TimeoutException)):
+            return True
+    except Exception:
+        pass
+    name = type(exc).__name__.lower()
+    msg = str(exc).lower()
+    return "timeout" in name or "timeout" in msg or "read_timeout" in msg
+
+
+async def _kb_search_with_rerank_timeout_fallback(
+    rag_client: Any,
+    *,
+    query: str,
+    k: int,
+    document_ids: List[int],
+    strategy: Optional[str],
+    settings: Dict[str, Any],
+    kb_id: int,
+) -> Optional[List[Any]]:
+    """kb_search; при таймауте с включённым реранкером — повтор без него.
+
+    Cold MiniCPM на CPU часто > SVC_RAG_SEARCH_READ_TIMEOUT: svc-rag ещё
+    считает hits, а бэкенд уже RecvTimeout → чат «не видит» живой корпус.
+    """
+    override = dict(settings) if settings else {}
+    try:
+        return await rag_client.kb_search(
+            query,
+            k=k,
+            document_ids=document_ids,
+            strategy=strategy,
+            settings_override=override or None,
+            settings_source="kb",
+        )
+    except Exception as first_exc:
+        rerank_on = bool(override.get("rag_reranking_enabled"))
+        if not (rerank_on and _is_rag_search_timeout(first_exc)):
+            logger.exception(
+                "kb_search_knowledge_bases: поиск kb_id=%s docs=%s",
+                kb_id,
+                len(document_ids),
+            )
+            return None
+        logger.warning(
+            "[RAG] kb_id=%s: поиск с реранкером ушёл в timeout (%s) — "
+            "повтор без реранкера (увеличьте SVC_RAG_SEARCH_READ_TIMEOUT "
+            "или выключите RAG_ENTITY_RERANKING_ENABLED)",
+            kb_id,
+            type(first_exc).__name__,
+        )
+        fast = dict(override)
+        fast["rag_reranking_enabled"] = False
+        try:
+            return await rag_client.kb_search(
+                query,
+                k=k,
+                document_ids=document_ids,
+                strategy=strategy,
+                settings_override=fast,
+                settings_source="kb",
+                use_reranking=False,
+            )
+        except Exception:
+            logger.exception(
+                "kb_search_knowledge_bases: повтор без реранкера kb_id=%s docs=%s",
+                kb_id,
+                len(document_ids),
+            )
+            return None
+
+
 async def kb_search_knowledge_bases(
     rag_client: Any,
     query: str,
@@ -541,21 +640,16 @@ async def kb_search_knowledge_bases(
         except (TypeError, ValueError):
             min_sim = 0.0
         emb_path = (settings or {}).get("rag_embedding_model_path")
-        try:
-            hits = await rag_client.kb_search(
-                query,
-                k=top_k,
-                document_ids=doc_ids,
-                strategy=strategy,
-                settings_override=settings if isinstance(settings, dict) else None,
-                settings_source="kb",
-            )
-        except Exception:
-            logger.exception(
-                "kb_search_knowledge_bases: поиск kb_id=%s docs=%s",
-                kb_id,
-                len(doc_ids),
-            )
+        hits = await _kb_search_with_rerank_timeout_fallback(
+            rag_client,
+            query=query,
+            k=top_k,
+            document_ids=doc_ids,
+            strategy=strategy,
+            settings=settings if isinstance(settings, dict) else {},
+            kb_id=kb_id,
+        )
+        if hits is None:
             continue
         hit_list = filter_rag_hits_by_score(list(hits or []), min_sim)
         logger.info(
@@ -565,6 +659,15 @@ async def kb_search_knowledge_bases(
             len(doc_ids),
             len(hit_list),
         )
+        if doc_ids and not hit_list:
+            logger.warning(
+                "[RAG] kb_id=%s: docs=%s, но hits=0 при emb=%s — часто mismatch "
+                "размерности (индекс Giga/2048 vs query FRIDA/1536) или таймаут "
+                "реранкера. Переиндексируйте БЗ той же моделью, что в настройках.",
+                kb_id,
+                len(doc_ids),
+                emb_path,
+            )
         for h in hit_list:
             try:
                 content, score, did, idx = h[0], h[1], h[2], h[3]
@@ -714,9 +817,15 @@ async def resolve_agent_kb_document_ids(
     if not isinstance(agent_profile, dict):
         return []
     out: List[int] = list(resolve_agent_legacy_kb_document_ids(agent_profile))
-    if agent_profile.get("knowledge_bases_enabled"):
-        expanded = await expand_knowledge_base_document_ids(
-            rag_client, agent_profile.get("knowledge_base_ids") or []
-        )
+    kb_ids = _normalize_kb_ids(agent_profile.get("knowledge_base_ids"))
+    # Ids в карточке важнее «забытого» knowledge_bases_enabled=false.
+    if agent_profile.get("knowledge_bases_enabled") or kb_ids:
+        expanded = await expand_knowledge_base_document_ids(rag_client, kb_ids)
+        if kb_ids and not expanded:
+            logger.warning(
+                "[RAG] agent knowledge_base_ids=%s не развернулись в document_id "
+                "(нет metadata.knowledge_base_id) — поиск по БЗ будет пустым",
+                kb_ids,
+            )
         out.extend(expanded)
     return sorted(set(out))

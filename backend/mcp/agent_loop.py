@@ -44,6 +44,17 @@ from backend.settings.logging import get_logger
 log = get_logger(__name__)
 
 McpEventCallback = Callable[[Dict[str, Any]], Awaitable[None]]
+StopCheck = Callable[[], bool]
+
+
+def _is_stopped(should_stop: Optional[StopCheck]) -> bool:
+    if not should_stop:
+        return False
+    try:
+        return bool(should_stop())
+    except Exception:
+        log.debug("should_stop check failed", exc_info=True)
+        return False
 
 
 async def _run_prompt_json_fc(**kwargs: Any) -> AgentLoopResult:
@@ -165,6 +176,7 @@ class McpAgentLoop:
         native_tools: Optional[List[McpToolInfo]] = None,
         subagent_ctx=None,
         subagent_config=None,
+        should_stop: Optional[StopCheck] = None,
     ) -> AgentLoopResult:
         all_tools = list(native_tools or []) + list(mcp_tools or [])
         native_n = len(native_tools or [])
@@ -175,6 +187,16 @@ class McpAgentLoop:
             if subagent_ctx is not None
             else 0
         )
+        if _is_stopped(should_stop):
+            log_run_end(
+                mode="plain",
+                steps_used=0,
+                limit=max_iterations,
+                tool_calls_executed=0,
+                reason="stopped",
+                content_preview="",
+            )
+            return AgentLoopResult(content="", mode="stopped", iterations=0)
         if not all_tools:
             registry = await get_registry()
             provider, model_id = registry.resolve(model_path)
@@ -260,6 +282,7 @@ class McpAgentLoop:
                     event_callback=event_callback,
                     subagent_ctx=subagent_ctx,
                     subagent_config=subagent_config,
+                    should_stop=should_stop,
                 )
             return await self._run_native(
                 messages=messages,
@@ -275,6 +298,7 @@ class McpAgentLoop:
                 event_callback=event_callback,
                 subagent_ctx=subagent_ctx,
                 subagent_config=subagent_config,
+                should_stop=should_stop,
             )
 
     async def _run_native(
@@ -293,6 +317,7 @@ class McpAgentLoop:
         event_callback: Optional[McpEventCallback] = None,
         subagent_ctx=None,
         subagent_config=None,
+        should_stop: Optional[StopCheck] = None,
     ) -> AgentLoopResult:
         openai_tools = to_openai_tools(tools)
         working = list(messages)
@@ -302,6 +327,23 @@ class McpAgentLoop:
         model_label = f"{getattr(provider, 'id', '')}/{model_id}".strip("/")
         limit = max(1, max_iterations)
         for iteration in range(limit):
+            if _is_stopped(should_stop):
+                log_run_end(
+                    mode="native_openai_tools",
+                    steps_used=iteration,
+                    limit=limit,
+                    tool_calls_executed=tool_calls_executed,
+                    reason="stopped",
+                    content_preview="",
+                )
+                return AgentLoopResult(
+                    content="",
+                    tool_calls_executed=tool_calls_executed,
+                    mode="stopped",
+                    iterations=iteration,
+                    attachments=attachments,
+                    new_messages=working[len(messages) :],
+                )
             step = iteration + 1
             log_llm_call(
                 step=step,
@@ -395,6 +437,23 @@ class McpAgentLoop:
                 content_preview=result.content or "",
                 duration_ms=llm_ms,
             )
+            if _is_stopped(should_stop):
+                log_run_end(
+                    mode="native_openai_tools",
+                    steps_used=step,
+                    limit=limit,
+                    tool_calls_executed=tool_calls_executed,
+                    reason="stopped",
+                    content_preview="",
+                )
+                return AgentLoopResult(
+                    content="",
+                    tool_calls_executed=tool_calls_executed,
+                    mode="stopped",
+                    iterations=step,
+                    attachments=attachments,
+                    new_messages=working[len(messages) :],
+                )
             assistant_msg: Dict[str, Any] = {
                 "role": "assistant",
                 "content": result.content or "",
@@ -596,16 +655,28 @@ class McpAgentLoop:
                     step=step,
                 )
             )
+        final_messages = list(working)
+        if tool_calls_executed > 0:
+            final_messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "Answer the user's request using only the tool results above and the user's instructions. "
+                        "Do not invent facts, dates, years, or details that are not in the tool results or the user query. "
+                        "Stay faithful to what the user asked — no extra commentary or assumptions."
+                    ),
+                }
+            )
         log_llm_call(
             step=limit,
             limit=limit,
             kind="chat_final",
             model=model_label,
-            messages_count=len(working),
+            messages_count=len(final_messages),
         )
         t_final = time.perf_counter()
         final = await provider.chat(
-            working,
+            final_messages,
             model_id,
             temperature=temperature,
             max_tokens=max_tokens,

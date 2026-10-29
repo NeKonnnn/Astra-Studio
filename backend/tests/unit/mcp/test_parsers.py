@@ -203,6 +203,25 @@ class TestDownloadLinks:
     def test_javascript_style_urls_are_not_extracted(self):
         assert rp.extract_download_links(parsed("javascript:alert(1) data:text/html,x")) == []
 
+    def test_webpage_search_urls_are_not_downloads(self):
+        """websearch отдаёт обычные страницы — это не файлы для «Скачать»."""
+        text = json.dumps(
+            {
+                "query": "погода в москве",
+                "results": [
+                    {
+                        "title": "Погода в Москве",
+                        "url": "https://yandex.ru/pogoda/ru/moscow",
+                        "description": "сейчас +5",
+                    },
+                    {"title": "Gismeteo", "url": "https://www.gismeteo.ru/weather-moscow-4368/"},
+                ],
+            },
+            ensure_ascii=False,
+        )
+        assert rp.extract_download_links(parsed(text)) == []
+        assert rp.enrich_download_links(parsed(text), "websearch") == []
+
     def test_saved_file_gets_a_proxy_link(self):
         links = rp.enrich_download_links(parsed("Файл сохранён: deck_v2.pptx"), "office")
 

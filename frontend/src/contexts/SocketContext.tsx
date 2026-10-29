@@ -23,6 +23,7 @@ import {
 } from '../utils/browserNotifications';
 import { incrementTabNotification } from '../utils/tabNotifications';
 import { getMcpToolIdsForChat } from '../mcp/selectionStorage';
+import { normalizeMcpToolCallRecord } from '../mcp/utils/normalizeToolCall';
 import { getArtifactsSettingsForChat } from '../utils/artifactsSelectionStorage';
 import type { McpToolCallRecord } from '../mcp/types';
 import { isCodingModeEnabled, isCodingPlanModeEnabled } from '../coding/selectionStorage';
@@ -1794,23 +1795,11 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       case 'mcp_event': {
         if (isStoppedRef.current) break;
         touchStreamActivity(routedSession?.requestId || activeRequestIdRef.current);
-        const eventType = data.mcp_event_type === 'mcp_tool_end' ? 'mcp_tool_end' : 'mcp_tool_start';
-        const record: McpToolCallRecord = {
-          type: eventType,
-          server_id: String(data.server_id || ''),
-          tool: String(data.tool || ''),
-          qualified_name: String(data.qualified_name || ''),
-          success: data.success,
-          duration_ms: data.duration_ms,
-          error: data.error,
-          model: data.model,
-          timestamp: data.timestamp,
-          result_preview: data.result_preview,
-          has_image: data.has_image,
-          has_audio: data.has_audio,
-          has_resource: data.has_resource,
-        };
-        dispatchMcpToolActivity(record, eventType === 'mcp_tool_start' ? 'start' : 'end');
+        const record = normalizeMcpToolCallRecord({
+          ...data,
+          type: data.mcp_event_type === 'mcp_tool_end' ? 'mcp_tool_end' : 'mcp_tool_start',
+        } as Record<string, unknown>);
+        dispatchMcpToolActivity(record, record.type === 'mcp_tool_start' ? 'start' : 'end');
         mcpToolCallsRef.current = [...mcpToolCallsRef.current, record];
         const chatId = currentChatIdRef.current;
         const msgId = currentMessageRef.current || multiLLMMessageRef.current;

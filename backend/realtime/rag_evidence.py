@@ -221,6 +221,34 @@ def build_rag_inventory_block(
     return "ДОСТУПНЫЕ ФАЙЛЫ (полный перечень того, что загружено):\n" + "\n".join(lines)
 
 
+def prepend_rag_inventory(
+    message: str,
+    *,
+    proj_id_name: Optional[Dict[int, str]] = None,
+    kb_id_name: Optional[Dict[int, str]] = None,
+    mem_id_name: Optional[Dict[int, str]] = None,
+    agent_kb_doc_ids: Optional[List[Any]] = None,
+) -> Tuple[str, bool]:
+    """Префикс «ДОСТУПНЫЕ ФАЙЛЫ» к user-сообщению (direct / multi-LLM).
+
+    Возвращает (новый текст, context_added). KB сужаем по agent_kb_doc_ids —
+    иначе в опись утекут чужие имена из общей Базы Знаний.
+    """
+    inventory = build_rag_inventory_block(
+        [
+            ("Документы проекта", rag_scoped_filenames(proj_id_name or {})),
+            (
+                "База Знаний агента",
+                rag_scoped_filenames(kb_id_name or {}, agent_kb_doc_ids or []),
+            ),
+            ("Библиотека памяти", rag_scoped_filenames(mem_id_name or {})),
+        ]
+    )
+    if not inventory:
+        return message, False
+    return f"{inventory}\n\n{message}", True
+
+
 class ActiveRagSources:
     """Какие RAG-источники активны для текущего запроса.
 
@@ -289,11 +317,10 @@ def resolve_active_rag_sources(
     не искалась вообще и чат отвечал «не нашёл», хотя документы загружены.
     """
     project = bool(project_id)
-    agent_kb = (
-        bool(use_agent_scoped_kb)
-        and bool(agent_kb_doc_ids)
-        and len(agent_kb_doc_ids) > 0
-    )
+    # use_agent_scoped_kb выставляет handlers: есть document_ids ИЛИ entity kb_ids
+    # (Tools/агент/проект). Не требуем здесь непустой agent_kb_doc_ids — иначе
+    # БЗ из Tools с ещё не развернутым expand молча выключала поиск.
+    agent_kb = bool(use_agent_scoped_kb)
     memory = bool(use_memory_library_rag) or bool(use_kb_rag)
     if memory and not memory_rag_enabled():
         logger.info(

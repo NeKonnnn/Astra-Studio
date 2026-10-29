@@ -94,6 +94,6 @@
   "rag_rerank_top_n": 5,
   "rag_system_prompt": "Используй только предоставленный контекст. Если ответа нет в тексте, скажи «Не знаю». Не придумывай факты.",
   "agentic_max_iterations": 2,
-  "rag_embedding_model_path": "local/Giga-Embeddings-instruct",
+  "rag_embedding_model_path": "local/FRIDA",
   "rag_reranker_model_path": "local/bge-reranker-v2-minicpm-layerwise"
 }

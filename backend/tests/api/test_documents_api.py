@@ -267,6 +267,37 @@ class TestSaveAndDelete:
 
         assert module._try_save_bytes_to_pod_attachments(b"x", "a.txt", "text/plain", username="alice") is None
 
+    def test_persist_prefers_minio_over_pod_dir(self, attach_dir, monkeypatch):
+        class Minio:
+            def generate_object_name(self, prefix="doc_", extension=".bin"):
+                return f"{prefix}1{extension}"
+
+            def upload_file(self, *args, **kwargs):
+                return None
+
+        monkeypatch.setattr(module, "minio_client", Minio())
+        request = SimpleNamespace()
+
+        obj, bucket = module._persist_inline_attachment(
+            request, b"data", "a.pdf", "application/pdf", username="alice"
+        )
+
+        assert obj == "doc_1.pdf"
+        assert bucket != POD
+        assert bucket  # documents bucket name
+
+    def test_persist_falls_back_to_pod_when_minio_missing(self, attach_dir, monkeypatch):
+        monkeypatch.setattr(module, "minio_client", None)
+        request = SimpleNamespace()
+
+        obj, bucket = module._persist_inline_attachment(
+            request, b"data", "a.txt", "text/plain", username="alice"
+        )
+
+        assert bucket == POD
+        assert obj and obj.startswith("alice/")
+        assert (attach_dir / obj).read_bytes() == b"data"
+
     def test_delete_removes_the_file_only_inside_the_directory(self, attach_dir):
         path = _write(attach_dir, "alice/f.txt")
         outside = attach_dir.parent / "keep.txt"

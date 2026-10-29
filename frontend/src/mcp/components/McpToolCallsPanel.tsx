@@ -22,6 +22,20 @@ interface McpToolCallsPanelProps {
   serverLabels?: Record<string, string>;
 }
 
+/** Длительность tool-вызова: минуты (и секунды), не сырые ms. */
+function formatDuration(durationMs: number): string {
+  const totalSec = Math.max(0, Math.round(durationMs / 1000));
+  const mins = Math.floor(totalSec / 60);
+  const secs = totalSec % 60;
+  if (mins <= 0) {
+    // меньше минуты — показываем как доли минуты
+    const frac = Math.max(0.1, Math.round((durationMs / 60000) * 10) / 10);
+    return `${frac.toLocaleString('ru-RU')} мин`;
+  }
+  if (secs === 0) return `${mins} мин`;
+  return `${mins} мин ${secs} с`;
+}
+
 function formatJsonBlock(value: unknown): string {
   if (value == null) return '';
   if (typeof value === 'string') {
@@ -184,7 +198,7 @@ function McpToolCallCard({
         </Typography>
         {execution.duration_ms != null ? (
           <Typography variant="caption" color="text.secondary">
-            {execution.duration_ms} ms
+            {formatDuration(execution.duration_ms)}
           </Typography>
         ) : null}
         <IconButton

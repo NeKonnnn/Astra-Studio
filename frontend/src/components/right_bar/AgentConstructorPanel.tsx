@@ -208,12 +208,6 @@ function getFileIcon(filename: string) {
   return <FileIcon sx={fileIconSx} />;
 }
 
-function shortFileName(name: string, max = 22): string {
-  if (name.length <= max) return name;
-  const ext = name.includes('.') ? '.' + name.split('.').pop() : '';
-  return name.slice(0, max - ext.length - 3) + '...' + ext;
-}
-
 const INSTRUCTIONS_MIN_LENGTH = 10;
 
 function formatApiDetail(detail: unknown, fallback: string): string {
@@ -2868,7 +2862,7 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
                               sx={{ color: kbFileNameColor, fontSize: '0.68rem', display: 'block', fontWeight: 500, lineHeight: 1.3 }}
                               title={pending.filename}
                             >
-                              {shortFileName(pending.filename, 16)}
+                              {pending.filename}
                             </Typography>
                             <Typography variant="caption" sx={{ color: kbFileTypeColor, fontSize: '0.62rem', lineHeight: 1.2 }}>
                               {getFileTypeLabel(pending.filename)}
@@ -2946,7 +2940,7 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
                                 component="span"
                                 sx={{ color: kbFileNameColor, fontSize: '0.68rem', display: 'block', fontWeight: 500, lineHeight: 1.3 }}
                               >
-                                {shortFileName(doc.filename, 16)}
+                                {doc.filename}
                               </Typography>
                             </Tooltip>
                             <Typography variant="caption" sx={{ color: kbFileTypeColor, fontSize: '0.62rem', lineHeight: 1.2 }}>

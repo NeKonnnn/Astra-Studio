@@ -43,8 +43,13 @@ import {
   KeyboardOutlined as KeyboardIcon,
   HelpOutline as HelpOutlineIcon,
   Close as CloseIcon,
+  TuneOutlined as TuneIcon,
 } from '@mui/icons-material';
-import { PROJECT_ICON_MAP as projectIconMap } from '../../constants/projectIcons';
+import BulkChatManageDialog from './BulkChatManageDialog';
+import {
+  PROJECT_ICON_MAP as projectIconMap,
+  resolveProjectIconColor,
+} from '../../constants/projectIcons';
 import { useAppContext, useAppActions, chatIsListedInAllChatsSection } from '../../contexts/AppContext';
 import { groupChatsBySidebarTime } from '../../utils/chatListTimeGroups';
 import { useSocket } from '../../contexts/SocketContext';
@@ -225,6 +230,8 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
   const chatSubmenuCloseTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const [selectedChatId, setSelectedChatId] = React.useState<string | null>(null);
   const [showDeleteDialog, setShowDeleteDialog] = React.useState(false);
+  const [showBulkManageDialog, setShowBulkManageDialog] = React.useState(false);
+  const [bulkManageInitialChatId, setBulkManageInitialChatId] = React.useState<string | null>(null);
   const [chatsExpanded, setChatsExpanded] = React.useState(true);
   const [showArchiveModal, setShowArchiveModal] = React.useState(false);
   const [showNewProjectModal, setShowNewProjectModal] = React.useState(false);
@@ -561,6 +568,11 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
         handleChatMenuClose();
         setSelectedChatId(chatIdToAction); // Восстанавливаем selectedChatId для диалога
         setShowDeleteDialog(true);
+        break;
+      case 'bulkManage':
+        handleChatMenuClose();
+        setBulkManageInitialChatId(chatIdToAction);
+        setShowBulkManageDialog(true);
         break;
       default:
         handleChatMenuClose();
@@ -1337,7 +1349,10 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
               {projects.map((project) => {
                 const renderProjectIcon = () => {
                   const sizePx = SIDEBAR_PROJECT_AVATAR_SIZE;
-                  const iconColor = project.iconColor || '#9ca3af';
+                  const iconColor = resolveProjectIconColor(
+                    project.iconColor,
+                    !isSidebarPanelLight(sidebarPanelBg),
+                  );
                   // Глиф растягиваем примерно до «старого круга»
                   const glyphPx = Math.max(16, Math.round(sizePx * 1.12));
                   const glyphSx = getProjectIconGlyphSx(glyphPx, iconColor);
@@ -2368,7 +2383,15 @@ backgroundColor: state.currentChatId === chat.id ? 'var(--sidebar-selected-bg, r
           onMouseLeave={scheduleChatSubmenuClose}
           sx={{ position: 'relative' }}
         >
-          <Box sx={{ ...dropdownPanelSx, width: MENU_COMPACT_PANEL_WIDTH_PX, flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
+          <Box
+            sx={{
+              ...dropdownPanelSx,
+              width: MENU_COMPACT_PANEL_WIDTH_PX,
+              flexShrink: 0,
+              display: 'flex',
+              flexDirection: 'column',
+            }}
+          >
             <Box sx={{ py: 0.5, px: 0.5 }}>
               <Box
                 onMouseEnter={() => {
@@ -2379,7 +2402,7 @@ backgroundColor: state.currentChatId === chat.id ? 'var(--sidebar-selected-bg, r
                 sx={{ ...dropdownItemSx, display: 'flex', alignItems: 'center', gap: 1, color: menuItemColor }}
               >
                 <PushPinIcon sx={{ fontSize: 22, color: submenuIconColor, flexShrink: 0 }} />
-                <Typography sx={{ flex: 1, fontSize: MENU_ACTION_TEXT_SIZE }}>
+                <Typography sx={{ flex: 1, fontSize: MENU_ACTION_TEXT_SIZE, whiteSpace: 'nowrap' }}>
                   {(() => {
                     const chat = selectedChatId ? getChatById(selectedChatId) : null;
                     if (chat?.projectId) return chat.isPinnedInProject ? 'Открепить' : 'Пин';
@@ -2428,6 +2451,34 @@ backgroundColor: state.currentChatId === chat.id ? 'var(--sidebar-selected-bg, r
               >
                 <ArchiveIcon sx={{ fontSize: 22, color: submenuIconColor, flexShrink: 0 }} />
                 <Typography sx={{ flex: 1, fontSize: MENU_ACTION_TEXT_SIZE }}>Архив</Typography>
+              </Box>
+
+              <Box
+                onMouseEnter={() => {
+                  cancelChatSubmenuClose();
+                  setChatMenuSubmenu(null);
+                }}
+                onClick={() => handleChatMenuAction('bulkManage')}
+                sx={{
+                  ...dropdownItemSx,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 0.75,
+                  color: menuItemColor,
+                }}
+              >
+                <TuneIcon sx={{ fontSize: 22, color: submenuIconColor, flexShrink: 0 }} />
+                <Typography
+                  sx={{
+                    flex: 1,
+                    minWidth: 0,
+                    fontSize: MENU_ACTION_TEXT_SIZE,
+                    whiteSpace: 'nowrap',
+                    letterSpacing: '-0.02em',
+                  }}
+                >
+                  Массовое управление
+                </Typography>
               </Box>
 
               {!useFoldersMode && selectedChatId && getChatById(selectedChatId)?.projectId && (
@@ -2599,6 +2650,16 @@ backgroundColor: state.currentChatId === chat.id ? 'var(--sidebar-selected-bg, r
           )}
         </Box>
       </Popover>
+
+      <BulkChatManageDialog
+        open={showBulkManageDialog}
+        onClose={() => {
+          setShowBulkManageDialog(false);
+          setBulkManageInitialChatId(null);
+        }}
+        isDarkMode={isDarkMode}
+        initialSelectedChatId={bulkManageInitialChatId}
+      />
 
       {/* Диалог подтверждения удаления (адаптивный к светлой/тёмной теме, как в проекте) */}
       <Dialog

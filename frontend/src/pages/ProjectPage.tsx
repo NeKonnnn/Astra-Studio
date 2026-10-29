@@ -48,7 +48,10 @@ import {
   Bolt as FastModeIcon,
   AutoAwesome as AutoModeIcon,
 } from '@mui/icons-material';
-import { PROJECT_ICON_MAP as projectIconMap } from '../constants/projectIcons';
+import {
+  PROJECT_ICON_MAP as projectIconMap,
+  resolveProjectIconColor,
+} from '../constants/projectIcons';
 import { useAppContext, useAppActions, chatIsListedInAllChatsSection } from '../contexts/AppContext';
 import { useSocket } from '../contexts/SocketContext';
 import VoiceChatDialog from '../components/VoiceChatDialog';
@@ -462,7 +465,7 @@ export default function ProjectPage({ sidebarOpen = true, sidebarHidden = false 
 
   const renderProjectIcon = () => {
     if (!project) return null;
-    const iconColor = project.iconColor || '#9ca3af';
+    const iconColor = resolveProjectIconColor(project.iconColor, isDarkMode);
     const slotPx = 32; // раньше это был «круг»
     const glyphPx = Math.round(slotPx * 0.9);
     const glyphSx = getProjectIconGlyphSx(glyphPx, iconColor);

@@ -32,22 +32,15 @@ import { getProjectIconGlyphSx } from '../constants/menuStyles';
 import {
   PROJECT_DEFAULT_ICON as FolderIcon,
   PROJECT_ICON_OPTIONS as iconOptions,
+  getDefaultProjectIconColor,
+  getProjectIconColorOptions,
+  resolveProjectIconColor,
 } from '../constants/projectIcons';
 import ProjectRagLibraryInline from './ProjectRagLibraryInline';
 import ProjectKnowledgeBasesField from './ProjectKnowledgeBasesField';
 import RAGSettings from './settings/RAGSettings';
 import { saveEntityRagSettings, type EntityRagDraft } from '../utils/entityRagSettings';
 import { useRagReindexStatus } from '../contexts/RagReindexStatusContext';
-
-const colorOptions = [
-  { name: 'white', value: '#ffffff' },
-  { name: 'red', value: '#f44336' },
-  { name: 'orange', value: '#ff9800' },
-  { name: 'green', value: '#4caf50' },
-  { name: 'blue', value: '#2196f3' },
-  { name: 'purple', value: '#9c27b0' },
-  { name: 'dark-purple', value: '#673ab7' },
-];
 
 const emojiOptions = [
   '📁', '💰', '📝', '❤️', '✈️', '🎯', '🚀', '💡', '📊', '🎨', '🏠', '🎓', '💼', '🏥', '🍕', '☕',
@@ -63,12 +56,14 @@ export interface EditProjectModalProps {
 
 export default function EditProjectModal({ open, onClose, project, onSave }: EditProjectModalProps) {
   const theme = useTheme();
+  const isDarkMode = theme.palette.mode === 'dark';
+  const colorOptions = getProjectIconColorOptions(isDarkMode);
   const { notifyReindexStarted } = useRagReindexStatus();
   const [projectName, setProjectName] = useState('');
   const [selectedIcon, setSelectedIcon] = useState<string | null>(null);
   const [selectedEmoji, setSelectedEmoji] = useState<string | null>(null);
   const [iconType, setIconType] = useState<'icon' | 'emoji'>('icon');
-  const [selectedColor, setSelectedColor] = useState('#ffffff');
+  const [selectedColor, setSelectedColor] = useState(() => getDefaultProjectIconColor(false));
   const [memory, setMemory] = useState<'default' | 'project-only'>('default');
   const [instructions, setInstructions] = useState('');
   /** Черновик настроек РАГ: записывается по «Сохранить» проекта, не раньше. */
@@ -87,7 +82,9 @@ export default function EditProjectModal({ open, onClose, project, onSave }: Edi
       setIconType(project.iconType || 'icon');
       setSelectedIcon(project.iconType === 'icon' ? (project.icon || null) : null);
       setSelectedEmoji(project.iconType === 'emoji' ? (project.icon || null) : null);
-      setSelectedColor(project.iconColor || '#ffffff');
+      setSelectedColor(
+        resolveProjectIconColor(project.iconColor, theme.palette.mode === 'dark'),
+      );
       setMemory(project.memory || 'default');
       setInstructions(project.instructions || '');
       setKnowledgeBasesEnabled(Boolean(project.knowledgeBasesEnabled));
@@ -102,7 +99,11 @@ export default function EditProjectModal({ open, onClose, project, onSave }: Edi
       // другой — сбрасываем, иначе его настройки уехали бы не туда.
       setRagDraft(null);
     }
-  }, [open, project]);
+  }, [open, project, theme.palette.mode]);
+
+  useEffect(() => {
+    setSelectedColor((prev) => resolveProjectIconColor(prev, isDarkMode));
+  }, [isDarkMode]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -160,7 +161,7 @@ export default function EditProjectModal({ open, onClose, project, onSave }: Edi
   };
 
   const renderIcon = () => {
-    const iconColor = selectedColor === '#ffffff' ? '#9ca3af' : selectedColor;
+    const iconColor = resolveProjectIconColor(selectedColor, isDarkMode);
     const glyphSx = getProjectIconGlyphSx(26, iconColor);
     const iconWrapSx = {
       width: 48,
@@ -303,8 +304,7 @@ export default function EditProjectModal({ open, onClose, project, onSave }: Edi
                   >
                     {iconOptions.map((option) => {
                       const IconComponent = option.icon;
-                      const previewColor =
-                        selectedColor === '#ffffff' ? '#9ca3af' : selectedColor;
+                      const previewColor = resolveProjectIconColor(selectedColor, isDarkMode);
                       return (
                         <IconButton
                           key={option.name}

@@ -1,6 +1,7 @@
 import React, { startTransition, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Box,
+  Divider,
   Drawer,
   IconButton,
   List,
@@ -8,21 +9,29 @@ import {
   ListItemButton,
   ListItemIcon,
   ListItemText,
+  Menu,
+  MenuItem,
   Tooltip,
+  Typography,
 } from '@mui/material';
 import {
+  Apps as AppsIcon,
   ChevronLeft as ChevronLeftIcon,
   ChevronRight as ChevronRightIcon,
   PushPin as PushPinIcon,
   PushPinOutlined as PushPinOutlinedIcon,
 } from '@mui/icons-material';
+import { useNavigate } from 'react-router-dom';
 import SkillsNavIcon from '../../icons/SkillsIcon';
 import KnowledgeBaseIcon from '../../icons/KnowledgeBaseIcon';
 import {
+  MENU_ACTION_TEXT_SIZE,
   SIDEBAR_CHAT_ROW_LIST_ITEM_BUTTON_SX,
   SIDEBAR_HIDE_SCROLLBAR_SX,
   SIDEBAR_LIST_ICON_SX,
   SIDEBAR_LIST_ICON_TO_TEXT_GAP_PX,
+  getDropdownItemSx,
+  getDropdownPanelSx,
   getSidebarRailCollapsedListItemButtonSx,
 } from '../../constants/menuStyles';
 import {
@@ -33,6 +42,7 @@ import {
 } from '../../constants/sidebarPanelColor';
 import {
   SidebarRailAgentIcon,
+  SidebarRailPromptsIcon,
   SidebarRailTranscribeIcon,
 } from '../../constants/sidebarRailIcons';
 import {
@@ -53,6 +63,8 @@ import TranscriptionSidebarSection from './TranscriptionSidebarSection';
 import RightSidebarResizeHandle from './RightSidebarResizeHandle';
 import { clampRightSidebarWidthPx } from '../../hooks/useRightSidebarWidth';
 import { RIGHT_SIDEBAR_COLLAPSED_WIDTH_PX } from '../../hooks/useRightSidebarInsetCssVar';
+
+type RightBarSection = 'transcription' | 'skills' | 'knowledge' | 'agent';
 
 export interface RightBarProps {
   open: boolean;
@@ -89,13 +101,50 @@ export default function RightBar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [isDarkMode, sidebarColorTick],
   );
+  const navigate = useNavigate();
   const [transcriptionMenuOpen, setTranscriptionMenuOpen] = useState(false);
   const [skillsPanelOpen, setSkillsPanelOpen] = useState(false);
   const [knowledgeBasesPanelOpen, setKnowledgeBasesPanelOpen] = useState(false);
   const [agentConstructorOpen, setAgentConstructorOpen] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
+  const [sectionMenuAnchor, setSectionMenuAnchor] = useState<null | HTMLElement>(null);
 
   const drawerWidth = open ? clampRightSidebarWidthPx(expandedWidthPx) : RIGHT_SIDEBAR_COLLAPSED_WIDTH_PX;
+
+  const activeSection: RightBarSection | null = agentConstructorOpen
+    ? 'agent'
+    : skillsPanelOpen
+      ? 'skills'
+      : knowledgeBasesPanelOpen
+        ? 'knowledge'
+        : transcriptionMenuOpen
+          ? 'transcription'
+          : null;
+
+  const activeSectionLabel =
+    activeSection === 'agent'
+      ? 'Конструктор агента'
+      : activeSection === 'skills'
+        ? 'Skills'
+        : activeSection === 'knowledge'
+          ? 'Базы знаний'
+          : activeSection === 'transcription'
+            ? 'Транскрибация'
+            : null;
+
+  const closeAllSections = useCallback(() => {
+    setTranscriptionMenuOpen(false);
+    setSkillsPanelOpen(false);
+    setKnowledgeBasesPanelOpen(false);
+    setAgentConstructorOpen(false);
+  }, []);
+
+  const openSection = useCallback((section: RightBarSection) => {
+    setTranscriptionMenuOpen(section === 'transcription');
+    setSkillsPanelOpen(section === 'skills');
+    setKnowledgeBasesPanelOpen(section === 'knowledge');
+    setAgentConstructorOpen(section === 'agent');
+  }, []);
 
   useEffect(() => {
     const raw = (localStorage.getItem('sidebar_panel_color') || '').trim();
@@ -116,31 +165,25 @@ export default function RightBar({
     startTransition(() => {
       setHidden(false);
       setOpen(true);
-      setSkillsPanelOpen(false);
-      setKnowledgeBasesPanelOpen(false);
-      setAgentConstructorOpen(true);
+      openSection('agent');
     });
-  }, [setHidden, setOpen]);
+  }, [openSection, setHidden, setOpen]);
 
   const openKnowledgeBasesSidebar = useCallback(() => {
     startTransition(() => {
       setHidden(false);
       setOpen(true);
-      setSkillsPanelOpen(false);
-      setAgentConstructorOpen(false);
-      setKnowledgeBasesPanelOpen(true);
+      openSection('knowledge');
     });
-  }, [setHidden, setOpen]);
+  }, [openSection, setHidden, setOpen]);
 
   const openSkillsSidebar = useCallback(() => {
     startTransition(() => {
       setHidden(false);
       setOpen(true);
-      setAgentConstructorOpen(false);
-      setKnowledgeBasesPanelOpen(false);
-      setSkillsPanelOpen(true);
+      openSection('skills');
     });
-  }, [setHidden, setOpen]);
+  }, [openSection, setHidden, setOpen]);
 
   usePendingAgentConstructorOpen(openConstructorSidebar);
   usePendingSkillSidebarOpen(openSkillsSidebar);
@@ -154,7 +197,7 @@ export default function RightBar({
       startTransition(() => {
         setHidden(false);
         setOpen(true);
-        setTranscriptionMenuOpen(true);
+        openSection('transcription');
       });
     };
     window.addEventListener(ASTRA_OPEN_AGENT_CONSTRUCTOR, onAgent);
@@ -167,7 +210,7 @@ export default function RightBar({
       window.removeEventListener(ASTRA_OPEN_KNOWLEDGE_BASES_SIDEBAR, onKnowledgeBases);
       window.removeEventListener(ASTRA_OPEN_TRANSCRIPTION_SIDEBAR, onTranscription);
     };
-  }, [openConstructorSidebar, openSkillsSidebar, openKnowledgeBasesSidebar, setHidden, setOpen]);
+  }, [openConstructorSidebar, openSkillsSidebar, openKnowledgeBasesSidebar, openSection, setHidden, setOpen]);
 
   const panelIsLight = isSidebarPanelLight(panelBg);
 
@@ -268,7 +311,7 @@ export default function RightBar({
                       <ListItemButton
                         onClick={() => {
                           setOpen(true);
-                          setTranscriptionMenuOpen(true);
+                          openSection('transcription');
                         }}
                         sx={getSidebarRailCollapsedListItemButtonSx(panelIsLight)}
                       >
@@ -310,9 +353,7 @@ export default function RightBar({
                       <ListItemButton
                         onClick={() => {
                           setOpen(true);
-                          setSkillsPanelOpen(false);
-                          setKnowledgeBasesPanelOpen(false);
-                          setAgentConstructorOpen(true);
+                          openSection('agent');
                         }}
                         sx={getSidebarRailCollapsedListItemButtonSx(panelIsLight)}
                       >
@@ -381,25 +422,69 @@ export default function RightBar({
                   boxSizing: 'border-box',
                 }}
               >
-                <Tooltip title="Свернуть панель" placement="left">
-                  <IconButton
-                    onClick={onToggleOpen}
-                    sx={{
-                      color: 'white',
-                      opacity: 1,
-                      width: 40,
-                      height: 40,
-                      borderRadius: 1,
-                      p: 0,
-                      '&:hover': {
-                        backgroundColor: isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)',
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25, minWidth: 0, flex: 1 }}>
+                  <Tooltip title="Свернуть панель" placement="left">
+                    <IconButton
+                      onClick={onToggleOpen}
+                      sx={{
+                        color: 'white',
                         opacity: 1,
-                      },
-                    }}
-                  >
-                    <SidebarRailMenuGlyph side="right" />
-                  </IconButton>
-                </Tooltip>
+                        width: 40,
+                        height: 40,
+                        borderRadius: 1,
+                        p: 0,
+                        flexShrink: 0,
+                        '&:hover': {
+                          backgroundColor: isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)',
+                          opacity: 1,
+                        },
+                      }}
+                    >
+                      <SidebarRailMenuGlyph side="right" />
+                    </IconButton>
+                  </Tooltip>
+                  {activeSection ? (
+                    <Tooltip title="Разделы панели" placement="left">
+                      <IconButton
+                        onClick={(e) => setSectionMenuAnchor(e.currentTarget)}
+                        aria-haspopup="menu"
+                        aria-expanded={Boolean(sectionMenuAnchor)}
+                        sx={{
+                          color: 'white',
+                          opacity: 1,
+                          width: 40,
+                          height: 40,
+                          borderRadius: 1,
+                          p: 0,
+                          flexShrink: 0,
+                          '&:hover': {
+                            backgroundColor: isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)',
+                            opacity: 1,
+                          },
+                        }}
+                      >
+                        <AppsIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  ) : null}
+                  {activeSectionLabel ? (
+                    <Typography
+                      sx={{
+                        flex: 1,
+                        minWidth: 0,
+                        ml: 0.5,
+                        fontSize: '0.9rem',
+                        fontWeight: 600,
+                        color: 'inherit',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      {activeSectionLabel}
+                    </Typography>
+                  ) : null}
+                </Box>
                 <Tooltip
                   title={
                     widthPinned
@@ -418,6 +503,7 @@ export default function RightBar({
                       height: 40,
                       borderRadius: 1,
                       p: 0,
+                      flexShrink: 0,
                       '&:hover': {
                         backgroundColor: isDarkMode ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)',
                         opacity: 1,
@@ -428,141 +514,225 @@ export default function RightBar({
                   </IconButton>
                 </Tooltip>
               </Box>
-              <List sx={{ py: 0, px: 1, flexShrink: 0 }}>
-                <ListItem disablePadding sx={{ mb: 0.5 }}>
-                  <ListItemButton
-                    onClick={() => setTranscriptionMenuOpen((prev) => !prev)}
-                    sx={{
-                      ...SIDEBAR_CHAT_ROW_LIST_ITEM_BUTTON_SX,
-                      color: 'white',
-                      backgroundColor: transcriptionMenuOpen ? 'rgba(255,255,255,0.15)' : 'transparent',
-                      '&:hover': {
-                        backgroundColor: transcriptionMenuOpen
-                          ? 'rgba(255,255,255,0.2)'
-                          : 'rgba(255,255,255,0.08)',
-                      },
-                    }}
-                  >
-                    <ListItemIcon
-                      sx={{
-                        color: '#ffffff',
-                        minWidth: 40,
-                        mr: `${SIDEBAR_LIST_ICON_TO_TEXT_GAP_PX}px`,
-                        '& .MuiSvgIcon-root': { fontSize: '1.375rem' },
-                      }}
-                    >
-                      <SidebarRailTranscribeIcon />
-                    </ListItemIcon>
-                    <ListItemText
-                      primary="Транскрибация"
-                      primaryTypographyProps={{
-                        sx: { fontSize: '0.8rem', fontWeight: 400, color: '#ffffff' },
-                      }}
-                    />
-                  </ListItemButton>
-                </ListItem>
-                <TranscriptionSidebarSection open={transcriptionMenuOpen} />
-                <GalleryNavButton variant="expanded" isDarkMode={isDarkMode} panelIsLight={panelIsLight} />
-                <ListItem disablePadding sx={{ mb: 0.5 }}>
-                  <ListItemButton
+
+              <Menu
+                anchorEl={sectionMenuAnchor}
+                open={Boolean(sectionMenuAnchor)}
+                onClose={() => setSectionMenuAnchor(null)}
+                anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+                transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+                slotProps={{
+                  paper: {
+                    sx: {
+                      ...getDropdownPanelSx(isDarkMode),
+                      minWidth: 200,
+                      py: 0.5,
+                    },
+                  },
+                }}
+              >
+                {(
+                  [
+                    {
+                      id: 'transcription' as const,
+                      label: 'Транскрибация',
+                      icon: <SidebarRailTranscribeIcon fontSize="small" />,
+                    },
+                    {
+                      id: 'gallery' as const,
+                      label: 'Галерея',
+                      icon: <SidebarRailPromptsIcon fontSize="small" />,
+                    },
+                    {
+                      id: 'skills' as const,
+                      label: 'Skills',
+                      icon: <SkillsNavIcon sx={{ fontSize: 20 }} />,
+                    },
+                    {
+                      id: 'knowledge' as const,
+                      label: 'Базы знаний',
+                      icon: <KnowledgeBaseIcon sx={{ fontSize: 20 }} />,
+                    },
+                    {
+                      id: 'agent' as const,
+                      label: 'Конструктор агента',
+                      icon: <SidebarRailAgentIcon sx={{ fontSize: 20 }} />,
+                    },
+                  ] as const
+                ).map((item) => (
+                  <MenuItem
+                    key={item.id}
+                    selected={item.id !== 'gallery' && activeSection === item.id}
                     onClick={() => {
-                      setSkillsPanelOpen((prev) => {
-                        const next = !prev;
-                        if (next) {
-                          setAgentConstructorOpen(false);
-                          setKnowledgeBasesPanelOpen(false);
-                        }
-                        return next;
-                      });
+                      setSectionMenuAnchor(null);
+                      if (item.id === 'gallery') {
+                        closeAllSections();
+                        navigate('/gallery');
+                        return;
+                      }
+                      if (activeSection === item.id) {
+                        closeAllSections();
+                        return;
+                      }
+                      openSection(item.id);
                     }}
                     sx={{
-                      ...SIDEBAR_CHAT_ROW_LIST_ITEM_BUTTON_SX,
-                      color: 'white',
-                      backgroundColor: skillsPanelOpen ? 'rgba(255,255,255,0.15)' : 'transparent',
-                      '&:hover': {
-                        backgroundColor: skillsPanelOpen
-                          ? 'rgba(255,255,255,0.2)'
-                          : 'rgba(255,255,255,0.08)',
-                      },
+                      ...getDropdownItemSx(isDarkMode),
+                      gap: 1,
+                      mx: 0.5,
+                      borderRadius: '10px',
                     }}
                   >
-                    <ListItemIcon
+                    <ListItemIcon sx={{ minWidth: 28, color: 'inherit' }}>{item.icon}</ListItemIcon>
+                    <ListItemText
+                      primary={item.label}
+                      primaryTypographyProps={{ sx: { fontSize: MENU_ACTION_TEXT_SIZE } }}
+                    />
+                  </MenuItem>
+                ))}
+                <Divider sx={{ my: 0.5, borderColor: isDarkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)' }} />
+                <MenuItem
+                  onClick={() => {
+                    setSectionMenuAnchor(null);
+                    closeAllSections();
+                  }}
+                  sx={{ ...getDropdownItemSx(isDarkMode), mx: 0.5, borderRadius: '10px' }}
+                >
+                  <ListItemText
+                    primary="Все разделы"
+                    primaryTypographyProps={{ sx: { fontSize: MENU_ACTION_TEXT_SIZE } }}
+                  />
+                </MenuItem>
+              </Menu>
+
+              {!activeSection && (
+                <List sx={{ py: 0, px: 1, flexShrink: 0 }}>
+                  <ListItem disablePadding sx={{ mb: 0.5 }}>
+                    <ListItemButton
+                      onClick={() => openSection('transcription')}
                       sx={{
-                        color: '#ffffff',
-                        minWidth: 40,
-                        mr: `${SIDEBAR_LIST_ICON_TO_TEXT_GAP_PX}px`,
-                        '& .MuiSvgIcon-root': { fontSize: '1.375rem' },
+                        ...SIDEBAR_CHAT_ROW_LIST_ITEM_BUTTON_SX,
+                        color: 'white',
+                        '&:hover': { backgroundColor: 'rgba(255,255,255,0.08)' },
                       }}
                     >
-                      <SkillsNavIcon />
-                    </ListItemIcon>
-                    <ListItemText
-                      primary="Skills"
-                      primaryTypographyProps={{
-                        sx: { fontSize: '0.8rem', fontWeight: 400, color: '#ffffff' },
-                      }}
-                    />
-                  </ListItemButton>
-                </ListItem>
-                <ListItem disablePadding sx={{ mb: 0.5 }}>
-                  <ListItemButton
-                    onClick={() => {
-                      setKnowledgeBasesPanelOpen((prev) => {
-                        const next = !prev;
-                        if (next) {
-                          setSkillsPanelOpen(false);
-                          setAgentConstructorOpen(false);
-                        }
-                        return next;
-                      });
-                    }}
-                    sx={{
-                      ...SIDEBAR_CHAT_ROW_LIST_ITEM_BUTTON_SX,
-                      color: 'white',
-                      backgroundColor: knowledgeBasesPanelOpen
-                        ? 'rgba(255,255,255,0.15)'
-                        : 'transparent',
-                      '&:hover': {
-                        backgroundColor: knowledgeBasesPanelOpen
-                          ? 'rgba(255,255,255,0.2)'
-                          : 'rgba(255,255,255,0.08)',
-                      },
-                    }}
-                  >
-                    <ListItemIcon
+                      <ListItemIcon
+                        sx={{
+                          color: '#ffffff',
+                          minWidth: 40,
+                          mr: `${SIDEBAR_LIST_ICON_TO_TEXT_GAP_PX}px`,
+                          '& .MuiSvgIcon-root': { fontSize: '1.375rem' },
+                        }}
+                      >
+                        <SidebarRailTranscribeIcon />
+                      </ListItemIcon>
+                      <ListItemText
+                        primary="Транскрибация"
+                        primaryTypographyProps={{
+                          sx: { fontSize: '0.8rem', fontWeight: 400, color: '#ffffff' },
+                        }}
+                      />
+                    </ListItemButton>
+                  </ListItem>
+                  <GalleryNavButton variant="expanded" isDarkMode={isDarkMode} panelIsLight={panelIsLight} />
+                  <ListItem disablePadding sx={{ mb: 0.5 }}>
+                    <ListItemButton
+                      onClick={() => openSection('skills')}
                       sx={{
-                        color: '#ffffff',
-                        minWidth: 40,
-                        mr: `${SIDEBAR_LIST_ICON_TO_TEXT_GAP_PX}px`,
-                        '& .MuiSvgIcon-root': { fontSize: '1.375rem' },
+                        ...SIDEBAR_CHAT_ROW_LIST_ITEM_BUTTON_SX,
+                        color: 'white',
+                        '&:hover': { backgroundColor: 'rgba(255,255,255,0.08)' },
                       }}
                     >
-                      <KnowledgeBaseIcon />
-                    </ListItemIcon>
-                    <ListItemText
-                      primary="Базы знаний"
-                      primaryTypographyProps={{
-                        sx: { fontSize: '0.8rem', fontWeight: 400, color: '#ffffff' },
+                      <ListItemIcon
+                        sx={{
+                          color: '#ffffff',
+                          minWidth: 40,
+                          mr: `${SIDEBAR_LIST_ICON_TO_TEXT_GAP_PX}px`,
+                          '& .MuiSvgIcon-root': { fontSize: '1.375rem' },
+                        }}
+                      >
+                        <SkillsNavIcon />
+                      </ListItemIcon>
+                      <ListItemText
+                        primary="Skills"
+                        primaryTypographyProps={{
+                          sx: { fontSize: '0.8rem', fontWeight: 400, color: '#ffffff' },
+                        }}
+                      />
+                    </ListItemButton>
+                  </ListItem>
+                  <ListItem disablePadding sx={{ mb: 0.5 }}>
+                    <ListItemButton
+                      onClick={() => openSection('knowledge')}
+                      sx={{
+                        ...SIDEBAR_CHAT_ROW_LIST_ITEM_BUTTON_SX,
+                        color: 'white',
+                        '&:hover': { backgroundColor: 'rgba(255,255,255,0.08)' },
                       }}
-                    />
-                  </ListItemButton>
-                </ListItem>
-              </List>
-              {skillsPanelOpen && (
+                    >
+                      <ListItemIcon
+                        sx={{
+                          color: '#ffffff',
+                          minWidth: 40,
+                          mr: `${SIDEBAR_LIST_ICON_TO_TEXT_GAP_PX}px`,
+                          '& .MuiSvgIcon-root': { fontSize: '1.375rem' },
+                        }}
+                      >
+                        <KnowledgeBaseIcon />
+                      </ListItemIcon>
+                      <ListItemText
+                        primary="Базы знаний"
+                        primaryTypographyProps={{
+                          sx: { fontSize: '0.8rem', fontWeight: 400, color: '#ffffff' },
+                        }}
+                      />
+                    </ListItemButton>
+                  </ListItem>
+                  <ListItem disablePadding sx={{ mb: 0.5 }}>
+                    <ListItemButton
+                      onClick={() => openSection('agent')}
+                      sx={{
+                        ...SIDEBAR_CHAT_ROW_LIST_ITEM_BUTTON_SX,
+                        color: 'white',
+                        '&:hover': { backgroundColor: 'rgba(255,255,255,0.08)' },
+                      }}
+                    >
+                      <ListItemIcon
+                        sx={{
+                          color: '#ffffff',
+                          minWidth: 40,
+                          mr: `${SIDEBAR_LIST_ICON_TO_TEXT_GAP_PX}px`,
+                          '& .MuiSvgIcon-root': { fontSize: '1.375rem' },
+                        }}
+                      >
+                        <SidebarRailAgentIcon />
+                      </ListItemIcon>
+                      <ListItemText
+                        primary="Конструктор агента"
+                        primaryTypographyProps={{
+                          sx: { fontSize: '0.8rem', fontWeight: 400, color: '#ffffff' },
+                        }}
+                      />
+                    </ListItemButton>
+                  </ListItem>
+                </List>
+              )}
+
+              {activeSection === 'transcription' && (
                 <Box
                   sx={{
                     flex: 1,
                     minHeight: 0,
-                    overflow: 'hidden',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    borderTop: '1px solid rgba(255,255,255,0.08)',
+                    overflow: 'auto',
+                    px: 1,
+                    ...SIDEBAR_HIDE_SCROLLBAR_SX,
                   }}
                 >
-                  <SkillsSidebarPanel isOpen={true} />
+                  <TranscriptionSidebarSection open />
                 </Box>
               )}
-              {knowledgeBasesPanelOpen && (
+              {activeSection === 'skills' && (
                 <Box
                   sx={{
                     flex: 1,
@@ -570,56 +740,12 @@ export default function RightBar({
                     overflow: 'hidden',
                     display: 'flex',
                     flexDirection: 'column',
-                    borderTop: '1px solid rgba(255,255,255,0.08)',
                   }}
                 >
-                  <KnowledgeBasesSidebarPanel isOpen={true} />
+                  <SkillsSidebarPanel isOpen />
                 </Box>
               )}
-              <List sx={{ py: 0, px: open ? 1 : 0.5 }}>
-                <ListItem disablePadding sx={{ mb: 0.5 }}>
-                  <ListItemButton
-                    onClick={() => {
-                      setAgentConstructorOpen((prev) => {
-                        const next = !prev;
-                        if (next) {
-                          setSkillsPanelOpen(false);
-                          setKnowledgeBasesPanelOpen(false);
-                        }
-                        return next;
-                      });
-                    }}
-                    sx={{
-                      ...SIDEBAR_CHAT_ROW_LIST_ITEM_BUTTON_SX,
-                      color: 'white',
-                      backgroundColor: agentConstructorOpen ? 'rgba(255,255,255,0.15)' : 'transparent',
-                      '&:hover': {
-                        backgroundColor: agentConstructorOpen
-                          ? 'rgba(255,255,255,0.2)'
-                          : 'rgba(255,255,255,0.08)',
-                      },
-                    }}
-                  >
-                    <ListItemIcon
-                      sx={{
-                        color: '#ffffff',
-                        minWidth: 40,
-                        mr: `${SIDEBAR_LIST_ICON_TO_TEXT_GAP_PX}px`,
-                        '& .MuiSvgIcon-root': { fontSize: '1.375rem' },
-                      }}
-                    >
-                      <SidebarRailAgentIcon />
-                    </ListItemIcon>
-                    <ListItemText
-                      primary="Конструктор агента"
-                      primaryTypographyProps={{
-                        sx: { fontSize: '0.8rem', fontWeight: 400, color: '#ffffff' },
-                      }}
-                    />
-                  </ListItemButton>
-                </ListItem>
-              </List>
-              {agentConstructorOpen && (
+              {activeSection === 'knowledge' && (
                 <Box
                   sx={{
                     flex: 1,
@@ -627,10 +753,22 @@ export default function RightBar({
                     overflow: 'hidden',
                     display: 'flex',
                     flexDirection: 'column',
-                    borderTop: '1px solid rgba(255,255,255,0.08)',
                   }}
                 >
-                  <AgentConstructorPanel isDarkMode={isDarkMode} isOpen={true} />
+                  <KnowledgeBasesSidebarPanel isOpen />
+                </Box>
+              )}
+              {activeSection === 'agent' && (
+                <Box
+                  sx={{
+                    flex: 1,
+                    minHeight: 0,
+                    overflow: 'hidden',
+                    display: 'flex',
+                    flexDirection: 'column',
+                  }}
+                >
+                  <AgentConstructorPanel isDarkMode={isDarkMode} isOpen />
                 </Box>
               )}
             </Box>

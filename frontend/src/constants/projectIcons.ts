@@ -67,3 +67,60 @@ export const PROJECT_ICON_OPTIONS: Array<{ name: string; icon: SvgIconComponent 
 ).map(([name, icon]) => ({ name, icon }));
 
 export const PROJECT_DEFAULT_ICON = FolderOutlined;
+
+export const PROJECT_ICON_COLOR_WHITE = '#ffffff';
+export const PROJECT_ICON_COLOR_BLACK = '#111111';
+
+const PROJECT_ICON_COLOR_ACCENTS: Array<{ name: string; value: string }> = [
+  { name: 'red', value: '#f44336' },
+  { name: 'orange', value: '#ff9800' },
+  { name: 'green', value: '#4caf50' },
+  { name: 'blue', value: '#2196f3' },
+  { name: 'purple', value: '#9c27b0' },
+  { name: 'dark-purple', value: '#673ab7' },
+];
+
+/** Палитра пикера: на тёмном фоне — белый (без чёрного), на светлом — чёрный (без белого). */
+export function getProjectIconColorOptions(isDarkBackground: boolean): Array<{ name: string; value: string }> {
+  const mono = isDarkBackground
+    ? { name: 'white', value: PROJECT_ICON_COLOR_WHITE }
+    : { name: 'black', value: PROJECT_ICON_COLOR_BLACK };
+  return [mono, ...PROJECT_ICON_COLOR_ACCENTS];
+}
+
+export function getDefaultProjectIconColor(isDarkBackground: boolean): string {
+  return isDarkBackground ? PROJECT_ICON_COLOR_WHITE : PROJECT_ICON_COLOR_BLACK;
+}
+
+function normalizeHex(color: string): string {
+  return color.trim().toLowerCase();
+}
+
+function isNearWhite(color: string): boolean {
+  const c = normalizeHex(color);
+  return c === '#ffffff' || c === '#fff' || c === 'white' || c === PROJECT_ICON_COLOR_WHITE;
+}
+
+function isNearBlack(color: string): boolean {
+  const c = normalizeHex(color);
+  return (
+    c === '#000000' ||
+    c === '#000' ||
+    c === '#111111' ||
+    c === '#111' ||
+    c === 'black' ||
+    c === PROJECT_ICON_COLOR_BLACK
+  );
+}
+
+/** Контраст: белый на светлом → чёрный; чёрный на тёмном → белый. */
+export function resolveProjectIconColor(
+  iconColor: string | undefined | null,
+  isDarkBackground: boolean,
+): string {
+  const fallback = getDefaultProjectIconColor(isDarkBackground);
+  if (!iconColor) return fallback;
+  if (!isDarkBackground && isNearWhite(iconColor)) return PROJECT_ICON_COLOR_BLACK;
+  if (isDarkBackground && isNearBlack(iconColor)) return PROJECT_ICON_COLOR_WHITE;
+  return iconColor;
+}

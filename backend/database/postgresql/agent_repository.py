@@ -720,6 +720,57 @@ WHERE id = ${param_num}
             logger.exception("Не удалось проверить принадлежность kb_document_ids")
             return []
 
+    async def remove_kb_document_ids(
+        self, agent_id: int, document_ids: List[int]
+    ) -> bool:
+        """Убрать document_id из config.kb_document_ids только у этого агента.
+
+        Физическое удаление файла не трогаем — для shared/clone сценария.
+        """
+        drop = sorted({int(d) for d in (document_ids or []) if d is not None})
+        if not drop or not agent_id:
+            return False
+        try:
+            async with await self.db_connection.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    UPDATE agents
+                    SET config = jsonb_set(
+                        COALESCE(config, '{}'::jsonb),
+                        '{kb_document_ids}',
+                        COALESCE(
+                            (
+                                SELECT jsonb_agg(to_jsonb(x.doc_id::int))
+                                FROM jsonb_array_elements_text(
+                                    CASE
+                                        WHEN jsonb_typeof(config->'kb_document_ids') = 'array'
+                                        THEN config->'kb_document_ids'
+                                        ELSE '[]'::jsonb
+                                    END
+                                ) AS x(doc_id)
+                                WHERE x.doc_id ~ '^[0-9]+$'
+                                  AND NOT (x.doc_id::int = ANY($2::int[]))
+                            ),
+                            '[]'::jsonb
+                        ),
+                        true
+                    ),
+                    updated_at = NOW()
+                    WHERE id = $1
+                    """,
+                    int(agent_id),
+                    drop,
+                )
+                # asyncpg: "UPDATE N"
+                return str(result).endswith("1") or str(result).upper().startswith(
+                    "UPDATE"
+                )
+        except Exception:
+            logger.exception(
+                "Не удалось убрать kb_document_ids=%s у агента %s", drop, agent_id
+            )
+            return False
+
     async def delete_agent(
         self, agent_id: int, author_id: str, is_admin: bool = False
     ) -> bool:
@@ -1196,8 +1247,13 @@ WHERE id = ${param_num}
             logger.exception("Ошибка определения роли пользователя для агента")
             return None
 
-    async def user_can_access_agent(self, agent_id: int, user_id: Optional[str] = None) -> bool:
-        """Проверка доступа: публичный / автор / получатель шаринга."""
+    async def user_can_access_agent(
+        self,
+        agent_id: int,
+        user_id: Optional[str] = None,
+        is_admin: bool = False,
+    ) -> bool:
+        """Проверка доступа: admin / публичный / автор / получатель шаринга."""
         try:
             async with await self.db_connection.acquire() as conn:
                 row = await conn.fetchrow(
@@ -1209,6 +1265,8 @@ WHERE id = ${param_num}
                 )
                 if not row:
                     return False
+                if is_admin:
+                    return True
                 if row["is_public"]:
                     return True
                 if not user_id:

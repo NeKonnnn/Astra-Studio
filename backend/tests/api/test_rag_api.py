@@ -103,6 +103,7 @@ class TestKnowledgeBaseDelete:
         import backend.database.init_db as init_db
 
         calls = []
+        unbound = []
 
         class Repo:
             async def find_documents_claimed_by_other_agents(self, agent_id, ids):
@@ -111,26 +112,53 @@ class TestKnowledgeBaseDelete:
                     raise error
                 return foreign or []
 
+            async def remove_kb_document_ids(self, agent_id, ids):
+                unbound.append((agent_id, list(ids)))
+                return True
+
         monkeypatch.setattr(init_db, "get_agent_repository", lambda: Repo())
-        return calls
+        return calls, unbound
 
     async def test_deletes_the_record_the_source_file_and_resets_the_cache(self, make_client, rag, monkeypatch):
-        calls = self._agent_repo(monkeypatch)
+        calls, unbound = self._agent_repo(monkeypatch)
 
         response = await _client(make_client).delete("/api/kb/documents/5", params={"agent_id": 3})
 
-        assert response.json() == {"ok": True, "document_id": 5}
+        assert response.json() == {"ok": True, "document_id": 5, "unbound_only": False}
         assert rag.calls == [("kb_delete", 5)]
         assert rag.removed == [("obj", "bucket")] and rag.bumped == [True]
         assert calls == [(3, [5])]
+        assert unbound == [(3, [5])]
 
-    async def test_document_still_used_by_another_agent_is_kept(self, make_client, rag, monkeypatch):
-        self._agent_repo(monkeypatch, foreign=[5])
+    async def test_document_still_used_by_another_agent_is_unbound_only(
+        self, make_client, rag, monkeypatch
+    ):
+        import backend.database.init_db as init_db
 
-        response = await _client(make_client).delete("/api/kb/documents/5", params={"agent_id": 3})
+        removed = []
 
-        assert response.status_code == 409
+        class Repo:
+            async def find_documents_claimed_by_other_agents(self, agent_id, ids):
+                return [5]
+
+            async def remove_kb_document_ids(self, agent_id, ids):
+                removed.append((agent_id, ids))
+                return True
+
+        monkeypatch.setattr(init_db, "get_agent_repository", lambda: Repo())
+
+        response = await _client(make_client).delete(
+            "/api/kb/documents/5", params={"agent_id": 3}
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "ok": True,
+            "document_id": 5,
+            "unbound_only": True,
+        }
         assert rag.calls == [] and rag.removed == []
+        assert removed == [(3, [5])]
 
     async def test_missing_document(self, make_client, rag, monkeypatch):
         self._agent_repo(monkeypatch)

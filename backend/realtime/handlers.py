@@ -45,6 +45,7 @@ from backend.realtime.helpers import (
     _terminal_chat_inference_banner,
     agent_mcp_tool_ids,
     agent_plugin_ids,
+    document_ids_from_kb_rows,
     expand_knowledge_base_document_ids,
     kb_search_scoped_documents,
     merge_chat_artifacts_settings,
@@ -78,6 +79,7 @@ from backend.realtime.rag_evidence import (
     filter_rag_hits_by_score,
     format_rag_fragments,
     maybe_rag_no_evidence_message,
+    prepend_rag_inventory,
     rag_guard_env,
     rag_reindex_blocks_active_sources,
     resolve_active_rag_sources,
@@ -1147,8 +1149,9 @@ def register_handlers(sio):
                     if kid > 0 and kid not in kb_ids_for_settings:
                         kb_ids_for_settings.append(kid)
 
-            if isinstance(agent_profile, dict) and agent_profile.get(
-                "knowledge_bases_enabled"
+            if isinstance(agent_profile, dict) and (
+                agent_profile.get("knowledge_bases_enabled")
+                or agent_profile.get("knowledge_base_ids")
             ):
                 _collect_kb_ids(agent_profile.get("knowledge_base_ids"))
             # БЗ из Tools чата (Мои знания / галерея) — дополняют документный scope.
@@ -1242,7 +1245,9 @@ def register_handlers(sio):
             legacy_kb_doc_ids = resolve_agent_legacy_kb_document_ids(
                 agent_profile if isinstance(agent_profile, dict) else {}
             )
-            use_agent_scoped_kb = bool(agent_kb_doc_ids)
+            # Tools/агент/проект могут дать kb_ids даже если expand пока пуст
+            # (метаданные догонят на list) — всё равно включаем agent_kb scope.
+            use_agent_scoped_kb = bool(agent_kb_doc_ids) or bool(kb_ids_for_settings)
             logger.info(
                 "[RAG] kb_scope chat_kb_ids=%s chat_docs=%s project_docs=%s "
                 "total_doc_ids=%s kb_ids=%s legacy_docs=%s use_agent_scoped_kb=%s "
@@ -1606,6 +1611,10 @@ async def _handle_multi_llm(
     context_added = False
     rag_scopes: set = set()
     final_user_message = user_message
+    # Имена документов по хранилищам — для описи «какие документы ты видишь».
+    proj_id_name: dict = {}
+    kb_id_name: dict = {}
+    mem_id_name: dict = {}
     if rag_client and sources.project:
         try:
             proj_rows = list(await rag_client.project_rag_list_documents(project_id) or [])
@@ -1710,6 +1719,23 @@ async def _handle_multi_llm(
             return
         except Exception:
             logger.exception("multi-llm memory_rag_search error")
+    # Опись файлов — всегда, даже если семантический поиск пустой
+    # (иначе «какие документы ты видишь?» → «не вижу»).
+    _inv_kb_ids = list(agent_kb_doc_ids or [])
+    if not _inv_kb_ids and knowledge_base_ids and rag_client:
+        with logged_suppress(logger):
+            _inv_kb_ids = await expand_knowledge_base_document_ids(
+                rag_client, knowledge_base_ids
+            )
+    final_user_message, _inv_added = prepend_rag_inventory(
+        final_user_message,
+        proj_id_name=proj_id_name,
+        kb_id_name=kb_id_name,
+        mem_id_name=mem_id_name,
+        agent_kb_doc_ids=_inv_kb_ids,
+    )
+    if _inv_added:
+        context_added = True
     if inline_context:
         inline_block = f"""[Прикреплённый документ]
 {inline_context}"""
@@ -1996,7 +2022,10 @@ async def _handle_multi_llm(
                         inline_attachments=(
                             data.get("inline_attachments") if isinstance(data, dict) else None
                         ),
+                        should_stop=lambda: _generation_stopped(sid),
                     )
+                    if _generation_stopped(sid):
+                        return None
                     if mcp_result is not None:
                         resp = carry_subagent_artifacts(mcp_result.content or "", _model_events)
                         if streaming and resp:
@@ -2314,6 +2343,16 @@ async def _handle_direct(
             except Exception:
                 logger.exception("Ошибка операции")
                 kb_rows = []
+            # Tools KB: если expand на chat_message был пуст — добираем id из list.
+            if not (agent_kb_doc_ids or []) and knowledge_base_ids and kb_rows:
+                _from_rows = document_ids_from_kb_rows(kb_rows, knowledge_base_ids)
+                if _from_rows:
+                    agent_kb_doc_ids = list(_from_rows)
+                    logger.info(
+                        "[RAG] doc_ids из kb_list по knowledge_base_ids=%s → %s",
+                        knowledge_base_ids,
+                        len(_from_rows),
+                    )
         if sources.memory:
             try:
                 mem_rows = list(await rag_client.memory_rag_list_documents() or [])
@@ -2422,6 +2461,22 @@ async def _handle_direct(
             context_added = True
             if hit_scope:
                 rag_scopes.add(hit_scope)
+    # Опись файлов — всегда (паритет с GPB_ASTRA / multi-LLM).
+    _inv_kb_ids = list(agent_kb_doc_ids or [])
+    if not _inv_kb_ids and knowledge_base_ids and rag_client:
+        with logged_suppress(logger):
+            _inv_kb_ids = await expand_knowledge_base_document_ids(
+                rag_client, knowledge_base_ids
+            )
+    final_message, _inv_added = prepend_rag_inventory(
+        final_message,
+        proj_id_name=proj_id_name,
+        kb_id_name=kb_id_name,
+        mem_id_name=mem_id_name,
+        agent_kb_doc_ids=_inv_kb_ids,
+    )
+    if _inv_added:
+        context_added = True
     chat_timer.mark("rag_retrieve", time.perf_counter() - _t_rag0)
     log_pre_loop(
         phase="rag_retrieve_done",
@@ -2967,7 +3022,15 @@ async def _handle_direct(
                 # Вопрос дословно, без RAG-контекста final_message: субагент
                 # получает его рядом с заданием родителя.
                 user_question=user_message,
+                should_stop=lambda: _generation_stopped(sid),
             )
+            if _generation_stopped(sid):
+                await sio.emit(
+                    "generation_stopped",
+                    _stream_ids_payload({"message": "Генерация остановлена"}),
+                    room=sid,
+                )
+                return None
             if mcp_result is None:
                 log_pre_loop(
                     phase="mcp_skipped_no_tools",
@@ -3216,6 +3279,16 @@ async def _handle_direct(
             payload["ask_user"] = coding_result.pending_ask_user
         if getattr(coding_result, "active_plan", None):
             payload["active_plan"] = coding_result.active_plan
+    # Title с Mongo — чтобы сайдбар обновился без F5 (фронт раньше мог пропустить локальный rename).
+    try:
+        from backend.database.init_db import get_conversation_repository
+
+        _conv = await get_conversation_repository().get_conversation(conversation_id)
+        _title = getattr(_conv, "title", None) if _conv else None
+        if isinstance(_title, str) and _title.strip():
+            payload["conversation_title"] = _title.strip()
+    except Exception:
+        logger.debug("chat_complete: не удалось прочитать conversation_title", exc_info=True)
     chat_timer.meta["context_added"] = context_added
     chat_timer.log(logger)
     if emit_complete:

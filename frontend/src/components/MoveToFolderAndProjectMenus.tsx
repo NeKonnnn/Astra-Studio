@@ -13,7 +13,7 @@ import {
 } from '@mui/icons-material';
 import type { Folder, Project } from '../contexts/AppContext';
 import { MENU_BORDER_RADIUS_PX, MENU_ICON_MIN_WIDTH, MENU_ICON_TO_TEXT_GAP_PX, MENU_ICON_FONT_SIZE_PX, MENU_MIN_WIDTH_PX, getProjectIconGlyphSx, getDropdownItemSx, getDropdownPanelSx } from '../constants/menuStyles';
-import { PROJECT_ICON_MAP } from '../constants/projectIcons';
+import { PROJECT_ICON_MAP, resolveProjectIconColor } from '../constants/projectIcons';
 
 // Включить логи подменю в консоль: в DevTools выполнить window.__SUBMENU_DEBUG__ = true и обновить страницу
 const SUBMENU_DEBUG = typeof window !== 'undefined' && (window as any).__SUBMENU_DEBUG__;
@@ -499,7 +499,7 @@ export function MoveToFolderAndProjectSubmenus(props: MoveToSubmenusProps) {
         </MenuItem>
         {projects.map((project) => {
           const renderProjectIcon = () => {
-            const iconColor = project.iconColor || '#9ca3af';
+            const iconColor = resolveProjectIconColor(project.iconColor, isDarkMode);
             const glyphSx = getProjectIconGlyphSx(11, iconColor);
             const iconWrapSx = {
               width: 20,

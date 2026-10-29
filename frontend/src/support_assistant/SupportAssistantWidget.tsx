@@ -47,11 +47,26 @@ export default function SupportAssistantWidget() {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [imageOk, setImageOk] = useState(true);
+  const [hiddenByShareMode, setHiddenByShareMode] = useState(false);
   const [messages, setMessages] = useState<ChatBubble[]>([
     { id: 'welcome', role: 'assistant', text: WELCOME },
   ]);
   const listRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    const sync = () => {
+      setHiddenByShareMode(document.body.getAttribute('data-astra-share-mode') === '1');
+    };
+    sync();
+    const mo = new MutationObserver(sync);
+    mo.observe(document.body, { attributes: true, attributeFilter: ['data-astra-share-mode'] });
+    return () => mo.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (hiddenByShareMode && open) setOpen(false);
+  }, [hiddenByShareMode, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -87,8 +102,11 @@ export default function SupportAssistantWidget() {
     setBusy(false);
   };
 
+  if (hiddenByShareMode) return null;
+
   return (
     <Box
+      className="astra-support-assistant-fab"
       sx={{
         position: 'fixed',
         right: rightRailPx + HELP_FAB_GAP_PX,

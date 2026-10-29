@@ -58,6 +58,7 @@ async def connect_streamable_http(
     headers: Optional[Dict[str, str]] = None,
     timeout: float = 120.0,
     verify_ssl: bool = True,
+    server_id: Optional[str] = None,
 ) -> None:
     if _uses_new_streamable_http_api():
         streams_context = _connect_new_streamable_http(
@@ -74,4 +75,9 @@ async def connect_streamable_http(
             httpx_client_factory=factory,
             timeout=timeout,
         )
-    await client.connect_streams(streams_context, init_timeout=min(timeout, 30.0))
+    await client.connect_streams(
+        streams_context,
+        init_timeout=min(timeout, 30.0),
+        server_id=server_id,
+        mcp_url=url,
+    )
