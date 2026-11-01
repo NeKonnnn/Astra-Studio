@@ -42,9 +42,33 @@ const CURRENCY_POSTFIX_RE =
 
 const CURRENCY_TOKEN = '\u0000ASTRA_CURRENCY\u0000';
 
+/**
+ * Нечётный счётчик одиночных `$` слева на строке → мы внутри `$...$`.
+ * Нужен, чтобы постфикс `2$` / `3.14159$` не съедал закрывающий `$` у
+ * `$E = mc2$` / `$\approx 3.14159$`.
+ */
+function isInsideInlineDollarMath(text: string, offset: number): boolean {
+  const lineStart = text.lastIndexOf('\n', offset - 1) + 1;
+  const before = text.slice(lineStart, offset);
+  let singles = 0;
+  for (let i = 0; i < before.length; i += 1) {
+    if (before[i] !== '$') continue;
+    if (i > 0 && before[i - 1] === '\\') continue;
+    if (before[i + 1] === '$') {
+      i += 1; // $$
+      continue;
+    }
+    singles += 1;
+  }
+  return singles % 2 === 1;
+}
+
 function escapeCurrencyDollars(text: string, replacement: string): string {
   let s = text.replace(CURRENCY_PREFIX_RE, replacement);
-  s = s.replace(CURRENCY_POSTFIX_RE, (_m, amount: string) => `${amount}${replacement}`);
+  s = s.replace(CURRENCY_POSTFIX_RE, (match, amount: string, offset: number) => {
+    if (isInsideInlineDollarMath(s, offset)) return match;
+    return `${amount}${replacement}`;
+  });
   return s;
 }
 

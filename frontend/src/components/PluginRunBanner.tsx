@@ -8,6 +8,7 @@ import { formatDuration } from '../plugins/verdict';
 import { STATUS_TOAST_AUTO_DISMISS_MS } from '../constants/statusToast';
 
 const GALLERY_PATH = '/gallery?tab=plugins';
+const GALLERY_ROUTE = '/gallery';
 
 /**
  * Плашка «аудит плагина выполняется / готов» — видна из чата и других разделов,
@@ -39,7 +40,8 @@ export default function PluginRunBanner() {
     : null;
 
   const hiddenRoute =
-    location.pathname.startsWith(GALLERY_PATH) ||
+    (location.pathname.startsWith(GALLERY_ROUTE) &&
+      /(?:^|[?&])tab=plugins(?:&|$)/.test(location.search || '')) ||
     location.pathname.startsWith('/login') ||
     location.pathname.startsWith('/share');
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from backend.mcp.sdk import import_mcp_sdk_submodule
 
@@ -17,14 +17,12 @@ async def connect_stdio(
     command: str,
     args: Optional[List[str]] = None,
     cwd: Optional[str] = None,
-    env: Optional[Dict[str, str]] = None,
     timeout: float = 120.0,
 ) -> None:
     params = StdioServerParameters(
         command=command,
         args=list(args or []),
         cwd=cwd,
-        env=dict(env) if env else None,
     )
     streams_context = stdio_client(params)
     await client.connect_streams(streams_context, init_timeout=min(timeout, 30.0))

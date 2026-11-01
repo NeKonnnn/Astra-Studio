@@ -1,9 +1,9 @@
 export const INLINE_ATTACH_ALLOWED_TYPES_LABEL =
-  'PDF (.pdf), Word (.docx, .docm), Excel (.xlsx, .xls, .xlsm), текст (.txt, .md, .log, .rtf), изображения (.jpg, .jpeg, .png, .webp, .gif, .bmp)';
+  'PDF (.pdf), Word (.docx, .docm, .doc), Excel (.xlsx, .xls, .xlsm), PowerPoint (.pptx, .ppt), текст (.txt, .md, .log, .rtf), изображения (.jpg, .jpeg, .png, .webp, .gif, .bmp)';
 
 /** Значение accept для <input type="file"> кнопки «+» — тот же список, что в подписи. */
 export const INLINE_ATTACH_ACCEPT =
-  '.pdf,.docx,.docm,.xlsx,.xls,.xlsm,.txt,.md,.log,.rtf,.jpg,.jpeg,.png,.webp,.gif,.bmp';
+  '.pdf,.docx,.docm,.doc,.xlsx,.xls,.xlsm,.pptx,.ppt,.txt,.md,.log,.rtf,.jpg,.jpeg,.png,.webp,.gif,.bmp';
 
 /** Лимит для inline-вложений через «+» (фронт и POST /api/documents/attach). */
 export const INLINE_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
@@ -30,6 +30,9 @@ const DOC_MIME_TYPES = [
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   'application/vnd.ms-excel.sheet.macroEnabled.12',
   'application/vnd.ms-excel',
+  'application/msword',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   'text/plain',
   'text/markdown',
   'application/rtf',
@@ -48,7 +51,7 @@ export function isInlineAttachFileAllowed(file: File): boolean {
     IMAGE_MIME_TYPES.includes(file.type) || /\.(jpe?g|png|webp|gif|bmp)$/i.test(file.name);
   const isDoc =
     DOC_MIME_TYPES.includes(file.type) ||
-    /\.(pdf|docx|docm|xlsx|xls|xlsm|txt|md|log|rtf)$/i.test(file.name);
+    /\.(pdf|docx|docm|doc|xlsx|xls|xlsm|pptx|ppt|txt|md|log|rtf)$/i.test(file.name);
   return isImage || isDoc;
 }
 

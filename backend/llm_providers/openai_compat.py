@@ -36,7 +36,12 @@ from backend.settings.cef_logger.cef_logger import (
 from backend.settings.logging import get_logger
 from backend.settings.logging.repeat import log_on_change
 
-from .routing import extra_params_headers, is_thinking_requested
+from .routing import (
+    LLM_USER_FACING_OUTAGE_TEXT,
+    extra_params_headers,
+    is_llm_outage_text,
+    is_thinking_requested,
+)
 from .base import (
     ChatResult,
     LLMProvider,
@@ -1583,7 +1588,7 @@ class OpenAICompatProvider(LLMProvider):
                         "— в список не попадут: %s",
                         self.id,
                         missing,
-                )
+                    )
             if not items and static:
                 items.append(
                     ModelInfo(
@@ -1616,8 +1621,8 @@ class OpenAICompatProvider(LLMProvider):
                     static,
                 )
                 fallback_items = [
-                        ModelInfo(
-                            provider_id=self.id,
+                    ModelInfo(
+                        provider_id=self.id,
                         model_id=static,
                         display_name=static,
                         extra={
@@ -1822,11 +1827,11 @@ class OpenAICompatProvider(LLMProvider):
                 )
                 if fit:
                     payload["max_tokens"] = fit
-                response = await client.post(
-                    f"{self.base_url}/v1/chat/completions",
-                    headers=self._headers(payload=payload),
-                    json=payload,
-                )
+                    response = await client.post(
+                        f"{self.base_url}/v1/chat/completions",
+                        headers=self._headers(payload=payload),
+                        json=payload,
+                    )
                 response.raise_for_status()
             except httpx.HTTPStatusError as he:
                 _log_llm_http_failure(
@@ -2000,13 +2005,13 @@ class OpenAICompatProvider(LLMProvider):
             _reason_snapshot = reasoning_accumulated
             finish_reason, pass_accumulated, pass_reasoning = (
                 await self._stream_chat_once(
-                pass_messages,
-                model,
-                callback,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                request_extra=request_extra,
-                _shared=lambda: (_acc_snapshot, _reason_snapshot),
+                    pass_messages,
+                    model,
+                    callback,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    request_extra=request_extra,
+                    _shared=lambda: (_acc_snapshot, _reason_snapshot),
                     _error_box=error_box,
                 )
             )
@@ -2033,7 +2038,7 @@ class OpenAICompatProvider(LLMProvider):
                     accumulated = (
                         error_box[-1]
                         if error_box
-                        else "Ошибка потока: соединение с LLM прервано"
+                        else LLM_USER_FACING_OUTAGE_TEXT
                     )
                     reasoning_accumulated = pass_reasoning
                     _final_finish_reason = "error"
@@ -2051,7 +2056,7 @@ class OpenAICompatProvider(LLMProvider):
             # Ошибка потока в ПРОДОЛЖЕНИИ: не теряем уже готовые слайды.
             elif fr == "error" or (
                 isinstance(pass_accumulated, str)
-                and pass_accumulated.startswith("Ошибка потока")
+                and is_llm_outage_text(pass_accumulated)
             ):
                 if _cont_idx > 0 and _acc_snapshot.strip():
                     logger.debug(
@@ -2396,7 +2401,7 @@ class OpenAICompatProvider(LLMProvider):
                                     _chunks,
                                     len(accumulated),
                                     time.monotonic() - _t0,
-                                ) 
+                                )
                                 _end_reason = "chat_template_tag"
                                 return ("stop", accumulated, reasoning_accumulated)
                             # Быстрый режим: не светим reasoning в UI (в т.ч. orphan </think>).
@@ -2493,27 +2498,15 @@ class OpenAICompatProvider(LLMProvider):
                     _shared=_shared,
                     _rl_attempt=_rl_attempt,
                     _error_box=_error_box,
-            )
-            if e.response.status_code == 503:
-                detail = ""
-                try:
-                    detail = str((e.response.json() or {}).get("detail", ""))
-                except Exception:
-                    logger.debug("[%s] 503: тело не разобрано как JSON", self.id)
-                    detail = stream_body[:500]
-                low = detail.lower()
-                if "not loaded" in low or "не загруж" in low:
-                    return (
-                        "stop",
-                        "Модель не загружена в LLM-бэкенде (503). Проверьте, что модель активна на стороне провайдера.",
-                        "",
-                    )
-                return (
-                    "stop",
-                    "Сервис LLM недоступен (503). Повторите запрос через несколько секунд.",
-                    "",
                 )
-            return ("stop", f"Ошибка потока: {e}", "")
+            # 404/500/503 и пр.: в чат — дружелюбный текст, детали только в лог/CEF.
+            logger.warning(
+                "[%s] stream HTTP %s: %s",
+                self.id,
+                e.response.status_code,
+                str(e)[:300],
+            )
+            return ("stop", LLM_USER_FACING_OUTAGE_TEXT, "")
         except Exception as e:
             logger.exception(
                 "[%s] stream error: конец=%s чанков=%s накоплено=%s симв. за %.1f c",
@@ -2531,7 +2524,7 @@ class OpenAICompatProvider(LLMProvider):
                 status_code=None,
             )
             if _error_box is not None:
-                _error_box.append(f"Ошибка потока: {e}")
+                _error_box.append(LLM_USER_FACING_OUTAGE_TEXT)
             # Уже полученный текст не выбрасываем: stream_chat решит, дописывать
             # его продолжением или отдать как есть.
             return ("stream_error", accumulated, reasoning_accumulated)

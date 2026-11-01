@@ -83,8 +83,8 @@ export function showBrowserNotification(
   try {
     console.log('[Browser Notifications] Создаем уведомление...');
     const notification = new Notification(title, {
-      icon: '/favicon.ico', // Иконка приложения
-      badge: '/favicon.ico',
+      icon: '/astra.ico', // Иконка приложения
+      badge: '/astra.ico',
       tag: 'astrachat-message', // Тег для группировки уведомлений
       requireInteraction: false, // Уведомление автоматически закроется
       silent: false, // Воспроизводить звук

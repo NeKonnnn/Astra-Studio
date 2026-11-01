@@ -1,5 +1,4 @@
-"""Прореживание CEF-аудита для фонового поллинга интерфейса.
-"""
+"""Прореживание CEF-аудита для фонового поллинга интерфейса."""
 
 from __future__ import annotations
 
@@ -27,6 +26,7 @@ _SUPPRESSED: Dict[Tuple[str, str, str], int] = {}
 _LOCK = threading.Lock()
 _KEYS_MAX = 512
 
+
 def _setting(env_name: str, yml_field: str, default: Any) -> Any:
     """Настройка аудита: ENV -> config.yml -> дефолт.
 
@@ -50,6 +50,7 @@ def _setting(env_name: str, yml_field: str, default: Any) -> Any:
     except Exception:
         return default
 
+
 def is_polling_read(method: str, path: str, status: Optional[int] = 200) -> bool:
     """Успешное ЧТЕНИЕ по поллинговому пути - фоновый опрос, не действие."""
     if str(method or "").upper() not in ("GET", "HEAD"):
@@ -65,15 +66,17 @@ def is_polling_read(method: str, path: str, status: Optional[int] = 200) -> bool
     normalized = (path or "").rstrip("/")
     return any(normalized.endswith(m.rstrip("/")) for m in _POLL_PATH_MARKERS)
 
+
 def poll_audit_decision(
     user: Optional[dict], method: str, path: str
 ) -> Tuple[bool, int]:
-    """Писать ли событие поллинга и сколько обращений оно представляет.
-    """
+    """Писать ли событие поллинга и сколько обращений оно представляет."""
     if not _setting(_ENV_ENABLED, "cef_polling", _DEFAULT_ENABLED):
         return (False, 0)
     try:
-        interval = float(_setting(_ENV_INTERVAL, "cef_polling_interval_seconds", _DEFAULT_INTERVAL))
+        interval = float(
+            _setting(_ENV_INTERVAL, "cef_polling_interval_seconds", _DEFAULT_INTERVAL)
+        )
     except (TypeError, ValueError):
         interval = float(_DEFAULT_INTERVAL)
     if interval <= 0:
@@ -98,11 +101,13 @@ def poll_audit_decision(
                 _SUPPRESSED.pop(k, None)
         return (True, count)
 
+
 def poll_count_extra(count: int) -> Dict[str, Any]:
     """Поля CEF со счётчиком - только когда событие представляет больше одного."""
     if count > 1:
         return {"cn1": count, "cn1Label": "RequestCount"}
     return {}
+
 
 def reset_state() -> None:
     """Забыть окна (для тестов)."""

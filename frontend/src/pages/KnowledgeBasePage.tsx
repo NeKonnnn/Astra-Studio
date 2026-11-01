@@ -34,9 +34,14 @@ import {
   ErrorOutline as ErrorIcon,
   Refresh as RefreshIcon,
   Article as ArticleIcon,
+  Image as ImageIcon,
 } from '@mui/icons-material';
 import { getApiUrl, API_ENDPOINTS, getAuthFetchHeaders } from '../config/api';
 import { useAppActions } from '../contexts/AppContext';
+import {
+  formatRagApiDetail,
+  parseRagDuplicateUploadMessage,
+} from '../utils/ragPendingUpload';
 
 interface KbDocument {
   id: number;
@@ -78,6 +83,7 @@ function getFileIcon(filename: string, fileType: string | null) {
   if (['xlsx', 'xls', 'csv'].includes(ext)) return <ExcelIcon sx={{ color: '#43a047' }} />;
   if (ext === 'txt') return <TxtIcon sx={{ color: '#1e88e5' }} />;
   if (['docx', 'doc'].includes(ext)) return <ArticleIcon sx={{ color: '#1565c0' }} />;
+  if(['jpg', 'jpeg', 'png', 'webp','bmp'].includes(ext)) return <ImageIcon sx={{ color: '#8e24aa' }} />;
   return <DocumentIcon sx={{ color: '#7b1fa2' }} />;
 }
 
@@ -91,6 +97,11 @@ function getFileTypeChip(filename: string) {
     doc: { label: 'Word', color: 'primary' },
     txt: { label: 'TXT', color: 'default' },
     csv: { label: 'CSV', color: 'secondary' },
+    jpg: { label: 'Image (OCR)', color: 'secondary' },
+    jpeg: { label: 'Image (OCR)', color: 'secondary' },
+    png: { label: 'Image (OCR)', color: 'secondary' },
+    webp: { label: 'Image (OCR)', color: 'secondary' },
+    bmp: { label: 'Image (OCR)', color: 'secondary' },
   };
   const info = map[ext] || { label: ext.toUpperCase(), color: 'default' as const };
   return <Chip size="small" label={info.label} color={info.color} sx={{ fontSize: '0.7rem', height: 20 }} />;
@@ -103,7 +114,7 @@ export default function KnowledgeBasePage({ isDarkMode }: KnowledgeBasePageProps
   const [isDragging, setIsDragging] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [docToDelete, setDocToDelete] = useState<KbDocument | null>(null);
-  const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'info' }>({
+  const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'info' | 'warning' }>({
     open: false, message: '', severity: 'info',
   });
   const [uploadProgress, setUploadProgress] = useState<string[]>([]);
@@ -132,20 +143,22 @@ export default function KnowledgeBasePage({ isDarkMode }: KnowledgeBasePageProps
 
   const handleUploadFiles = async (files: FileList) => {
     if (!files.length) return;
-    const allowed = ['.pdf', '.docx', '.doc', '.xlsx', '.xls', '.txt', '.csv'];
+    const allowed = ['.pdf', '.docx', '.doc', '.xlsx', '.xls', '.ppt', '.pptx', '.txt', '.csv', '.jpg', '.jpeg', '.png', '.webp', '.bmp'];
     const validFiles = Array.from(files).filter(f => {
       const ext = '.' + f.name.split('.').pop()?.toLowerCase();
       return allowed.includes(ext);
     });
 
     if (!validFiles.length) {
-      setSnackbar({ open: true, message: 'Неподдерживаемый формат. Разрешены: PDF, DOCX, XLSX, TXT', severity: 'error' });
+      setSnackbar({ open: true, message: 'Неподдерживаемый формат. Разрешены: PDF, DOC/DOCX, XLS/XLSX, PPT/PPTX, TXT, CSV, JPG, JPEG, PNG, WEBP, BMP (OCR)', severity: 'error' });
       return;
     }
 
     setIsUploading(true);
     setUploadProgress([]);
     const errors: string[] = [];
+    const warnings: string[] = [];
+    let successCount = 0;
 
     for (const file of validFiles) {
       setUploadProgress(prev => [...prev, `Загружаю: ${file.name}...`]);
@@ -160,8 +173,17 @@ export default function KnowledgeBasePage({ isDarkMode }: KnowledgeBasePageProps
         });
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-          throw new Error(err.detail || resp.statusText);
+          const duplicateMsg = parseRagDuplicateUploadMessage(resp.status, err, file.name);
+          if (duplicateMsg) {
+            warnings.push(duplicateMsg);
+            setUploadProgress(prev =>
+              prev.map(p => p === `Загружаю: ${file.name}...` ? `⚠ ${file.name}: уже в базе` : p)
+            );
+            continue;
+          }
+          throw new Error(formatRagApiDetail(err.detail, resp.statusText));
         }
+        successCount += 1;
         setUploadProgress(prev =>
           prev.map(p => p === `Загружаю: ${file.name}...` ? `✓ ${file.name}` : p)
         );
@@ -176,8 +198,16 @@ export default function KnowledgeBasePage({ isDarkMode }: KnowledgeBasePageProps
     setIsUploading(false);
     if (errors.length) {
       setSnackbar({ open: true, message: `Ошибки: ${errors.join('; ')}`, severity: 'error' });
+    } else if (warnings.length && successCount === 0) {
+      setSnackbar({ open: true, message: warnings[0], severity: 'warning' });
+    } else if (warnings.length) {
+      setSnackbar({
+        open: true,
+        message: `Загружено: ${successCount}. Пропущено дубликатов: ${warnings.length}`,
+        severity: 'warning',
+      });
     } else {
-      setSnackbar({ open: true, message: `Успешно загружено ${validFiles.length} документ(ов)`, severity: 'success' });
+      setSnackbar({ open: true, message: `Успешно загружено ${successCount} документ(ов)`, severity: 'success' });
     }
     await loadDocuments();
     setTimeout(() => setUploadProgress([]), 3000);
@@ -188,17 +218,13 @@ export default function KnowledgeBasePage({ isDarkMode }: KnowledgeBasePageProps
     try {
       const url = `${getApiUrl(API_ENDPOINTS.KB_DOCUMENTS_DELETE)}/${docToDelete.id}`;
       const resp = await fetch(url, { method: 'DELETE' });
-      if (!resp.ok) {
-        const detail = await resp.json().then(d => d?.detail).catch(() => null);
-        throw new Error(detail || `HTTP ${resp.status}`);
-      }
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       setSnackbar({ open: true, message: `Документ «${docToDelete.filename}» удалён из Базы Знаний`, severity: 'success' });
       setDeleteDialogOpen(false);
       setDocToDelete(null);
       await loadDocuments();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setSnackbar({ open: true, message: `Ошибка удаления: ${msg}`, severity: 'error' });
+      setSnackbar({ open: true, message: `Ошибка удаления: ${e}`, severity: 'error' });
     }
   };
 
@@ -265,7 +291,7 @@ export default function KnowledgeBasePage({ isDarkMode }: KnowledgeBasePageProps
             ref={fileInputRef}
             type="file"
             multiple
-            accept=".pdf,.docx,.doc,.xlsx,.xls,.txt,.csv"
+            accept=".pdf,.docx,.doc,.xlsx,.xls,.ppt,.pptx,.txt,.csv,.jpg,.jpeg,.png,.webp,.bmp"
             style={{ display: 'none' }}
             onChange={e => { if (e.target.files) handleUploadFiles(e.target.files); e.target.value = ''; }}
           />
@@ -302,7 +328,7 @@ export default function KnowledgeBasePage({ isDarkMode }: KnowledgeBasePageProps
                 {isDragging ? 'Отпустите файлы для загрузки' : 'Перетащите файлы или нажмите для выбора'}
               </Typography>
               <Typography variant="caption" color="text.secondary">
-                Поддерживаются: PDF, DOCX, XLSX, TXT, CSV
+                Поддерживаются: PDF, DOC/DOCX, XLS/XLSX, PPT/PPTX, TXT, CSV, JPG, JPEG, PNG, WEBP, BMP
               </Typography>
             </Box>
           )}

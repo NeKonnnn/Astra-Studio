@@ -17,6 +17,8 @@ export function useInViewport<T extends Element>(
   useEffect(() => {
     const el = ref.current;
     if (!el || typeof IntersectionObserver === 'undefined') return;
+    // Стриминг: считаем элемент видимым, IO не подключаем — иначе Virtuoso remeasure ↔ IO → #185.
+    if (initiallyVisible) return;
 
     const obs = new IntersectionObserver(
       (entries) => {
@@ -31,7 +33,7 @@ export function useInViewport<T extends Element>(
     );
     obs.observe(el);
     return () => obs.disconnect();
-  }, [rootMargin]);
+  }, [rootMargin, initiallyVisible]);
 
   return { ref, inView };
 }

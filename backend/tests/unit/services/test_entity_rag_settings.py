@@ -175,13 +175,27 @@ class TestEntityStorage:
 
         assert (await rs.save_entity_rag_settings("agent", 7, {"rag_chat_top_k": 3}))["rag_chat_top_k"] == 3
 
-    async def test_a_string_setting_cannot_be_cleared_with_none_known_issue(self, storage):
-        # None считается «не менять», поэтому очистить значение (вернуть дефолт) можно только записав дефолт явно.
+    async def test_none_keeps_a_string_setting(self, storage):
         await rs.save_entity_rag_settings("agent", 7, {"rag_system_prompt": "Мой"})
 
         await rs.save_entity_rag_settings("agent", 7, {"rag_system_prompt": None})
 
         assert storage.entities.rows[("agent", "7")] == {"rag_system_prompt": "Мой"}
+
+    async def test_empty_string_clears_a_string_setting(self, storage):
+        await rs.save_entity_rag_settings("agent", 7, {"rag_system_prompt": "Мой", "rag_chat_top_k": 20})
+
+        merged = await rs.save_entity_rag_settings("agent", 7, {"rag_system_prompt": ""})
+
+        assert storage.entities.rows[("agent", "7")] == {"rag_chat_top_k": 20}
+        assert merged["rag_system_prompt"] == CLUSTER["rag_system_prompt"]
+
+    async def test_empty_string_for_the_only_override_removes_the_row(self, storage):
+        await rs.save_entity_rag_settings("agent", 7, {"rag_system_prompt": "Мой"})
+
+        await rs.save_entity_rag_settings("agent", 7, {"rag_system_prompt": ""})
+
+        assert ("agent", "7") not in storage.entities.rows
 
     async def test_reset(self, storage):
         storage.entities.rows[("agent", "7")] = {"rag_chat_top_k": 20}
@@ -256,7 +270,7 @@ class TestRuntimeBinding:
 
         assert await asyncio.gather(request(10), request(20), request(30)) == [10, 20, 30]
 
-    @pytest.mark.parametrize(("raw", "expected"), [(0, 12), (-5, 1), (500, 64), ("x", 12), (None, 12), ("20", 20)])
+    @pytest.mark.parametrize(("raw", "expected"), [(0, 1), (-5, 1), (500, 64), ("x", 12), (None, 12), ("20", 20)])
     def test_top_k_is_clamped(self, raw, expected):
         token = rs.bind_user_rag_runtime({"agent": {"rag_chat_top_k": raw}})
         try:
@@ -264,7 +278,7 @@ class TestRuntimeBinding:
         finally:
             rs.reset_user_rag_runtime(token)
 
-    @pytest.mark.parametrize(("raw", "expected"), [(0, 2), (9, 5), (-3, 1), ("x", 2), (3, 3)])
+    @pytest.mark.parametrize(("raw", "expected"), [(0, 1), (9, 5), (-3, 1), ("x", 2), (3, 3)])
     def test_agentic_iterations_are_clamped(self, raw, expected):
         token = rs.bind_user_rag_runtime({"agent": {"agentic_max_iterations": raw}})
         try:
@@ -312,7 +326,7 @@ class TestRuntimeBinding:
 class TestChunkAndResponse:
     def test_chunk_parameters_are_clamped(self):
         assert rs.chunk_params_from_rag_settings({"rag_chunk_size": 50, "rag_chunk_overlap": 5000, "rag_chunking_strategy": " Markdown "}) == {
-            "chunk_size": 200, "chunk_overlap": 2000, "chunking_strategy": "markdown",
+            "chunk_size": 200, "chunk_overlap": 199, "chunking_strategy": "markdown",
         }
         assert rs.chunk_params_from_rag_settings({"rag_chunk_size": 99999})["chunk_size"] == 8000
 
@@ -322,11 +336,10 @@ class TestChunkAndResponse:
         }
         assert rs.chunk_params_from_rag_settings({}) == {"chunk_size": 1000, "chunk_overlap": 200, "chunking_strategy": "hierarchical"}
 
-    def test_the_overlap_may_exceed_the_chunk_size_known_issue(self):
-        # Нет проверки overlap < size: size=200 при overlap=2000 даёт перекрытие в 10 раз больше чанка.
+    def test_the_overlap_is_kept_below_the_chunk_size(self):
         params = rs.chunk_params_from_rag_settings({"rag_chunk_size": 200, "rag_chunk_overlap": 2000})
 
-        assert params["chunk_overlap"] > params["chunk_size"]
+        assert params["chunk_overlap"] < params["chunk_size"]
 
     def test_response_for_a_full_snapshot(self):
         response = rs.settings_response_dict(dict(CLUSTER, rag_strategy="graph", rag_embedding_model_path="x/y"))
@@ -367,7 +380,7 @@ class TestModelPaths:
             ("corsur_rag/embed/FRIDA", {"embedding_model": "embed/FRIDA", "embedding_provider": "corsur_rag"}),
             (" phoenix_embeddings / m1 ", {"embedding_model": "m1", "embedding_provider": "phoenix_embeddings"}),
             ("provider/", {}),
-            ("/model", {"embedding_model": "model", "embedding_provider": ""}),
+            ("/model", {}),
         ],
     )
     def test_embedding_paths(self, path, expected):

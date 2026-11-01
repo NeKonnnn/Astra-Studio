@@ -25,6 +25,7 @@ jest.mock('@/settings/sessionValidity', () => ({
   setLoginSessionNotice: jest.fn(),
 }));
 jest.mock('@/config/api', () => ({
+  authFetch: (...a: unknown[]) => (require('@tests/unit/helpers/authFetchMock').authFetchMock as (...x: unknown[]) => unknown)(...a),
   getApiUrl: (p: string) => p,
   fetchSessionPolicy: jest.fn(),
 }));

@@ -6,6 +6,7 @@ import json
 from typing import Any, Dict, List, Optional, Tuple
 
 from backend.settings.logging import get_logger
+from backend.settings.rag_client import RagReindexInProgress
 
 logger = get_logger(__name__)
 
@@ -152,6 +153,9 @@ async def kb_search_agent_documents(
             document_ids=ids,
             strategy=strategy,
         )
+    except RagReindexInProgress:
+        # Пробрасываем: вызывающий показывает «подождите реиндекс», а не пустой корпус.
+        raise
     except Exception:
         logger.exception("KB search по документам агента %s", ids)
         return []
@@ -541,6 +545,8 @@ async def _kb_search_with_rerank_timeout_fallback(
             settings_override=override or None,
             settings_source="kb",
         )
+    except RagReindexInProgress:
+        raise
     except Exception as first_exc:
         rerank_on = bool(override.get("rag_reranking_enabled"))
         if not (rerank_on and _is_rag_search_timeout(first_exc)):
@@ -736,6 +742,96 @@ async def partition_document_ids_by_knowledge_base(
     return by_kb, sorted(set(legacy))
 
 
+async def pull_named_kb_hits(
+    rag_client: Any,
+    query: str,
+    hits: List[Tuple[str, float, Optional[int], Optional[int]]],
+    id_to_name: Dict[int, str],
+    *,
+    only_ids: Optional[List[Any]] = None,
+    knowledge_base_ids: Optional[List[Any]] = None,
+    legacy_doc_ids: Optional[List[int]] = None,
+    k: int = 8,
+    strategy: Optional[str] = None,
+) -> List[Tuple[str, float, Optional[int], Optional[int]]]:
+    """Если в вопросе назван файл — дотянуть его чанки отдельно.
+
+    Семантический поиск по «что в файле X.md?» часто пустой: вопрос про ИМЯ,
+    а чанки хранят СОДЕРЖИМОЕ. Опись «ДОСТУПНЫЕ ФАЙЛЫ» при этом уже есть —
+    модель видит имена и честно говорит, что текста нет. Тот же приём, что
+    у субагентов (`scope._pull_named_documents`), для `_handle_direct`.
+    """
+    from backend.realtime.rag_evidence import (
+        documents_named_in_query,
+        merge_extra_hits,
+    )
+
+    scope_ids = list(only_ids or [])
+    if not scope_ids and id_to_name:
+        scope_ids = list(id_to_name.keys())
+    try:
+        named = documents_named_in_query(query, id_to_name, only_ids=scope_ids)
+    except Exception:
+        logger.exception("named-file: не удалось разобрать имена в запросе")
+        return hits
+    if not named:
+        return hits
+
+    out = list(hits or [])
+    for doc_id in named:
+        extra: List[Tuple[str, float, Optional[int], Optional[int]]] = []
+        try:
+            extra = await kb_search_scoped_documents(
+                rag_client,
+                query,
+                knowledge_base_ids=knowledge_base_ids,
+                legacy_doc_ids=legacy_doc_ids,
+                k=k,
+                strategy=strategy,
+                only_document_ids=[doc_id],
+            )
+            # Тот же query внутри одного файла всё ещё может дать 0 (mismatch /
+            # пустые векторы). Нейтральный запрос — второй шанс на любые чанки.
+            if not extra:
+                fname = str(id_to_name.get(int(doc_id)) or "документ")
+                extra = await kb_search_scoped_documents(
+                    rag_client,
+                    f"содержание документа {fname}",
+                    knowledge_base_ids=knowledge_base_ids,
+                    legacy_doc_ids=legacy_doc_ids,
+                    k=k,
+                    strategy=strategy,
+                    only_document_ids=[doc_id],
+                )
+            # Третий шанс: читать чанки напрямую из любой dim-таблицы / content.
+            # Типичный кейс: индекс Giga/2048, поиск FRIDA/1536 → search hits=0.
+            if not extra and hasattr(rag_client, "kb_get_document_chunks"):
+                extra = list(
+                    await rag_client.kb_get_document_chunks(int(doc_id), max_chunks=max(1, k))
+                    or []
+                )
+                if extra:
+                    logger.warning(
+                        "[RAG] named-file doc_id=%s: search пустой, взяли %s чанков "
+                        "напрямую (часто mismatch emb — переиндексируйте БЗ)",
+                        doc_id,
+                        len(extra),
+                    )
+        except Exception:
+            logger.exception("named-file: не удалось дотянуть doc_id=%s", doc_id)
+            continue
+        before = len(out)
+        out = merge_extra_hits(out, list(extra or []))
+        logger.info(
+            "[RAG] named-file pull doc_id=%s name=%r +%s (total=%s)",
+            doc_id,
+            id_to_name.get(int(doc_id)),
+            len(out) - before,
+            len(out),
+        )
+    return out
+
+
 async def kb_search_scoped_documents(
     rag_client: Any,
     query: str,
@@ -792,40 +888,47 @@ async def kb_search_scoped_documents(
 def resolve_agent_legacy_kb_document_ids(
     agent_profile: Optional[dict],
 ) -> List[int]:
-    """Только legacy file_search document_ids агента (без entity БЗ)."""
-    if not isinstance(agent_profile, dict):
+    """Deprecated: заливка документов прямо в агента отключена. Всегда []."""
+    return []
+
+
+def profile_direct_kb_document_ids(agent_profile: Optional[dict]) -> List[int]:
+    """Fallback: document_ids прямо из карточки (kb_document_ids) при file_search_enabled.
+
+    Используется только когда Knowledge Bases агента не дали ни одного документа.
+    """
+    if not isinstance(agent_profile, dict) or not agent_profile.get("file_search_enabled"):
         return []
-    if not agent_profile.get("file_search_enabled"):
+    raw_ids = agent_profile.get("kb_document_ids")
+    if not isinstance(raw_ids, list):
         return []
     out: List[int] = []
-    raw_docs = agent_profile.get("kb_document_ids") or []
-    if not isinstance(raw_docs, list):
-        return []
-    for v in raw_docs:
+    for raw in raw_ids:
         try:
-            out.append(int(v))
+            did = int(raw)
         except (TypeError, ValueError):
             continue
-    return sorted(set(out))
+        if did not in out:
+            out.append(did)
+    return out
 
 
 async def resolve_agent_kb_document_ids(
     rag_client: Any,
     agent_profile: Optional[dict],
 ) -> List[int]:
-    """Собрать document_ids агента: legacy kb_document_ids + прикреплённые БЗ."""
+    """document_ids агента только из прикреплённых Knowledge Bases (1…N)."""
     if not isinstance(agent_profile, dict):
         return []
-    out: List[int] = list(resolve_agent_legacy_kb_document_ids(agent_profile))
     kb_ids = _normalize_kb_ids(agent_profile.get("knowledge_base_ids"))
     # Ids в карточке важнее «забытого» knowledge_bases_enabled=false.
-    if agent_profile.get("knowledge_bases_enabled") or kb_ids:
-        expanded = await expand_knowledge_base_document_ids(rag_client, kb_ids)
-        if kb_ids and not expanded:
-            logger.warning(
-                "[RAG] agent knowledge_base_ids=%s не развернулись в document_id "
-                "(нет metadata.knowledge_base_id) — поиск по БЗ будет пустым",
-                kb_ids,
-            )
-        out.extend(expanded)
-    return sorted(set(out))
+    if not (agent_profile.get("knowledge_bases_enabled") or kb_ids):
+        return []
+    expanded = await expand_knowledge_base_document_ids(rag_client, kb_ids)
+    if kb_ids and not expanded:
+        logger.warning(
+            "[RAG] agent knowledge_base_ids=%s не развернулись в document_id "
+            "(нет metadata.knowledge_base_id) — поиск по БЗ будет пустым",
+            kb_ids,
+        )
+    return sorted(set(expanded))

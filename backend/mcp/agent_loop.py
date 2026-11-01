@@ -477,7 +477,7 @@ class McpAgentLoop:
             # шага идут одновременно (run_tool_calls), остальные - по очереди.
             async def _run_call(item) -> Dict[str, Any]:
                 nonlocal tool_calls_executed
-                tc, tool_info, sub_call = item
+                tc, tool_info, sub_call, call_id, tool_args = item
                 if not tool_info:
                     log_tool_result(
                         step=step,
@@ -493,11 +493,6 @@ class McpAgentLoop:
                     }
                 session = sessions.get(tool_info.server_id)
                 started = time.perf_counter()
-                call_id = uuid.uuid4().hex
-                tool_args = tc.arguments if isinstance(tc.arguments, dict) else {}
-                tool_args = subagent_call_args(
-                    tool_info, tool_args, subagent_ctx, subagent_config
-                )
                 tool_kind = (
                     "native" if tool_info.server_id == NATIVE_SERVER_ID else "mcp"
                 )
@@ -644,9 +639,16 @@ class McpAgentLoop:
             for tc in result.tool_calls:
                 tool_info = _find_tool(tc.name, tools)
                 # Номер метки [[ОТВЕТ N]] субагенту - до запуска, по порядку.
-                calls.append(
-                    (tc, tool_info, new_subagent_call(tool_info, subagent_ctx))
+                sub_call = new_subagent_call(tool_info, subagent_ctx)
+                call_id = uuid.uuid4().hex
+                tool_args: Dict[str, Any] = (
+                    tc.arguments if isinstance(tc.arguments, dict) else {}
                 )
+                if tool_info:
+                    tool_args = subagent_call_args(
+                        tool_info, tool_args, subagent_ctx, subagent_config
+                    )
+                calls.append((tc, tool_info, sub_call, call_id, tool_args))
             working.extend(
                 await run_tool_calls(
                     calls,

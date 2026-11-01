@@ -27,6 +27,11 @@ from backend.settings.logging import get_logger
 logger = get_logger(__name__)
 
 
+def escape_like(value: str) -> str:
+    """Экранирует служебные символы LIKE/ILIKE (``\\``, ``%``, ``_``) для поиска подстроки."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _parse_meta(raw: Any) -> Dict[str, Any]:
     if raw is None:
         return {}
@@ -70,8 +75,14 @@ def _row_common(row) -> Dict[str, Any]:
         "meta": _parse_meta(row["meta"]),
         "is_active": bool(row["is_active"]),
         "is_public": bool(row["is_public"]),
-        "user_invocable": bool(_get("user_invocable", True)) if _get("user_invocable", True) is not None else True,
-        "disable_model_invocation": bool(_get("disable_model_invocation", False) or False),
+        "user_invocable": (
+            bool(_get("user_invocable", True))
+            if _get("user_invocable", True) is not None
+            else True
+        ),
+        "disable_model_invocation": bool(
+            _get("disable_model_invocation", False) or False
+        ),
         "always_apply": bool(_get("always_apply", False) or False),
         "allowed_tools": _parse_str_list(_get("allowed_tools")),
         "category": _get("category"),
@@ -86,10 +97,6 @@ def _row_common(row) -> Dict[str, Any]:
     }
 
 
-def escape_like(value: str) -> str:
-    """Экранирует служебные символы LIKE/ILIKE (``\\``, ``%``, ``_``) для поиска подстроки."""
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
 class SkillRepository:
     """CRUD + shares для skills."""
 
@@ -99,8 +106,7 @@ class SkillRepository:
     async def create_tables(self) -> None:
         try:
             async with await self.db_connection.acquire() as conn:
-                await conn.execute(
-                    """
+                await conn.execute("""
                     CREATE TABLE IF NOT EXISTS skills (
                         id SERIAL PRIMARY KEY,
                         slug VARCHAR(100) NOT NULL UNIQUE,
@@ -125,8 +131,7 @@ class SkillRepository:
                         created_at TIMESTAMP DEFAULT NOW(),
                         updated_at TIMESTAMP DEFAULT NOW()
                     )
-                    """
-                )
+                    """)
                 # Soft-migrate existing OWUI-like tables
                 for stmt in (
                     "ALTER TABLE skills ADD COLUMN IF NOT EXISTS display_title VARCHAR(128)",
@@ -142,8 +147,7 @@ class SkillRepository:
                 ):
                     await conn.execute(stmt)
 
-                await conn.execute(
-                    """
+                await conn.execute("""
                     CREATE TABLE IF NOT EXISTS skill_shares (
                         id SERIAL PRIMARY KEY,
                         skill_id INTEGER REFERENCES skills(id) ON DELETE CASCADE,
@@ -153,10 +157,8 @@ class SkillRepository:
                         created_at TIMESTAMP DEFAULT NOW(),
                         UNIQUE(skill_id, shared_with_user_id)
                     )
-                    """
-                )
-                await conn.execute(
-                    """
+                    """)
+                await conn.execute("""
                     CREATE TABLE IF NOT EXISTS skill_files (
                         id SERIAL PRIMARY KEY,
                         skill_id INTEGER REFERENCES skills(id) ON DELETE CASCADE,
@@ -172,10 +174,8 @@ class SkillRepository:
                         updated_at TIMESTAMP DEFAULT NOW(),
                         UNIQUE(skill_id, relative_path)
                     )
-                    """
-                )
-                await conn.execute(
-                    """
+                    """)
+                await conn.execute("""
                     CREATE TABLE IF NOT EXISTS skill_ratings (
                         id SERIAL PRIMARY KEY,
                         skill_id INTEGER REFERENCES skills(id) ON DELETE CASCADE,
@@ -185,10 +185,8 @@ class SkillRepository:
                         updated_at TIMESTAMP DEFAULT NOW(),
                         UNIQUE(skill_id, user_id)
                     )
-                    """
-                )
-                await conn.execute(
-                    """
+                    """)
+                await conn.execute("""
                     CREATE TABLE IF NOT EXISTS skill_bookmarks (
                         id SERIAL PRIMARY KEY,
                         skill_id INTEGER REFERENCES skills(id) ON DELETE CASCADE,
@@ -196,20 +194,37 @@ class SkillRepository:
                         created_at TIMESTAMP DEFAULT NOW(),
                         UNIQUE(skill_id, user_id)
                     )
-                    """
+                    """)
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_skills_author ON skills(author_id)"
                 )
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_skills_author ON skills(author_id)")
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_skills_slug ON skills(slug)")
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_skills_updated ON skills(updated_at DESC)")
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_skills_public ON skills(is_public)")
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_skills_always_apply ON skills(always_apply)")
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_skills_slug ON skills(slug)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_skills_updated ON skills(updated_at DESC)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_skills_public ON skills(is_public)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_skills_always_apply ON skills(always_apply)"
+                )
                 await conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_skill_shares_recipient ON skill_shares(shared_with_user_id)"
                 )
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_skill_shares_skill ON skill_shares(skill_id)")
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_skill_files_skill ON skill_files(skill_id)")
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_skill_ratings_skill ON skill_ratings(skill_id)")
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_skill_bookmarks_user ON skill_bookmarks(user_id)")
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_skill_shares_skill ON skill_shares(skill_id)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_skill_files_skill ON skill_files(skill_id)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_skill_ratings_skill ON skill_ratings(skill_id)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_skill_bookmarks_user ON skill_bookmarks(user_id)"
+                )
                 logger.info("Таблицы skills / skill_files созданы")
         except Exception:
             logger.exception("Ошибка при создании таблиц skills")
@@ -242,7 +257,9 @@ class SkillRepository:
             return SkillOut(**base, content=row["content"] or "")
         return SkillListItem(**base)
 
-    async def get_user_permission(self, skill_id: int, user_id: Optional[str]) -> Optional[str]:
+    async def get_user_permission(
+        self, skill_id: int, user_id: Optional[str]
+    ) -> Optional[str]:
         if not user_id:
             return None
         uid = user_id.strip().lower()
@@ -266,7 +283,9 @@ class SkillRepository:
                 )
                 if share:
                     return normalize_skill_permission(share["permission"])
-                is_public = await conn.fetchval("SELECT is_public FROM skills WHERE id = $1", skill_id)
+                is_public = await conn.fetchval(
+                    "SELECT is_public FROM skills WHERE id = $1", skill_id
+                )
                 if is_public:
                     return SKILL_PERMISSION_VIEWER
                 return None
@@ -274,30 +293,37 @@ class SkillRepository:
             logger.exception("Ошибка get_user_permission skill")
             return None
 
-    async def can_read(self, skill_id: int, user_id: Optional[str], is_admin: bool = False) -> bool:
+    async def can_read(
+        self, skill_id: int, user_id: Optional[str], is_admin: bool = False
+    ) -> bool:
         if is_admin:
             return True
         return await self.get_user_permission(skill_id, user_id) is not None
 
-    async def can_write(self, skill_id: int, user_id: Optional[str], is_admin: bool = False) -> bool:
+    async def can_write(
+        self, skill_id: int, user_id: Optional[str], is_admin: bool = False
+    ) -> bool:
         if is_admin:
             return True
         perm = await self.get_user_permission(skill_id, user_id)
         return perm in (SKILL_PERMISSION_OWNER, SKILL_PERMISSION_EDITOR)
 
-    async def create_skill(self, data: SkillCreate, author_id: str, author_name: str) -> Optional[SkillOut]:
+    async def create_skill(
+        self, data: SkillCreate, author_id: str, author_name: str
+    ) -> Optional[SkillOut]:
         try:
             author_id = (author_id or "").strip().lower()
             slug = slugify_skill_id(data.slug or data.name)
             if not slug:
+                logger.warning(f"Skill не создан: пустой slug для имени {data.name!r}")
                 return None
             if not re.match(r"^[a-z0-9][a-z0-9._-]*$", slug):
-                slug = re.sub(r"[^a-z0-9._-]+", "-", slug).strip("-")
-            async with await self.db_connection.acquire() as conn:
-                existing = await conn.fetchval("SELECT id FROM skills WHERE slug = $1 OR name = $2", slug, data.name)
-                if existing:
-                    logger.warning(f"Skill slug/name уже занят: {slug}/{data.name}")
+                # Ведущие «.»/«_»/«-» не подходят под шаблон — отбрасываем.
+                slug = re.sub(r"[^a-z0-9._-]+", "-", slug).lstrip("._-").rstrip("-")
+                if not slug:
+                    logger.warning(f"Skill не создан: пустой slug для имени {data.name!r}")
                     return None
+            async with await self.db_connection.acquire() as conn:
                 row = await conn.fetchrow(
                     """
                     INSERT INTO skills (
@@ -310,6 +336,7 @@ class SkillRepository:
                         $7, $8, $9, $10,
                         $11, $12::jsonb, $13, $14, $15
                     )
+                    ON CONFLICT DO NOTHING
                     RETURNING *
                     """,
                     slug,
@@ -328,6 +355,11 @@ class SkillRepository:
                     author_id,
                     author_name or "Anonymous",
                 )
+                # Занятость slug/name проверяет сама вставка (UNIQUE) — без гонки
+                # «проверил -> вставил»; при конфликте строка не возвращается.
+                if row is None:
+                    logger.warning(f"Skill slug/name уже занят: {slug}/{data.name}")
+                    return None
                 return self._row_to_out(
                     row,
                     include_content=True,
@@ -343,10 +375,14 @@ class SkillRepository:
     ) -> Optional[SkillOut]:
         try:
             async with await self.db_connection.acquire() as conn:
-                row = await conn.fetchrow("SELECT * FROM skills WHERE id = $1", skill_id)
+                row = await conn.fetchrow(
+                    "SELECT * FROM skills WHERE id = $1", skill_id
+                )
                 if not row:
                     return None
-            return await self._enrich_skill(row, user_id=user_id, is_admin=is_admin, include_content=True)
+            return await self._enrich_skill(
+                row, user_id=user_id, is_admin=is_admin, include_content=True
+            )
         except Exception:
             logger.exception("Ошибка get_skill_by_id")
             return None
@@ -357,10 +393,14 @@ class SkillRepository:
         slug = slugify_skill_id(slug)
         try:
             async with await self.db_connection.acquire() as conn:
-                row = await conn.fetchrow("SELECT * FROM skills WHERE LOWER(slug) = LOWER($1)", slug)
+                row = await conn.fetchrow(
+                    "SELECT * FROM skills WHERE LOWER(slug) = LOWER($1)", slug
+                )
                 if not row:
                     return None
-            return await self._enrich_skill(row, user_id=user_id, is_admin=is_admin, include_content=True)
+            return await self._enrich_skill(
+                row, user_id=user_id, is_admin=is_admin, include_content=True
+            )
         except Exception:
             logger.exception("Ошибка get_skill_by_slug")
             return None
@@ -541,8 +581,9 @@ class SkillRepository:
             logger.exception("Ошибка list_skills")
             return [], 0
 
-
-    async def get_accessible_skills(self, user_id: str, is_admin: bool = False) -> List[SkillOut]:
+    async def get_accessible_skills(
+        self, user_id: str, is_admin: bool = False
+    ) -> List[SkillOut]:
         """Все доступные skills с content (для export / inject)."""
         filters = SkillFilters(limit=100, offset=0)
         items, total = await self.list_skills(user_id, filters, is_admin=is_admin)
@@ -568,6 +609,7 @@ class SkillRepository:
         if not await self.can_write(skill_id, user_id, is_admin=is_admin):
             return None
         try:
+            unpublished = False
             async with await self.db_connection.acquire() as conn:
                 fields = []
                 params: List[Any] = []
@@ -611,9 +653,19 @@ class SkillRepository:
                     params.append(data.is_active)
                     n += 1
                 if data.is_public is not None:
-                    fields.append(f"is_public = ${n}")
-                    params.append(data.is_public)
-                    n += 1
+                    # Публикация в галерею — только ACL owner; у editor поле игнорируем
+                    perm = await self.get_user_permission(skill_id, user_id)
+                    if is_admin or perm == SKILL_PERMISSION_OWNER:
+                        fields.append(f"is_public = ${n}")
+                        params.append(data.is_public)
+                        n += 1
+                        if not bool(data.is_public):
+                            unpublished = True
+                    else:
+                        logger.info(
+                            "Игнорируем смену is_public от редактора: "
+                            f"user={user_id}, skill={skill_id}"
+                        )
                 if data.user_invocable is not None:
                     fields.append(f"user_invocable = ${n}")
                     params.append(data.user_invocable)
@@ -634,7 +686,7 @@ class SkillRepository:
                     fields.append(f"category = ${n}")
                     params.append(data.category)
                     n += 1
-                fields.append(f"version = COALESCE(version, 1) + 1")
+                fields.append("version = COALESCE(version, 1) + 1")
                 fields.append(f"updated_at = ${n}")
                 params.append(datetime.utcnow())
                 n += 1
@@ -646,14 +698,21 @@ class SkillRepository:
                     f"UPDATE skills SET {', '.join(fields)} WHERE id = ${n}",  # noqa: S608
                     *params,
                 )
-            return await self.get_skill_by_id(skill_id, user_id=user_id, is_admin=is_admin)
+            # Снятие с публикации — убрать из закладок галереи у всех.
+            if unpublished:
+                await self.clear_bookmarks_for_skill(skill_id)
+            return await self.get_skill_by_id(
+                skill_id, user_id=user_id, is_admin=is_admin
+            )
         except ValueError:
             raise
         except Exception:
             logger.exception("Ошибка update_skill")
             return None
 
-    async def toggle_skill(self, skill_id: int, user_id: str, is_admin: bool = False) -> Optional[SkillOut]:
+    async def toggle_skill(
+        self, skill_id: int, user_id: str, is_admin: bool = False
+    ) -> Optional[SkillOut]:
         if not await self.can_write(skill_id, user_id, is_admin=is_admin):
             return None
         try:
@@ -667,12 +726,16 @@ class SkillRepository:
                     skill_id,
                     datetime.utcnow(),
                 )
-            return await self.get_skill_by_id(skill_id, user_id=user_id, is_admin=is_admin)
+            return await self.get_skill_by_id(
+                skill_id, user_id=user_id, is_admin=is_admin
+            )
         except Exception:
             logger.exception("Ошибка toggle_skill")
             return None
 
-    async def delete_skill(self, skill_id: int, user_id: str, is_admin: bool = False) -> bool:
+    async def delete_skill(
+        self, skill_id: int, user_id: str, is_admin: bool = False
+    ) -> bool:
         uid = (user_id or "").strip().lower()
         try:
             async with await self.db_connection.acquire() as conn:
@@ -739,7 +802,9 @@ class SkillRepository:
             logger.exception("Ошибка share_skill")
             return ([], usernames)
 
-    async def unshare_skill(self, skill_id: int, actor_id: str, target_user_id: str) -> bool:
+    async def unshare_skill(
+        self, skill_id: int, actor_id: str, target_user_id: str
+    ) -> bool:
         actor_id = (actor_id or "").strip().lower()
         target_user_id = (target_user_id or "").strip().lower()
         try:
@@ -826,7 +891,6 @@ class SkillRepository:
                 result.append(skill)
         return result
 
-
     async def list_always_apply_skills(
         self, user_id: str, is_admin: bool = False, limit: int = 20
     ) -> List[SkillOut]:
@@ -866,7 +930,9 @@ class SkillRepository:
                     )
             out: List[SkillOut] = []
             for row in rows:
-                item = await self._enrich_skill(row, user_id=uid, is_admin=is_admin, include_content=True)
+                item = await self._enrich_skill(
+                    row, user_id=uid, is_admin=is_admin, include_content=True
+                )
                 if item:
                     out.append(item)  # type: ignore[arg-type]
             return out
@@ -956,8 +1022,9 @@ class SkillRepository:
             logger.exception("Ошибка upsert_skill_file_text")
             return None
 
-
-    async def get_skill_file_content(self, skill_id: int, relative_path: str) -> Optional[str]:
+    async def get_skill_file_content(
+        self, skill_id: int, relative_path: str
+    ) -> Optional[str]:
         path = (relative_path or "").replace("\\", "/").lstrip("/")
         try:
             async with await self.db_connection.acquire() as conn:
@@ -1002,7 +1069,9 @@ class SkillRepository:
             if rating < 1 or rating > 5:
                 return False
             async with await self.db_connection.acquire() as conn:
-                exists = await conn.fetchval("SELECT EXISTS(SELECT 1 FROM skills WHERE id = $1)", skill_id)
+                exists = await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM skills WHERE id = $1)", skill_id
+                )
                 if not exists:
                     logger.warning(f"Попытка оценить несуществующий skill: {skill_id}")
                     return False
@@ -1077,9 +1146,13 @@ class SkillRepository:
         try:
             user_id = user_id.strip().lower() if user_id else user_id
             async with await self.db_connection.acquire() as conn:
-                exists = await conn.fetchval("SELECT EXISTS(SELECT 1 FROM skills WHERE id = $1)", skill_id)
+                exists = await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM skills WHERE id = $1)", skill_id
+                )
                 if not exists:
-                    logger.warning(f"Попытка добавить в закладки несуществующий skill: {skill_id}")
+                    logger.warning(
+                        f"Попытка добавить в закладки несуществующий skill: {skill_id}"
+                    )
                     return False
                 await conn.execute(
                     """
@@ -1113,19 +1186,37 @@ class SkillRepository:
             logger.exception("Ошибка remove_bookmark skill")
             return False
 
+    async def clear_bookmarks_for_skill(self, skill_id: int) -> int:
+        """Удалить все закладки skill (после снятия с публикации в галерее)."""
+        try:
+            async with await self.db_connection.acquire() as conn:
+                result = await conn.execute(
+                    "DELETE FROM skill_bookmarks WHERE skill_id = $1",
+                    skill_id,
+                )
+                try:
+                    return int(str(result).split()[-1])
+                except (TypeError, ValueError, IndexError):
+                    return 0
+        except Exception:
+            logger.exception("Ошибка очистки закладок skill %s", skill_id)
+            return 0
+
     async def get_user_bookmarks(
         self, user_id: str, limit: int = 100, offset: int = 0
     ) -> Tuple[List[int], int]:
-        """Список ID skills в закладках пользователя."""
+        """Закладки — только опубликованные в галерее skills (is_public)."""
         try:
             user_id = user_id.strip().lower() if user_id else user_id
             async with await self.db_connection.acquire() as conn:
                 rows = await conn.fetch(
                     """
-                    SELECT skill_id
-                    FROM skill_bookmarks
-                    WHERE LOWER(TRIM(user_id)) = LOWER(TRIM($1))
-                    ORDER BY created_at DESC
+                    SELECT b.skill_id
+                    FROM skill_bookmarks b
+                    INNER JOIN skills s ON s.id = b.skill_id
+                    WHERE LOWER(TRIM(b.user_id)) = LOWER(TRIM($1))
+                      AND s.is_public = true
+                    ORDER BY b.created_at DESC
                     LIMIT $2 OFFSET $3
                     """,
                     user_id,
@@ -1135,8 +1226,10 @@ class SkillRepository:
                 total = await conn.fetchval(
                     """
                     SELECT COUNT(*)
-                    FROM skill_bookmarks
-                    WHERE LOWER(TRIM(user_id)) = LOWER(TRIM($1))
+                    FROM skill_bookmarks b
+                    INNER JOIN skills s ON s.id = b.skill_id
+                    WHERE LOWER(TRIM(b.user_id)) = LOWER(TRIM($1))
+                      AND s.is_public = true
                     """,
                     user_id,
                 )

@@ -1,0 +1,76 @@
+﻿................................................................F...F..F [ 16%]
+.F...................................................................... [ 32%]
+................................................................FF...... [ 48%]
+........F...F........................................................... [ 65%]
+........................................................................ [ 81%]
+.........................................................F.....F........ [ 97%]
+..........                                                               [100%]
+================================== FAILURES ===================================
+_________ TestStreaming.test_stopped_stream_saves_partial_and_reports _________
+tests\unit\realtime_cov\test_handle_direct_cov.py:348: in test_stopped_stream_saves_partial_and_reports
+    (sargs, skwargs), = env.saved
+    ^^^^^^^^^^^^^^^^^
+E   ValueError: not enough values to unpack (expected 1, got 0)
+___ TestStreaming.test_stop_after_non_streaming_answer_should_keep_response ___
+tests\unit\realtime_cov\test_handle_direct_cov.py:373: in test_stop_after_non_streaming_answer_should_keep_response
+    assert any(a[0] == "ответ модели" and k.get("conversation_id") for a, k in env.saved)
+E   assert False
+E    +  where False = any(<generator object TestStreaming.test_stop_after_non_streaming_answer_should_keep_response.<locals>.<genexpr> at 0x0000017400226A40>)
+____ TestModelFailures.test_stream_failure_keeps_partial_and_still_raises _____
+tests\unit\realtime_cov\test_handle_direct_cov.py:397: in test_stream_failure_keeps_partial_and_still_raises
+    assert any("часть ответа" in str(a[0]) for a, _ in env.saved)
+E   assert False
+E    +  where False = any(<generator object TestModelFailures.test_stream_failure_keeps_partial_and_still_raises.<locals>.<genexpr> at 0x00000174002A1E40>)
+___ TestModelFailures.test_stream_failure_partial_with_reasoning_and_prefix ___
+tests\unit\realtime_cov\test_handle_direct_cov.py:410: in test_stream_failure_partial_with_reasoning_and_prefix
+    (args, _), = env.saved
+    ^^^^^^^^^^
+E   ValueError: not enough values to unpack (expected 1, got 0)
+________________ TestPlainFlow.test_streaming_chunks_and_roles ________________
+tests\unit\realtime_cov\test_multi_llm_cov.py:223: in test_streaming_chunks_and_roles
+    assert [(c["chunk"], c["accumulated"]) for c in chunks] == [("к", "к"), ("ус", "кус")]
+E   AssertionError: assert [] == [('к', 'к'), ('ус', 'кус')]
+E     
+E     Right contains 2 more items, first extra item: ('к', 'к')
+E     Use -v to get more diff
+______ TestPlainFlow.test_stream_callback_stops_when_generation_stopped _______
+tests\unit\realtime_cov\test_multi_llm_cov.py:249: in test_stream_callback_stops_when_generation_stopped
+    assert results == [False, False] and sio.payloads("multi_llm_chunk") == []
+E   assert ([] == [False, False]
+E     
+E     Right contains 2 more items, first extra item: False
+E     Use -v to get more diff)
+______________ TestRag.test_agent_kb_context_and_named_document _______________
+tests\unit\realtime_cov\test_multi_llm_cov.py:372: in test_agent_kb_context_and_named_document
+    text = env.ask_calls[0][0][0]
+           ^^^^^^^^^^^^^^^^
+E   IndexError: list index out of range
+__________ TestRag.test_all_sources_are_combined_with_inline_context __________
+tests\unit\realtime_cov\test_multi_llm_cov.py:410: in test_all_sources_are_combined_with_inline_context
+    assert text.index("Документы из настроек") < text.index("База Знаний") < text.index("Документы проекта")
+                                                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+E   ValueError: substring not found
+_____________ TestHelpers.test_presentation_slug[deck_html-True] ______________
+tests\unit\realtime\test_socket_handlers.py:368: in test_presentation_slug
+    assert h._slug_implies_presentation(slug) is expected
+E   AssertionError: assert False is True
+E    +  where False = <function _slug_implies_presentation at 0x000001740A584860>('deck_html')
+E    +    where <function _slug_implies_presentation at 0x000001740A584860> = h._slug_implies_presentation
+________________ TestHelpers.test_presentation_skill_detection ________________
+tests\unit\realtime\test_socket_handlers.py:373: in test_presentation_skill_detection
+    assert h._presentation_skill_active(None, ["x"], ["deck-html"]) is True
+E   AssertionError: assert False is True
+E    +  where False = <function _presentation_skill_active at 0x000001740A584900>(None, ['x'], ['deck-html'])
+E    +    where <function _presentation_skill_active at 0x000001740A584900> = h._presentation_skill_active
+=========================== short test summary info ===========================
+FAILED tests/unit/realtime_cov/test_handle_direct_cov.py::TestStreaming::test_stopped_stream_saves_partial_and_reports
+FAILED tests/unit/realtime_cov/test_handle_direct_cov.py::TestStreaming::test_stop_after_non_streaming_answer_should_keep_response
+FAILED tests/unit/realtime_cov/test_handle_direct_cov.py::TestModelFailures::test_stream_failure_keeps_partial_and_still_raises
+FAILED tests/unit/realtime_cov/test_handle_direct_cov.py::TestModelFailures::test_stream_failure_partial_with_reasoning_and_prefix
+FAILED tests/unit/realtime_cov/test_multi_llm_cov.py::TestPlainFlow::test_streaming_chunks_and_roles
+FAILED tests/unit/realtime_cov/test_multi_llm_cov.py::TestPlainFlow::test_stream_callback_stops_when_generation_stopped
+FAILED tests/unit/realtime_cov/test_multi_llm_cov.py::TestRag::test_agent_kb_context_and_named_document
+FAILED tests/unit/realtime_cov/test_multi_llm_cov.py::TestRag::test_all_sources_are_combined_with_inline_context
+FAILED tests/unit/realtime/test_socket_handlers.py::TestHelpers::test_presentation_slug[deck_html-True]
+FAILED tests/unit/realtime/test_socket_handlers.py::TestHelpers::test_presentation_skill_detection
+10 failed, 432 passed in 8.34s

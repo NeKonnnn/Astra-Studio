@@ -15,6 +15,10 @@ from backend.settings.logging import get_logger
 logger = get_logger(__name__)
 
 RAG_NO_RELEVANT_CONTEXT_MESSAGE = RAG_STRICT_NOT_FOUND_MESSAGE
+# Поиск по базе не выполнился (сбой сервиса) - это не «ничего не найдено».
+RAG_SEARCH_FAILED_MESSAGE = (
+    "Не удалось выполнить поиск по базе документов. Попробуйте повторить запрос позже."
+)
 
 
 def _rag_env_flag(name: str, default: bool) -> bool:
@@ -305,27 +309,18 @@ def resolve_active_rag_sources(
 ) -> ActiveRagSources:
     """Единая точка решения, какие источники RAG активны.
 
-    Используется всеми режимами чата и agentic-tool'ом, чтобы правило было
-    одинаковым и тестируемым.
-
-    ВАЖНО про «Библиотеку»: в UI одна кнопка «Библиотека» ставит СРАЗУ два флага
-    (``use_kb_rag`` и ``use_memory_library_rag``) — это единый тумблер «искать в
-    моих загруженных документах». Документы, загруженные через «Открыть базу
-    данных» в настройках RAG, лежат в memory-rag. Поэтому memory-поиск включаем
-    по ЛЮБОМУ из этих флагов: иначе, если фронт по какой-то причине прислал
-    только ``use_kb_rag`` (а он исторически был no-op для retrieval), библиотека
-    не искалась вообще и чат отвечал «не нашёл», хотя документы загружены.
+    * ``agent_kb`` — Knowledge Bases / scoped docs (``use_agent_scoped_kb``),
+      без требования уже развёрнутых document_ids (иначе Tools+БЗ молча off).
+    * ``memory`` — кнопка «Библиотека» / legacy use_kb_rag, если memory-rag
+      не выключен env.
     """
     project = bool(project_id)
-    # use_agent_scoped_kb выставляет handlers: есть document_ids ИЛИ entity kb_ids
-    # (Tools/агент/проект). Не требуем здесь непустой agent_kb_doc_ids — иначе
-    # БЗ из Tools с ещё не развернутым expand молча выключала поиск.
     agent_kb = bool(use_agent_scoped_kb)
     memory = bool(use_memory_library_rag) or bool(use_kb_rag)
     if memory and not memory_rag_enabled():
         logger.info(
-            "[RAG-SOURCES] Библиотека выключена глобально (RAG_MEMORY_ENABLED=0) - "
-            "тумблер пользователя игнорируем"
+            "[RAG-SOURCES] библиотека памяти отключена (RAG_MEMORY_ENABLED=0) — "
+            "источник memory выключен"
         )
         memory = False
     sources = ActiveRagSources(project=project, agent_kb=agent_kb, memory=memory)
@@ -744,8 +739,9 @@ def format_rag_fragments(
             continue
         indexed.append((i + 1, d_id, row))
     by_doc: Dict[Optional[int], List[int]] = {}
-    for num, d_id, _row in indexed:
-        by_doc.setdefault(d_id, []).append(num - 1)
+    # позиция в indexed (без пропущенных битых строк), а не номер в исходном списке
+    for pos, (_num, d_id, _row) in enumerate(indexed):
+        by_doc.setdefault(d_id, []).append(pos)
     selected_entries: List[Optional[str]] = [None] * len(indexed)
     selected_doc_ids: set = set()
     total = 0
@@ -936,6 +932,7 @@ async def maybe_rag_no_evidence_message(
     use_agent_scoped_kb: bool,
     agent_kb_doc_ids: Optional[List[Any]],
     has_history: bool = False,
+    search_failed: bool = False,
 ) -> Optional[str]:
     """
     Если включён блок и в промпт не попал ни один фрагмент, но при этом был непустой
@@ -971,6 +968,11 @@ async def maybe_rag_no_evidence_message(
     )
     if not doc_backed:
         return None
+    if search_failed:
+        logger.warning(
+            "[RAG-NO-EVIDENCE] Поиск по RAG завершился ошибкой — контекст пуст при непустом корпусе"
+        )
+        return RAG_SEARCH_FAILED_MESSAGE
     logger.info(
         "[RAG-NO-EVIDENCE] Блок ответа без опоры: контекст пуст при непустом корпусе. "
         "counts=%s project_id=%s use_kb_rag=%s use_agent_scoped_kb=%s "

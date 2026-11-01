@@ -25,6 +25,7 @@ import {
   Delete as DeleteIcon,
 } from '@mui/icons-material';
 import { useAppActions } from '../contexts/AppContext';
+import { applySpeakerMapping, extractSpeakers } from '../utils/speakerNames';
 
 const iconButtonSx = {
   opacity: 0.7,
@@ -43,33 +44,6 @@ const iconButtonSx = {
     height: '18px !important',
   },
 };
-
-function extractSpeakers(text: string): string[] {
-  if (!text) return [];
-  const patterns = [
-    /SPEAKER_SPEAKER_\d+/gi,
-    /SPEAKER_\d+/gi,
-    /Speaker_[A-Z0-9]+/gi,
-    /Спикер_\d+/gi,
-  ];
-  const allMatches: string[] = [];
-  patterns.forEach(pattern => {
-    const matches = text.match(pattern);
-    if (matches) allMatches.push(...matches);
-  });
-  return Array.from(new Set(allMatches)).sort();
-}
-
-function applySpeakerMapping(text: string, mapping: Record<string, string>): string {
-  let result = text;
-  Object.entries(mapping).forEach(([original, newName]) => {
-    if (newName.trim()) {
-      const regex = new RegExp(original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
-      result = result.replace(regex, newName);
-    }
-  });
-  return result;
-}
 
 interface TranscriptionResultModalProps {
   open: boolean;

@@ -31,13 +31,17 @@ def extract_tool_calls_from_content(text: str) -> Tuple[str, List[ToolCall]]:
         return text, []
 
     tool_calls: List[ToolCall] = []
-    seen_names: set[str] = set()
+    seen_calls: set[tuple[str, str]] = set()
 
     def _append(name: str, arguments: dict) -> None:
         name = name.strip()
-        if not name or name in seen_names:
+        if not name:
             return
-        seen_names.add(name)
+        # одинаковые вызовы схлопываются; та же функция с другими аргументами — нет
+        call_key = (name, json.dumps(arguments, sort_keys=True, default=str))
+        if call_key in seen_calls:
+            return
+        seen_calls.add(call_key)
         tool_calls.append(
             ToolCall(
                 id=f"call_{uuid.uuid4().hex[:12]}",
@@ -73,13 +77,14 @@ def extract_tool_calls_from_content(text: str) -> Tuple[str, List[ToolCall]]:
             continue
         for name, body in _FUNCTION_TAG.findall(block):
             _append(name, _parse_args(body))
-        for name in _FUNCTION_SELF.findall(block):
+        # пустой вызов — только тег, не вошедший в разобранные <function=..>..</function>
+        for name in _FUNCTION_SELF.findall(_FUNCTION_TAG.sub("", block)):
             _append(name, {})
 
     if not tool_calls:
         for name, body in _FUNCTION_TAG.findall(text):
             _append(name, _parse_args(body))
-        for name in _FUNCTION_SELF.findall(text):
+        for name in _FUNCTION_SELF.findall(_FUNCTION_TAG.sub("", text)):
             _append(name, {})
 
     cleaned = _TOOL_CALL_BLOCK.sub("", text).strip()

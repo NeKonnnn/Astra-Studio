@@ -84,6 +84,7 @@ import { useTheme } from '@mui/material/styles';
 import ModelSelector from '../components/ModelSelector';
 import AgentSelector from '../components/AgentSelector';
 import { clearActiveAgent } from '../utils/clearActiveAgent';
+import { useFeatureAccess } from '../hooks/useFeatureAccess';
 import { clearActiveSkills, copyActiveSkills } from '../utils/skillSelectionStorage';
 import { disableChatArtifactsToolsForChat } from '../utils/artifactsSelectionStorage';
 import { useActiveSkillIndicators } from '../hooks/useActiveSkillIndicators';
@@ -145,6 +146,7 @@ interface ProjectPageProps {
 }
 
 export default function ProjectPage({ sidebarOpen = true, sidebarHidden = false }: ProjectPageProps) {
+  const { canUseAgents } = useFeatureAccess();
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
   const theme = useTheme();
@@ -215,6 +217,12 @@ export default function ProjectPage({ sidebarOpen = true, sidebarHidden = false 
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   /** Раскрытый подпункт меню «Инструменты» (панель агентов). */
   const [gearToolsPanel, setGearToolsPanel] = useState<'main' | 'agents' | 'artifacts' | 'skills' | 'mcp' | 'coding' | 'model-mode'>('main');
+  useEffect(() => {
+    if (!canUseAgents) {
+      clearActiveAgent();
+    }
+  }, [canUseAgents]);
+
   const gearSubPanelOpen =
     gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'coding';
   const [modelThinkingMode, setModelThinkingMode] = useState<ModelThinkingMode>(() => {
@@ -338,7 +346,7 @@ export default function ProjectPage({ sidebarOpen = true, sidebarHidden = false 
     () => (
       <ChatInputStatusCluster
         isDarkMode={isDarkMode}
-        libraryActive={useKbRag}
+        libraryActive={false}
         onLibraryToggle={toggleKbRag}
         myAgentName={myAgentSelection?.name ?? null}
         onAgentToggle={myAgentSelection?.name ? handleClearMyAgent : undefined}
@@ -1339,37 +1347,6 @@ export default function ProjectPage({ sidebarOpen = true, sidebarHidden = false 
                   }}
                 />
               </Box>
-              <Tooltip
-                title={!memoryRagEnabled ? MEMORY_RAG_DISABLED_HINT : ''}
-                disableHoverListener={memoryRagEnabled}
-              >
-                <span style={{ display: 'block' }}>
-                  <Box
-                    onClick={() => {
-                      if (!memoryRagEnabled) return;
-                      toggleKbRag();
-                      handleMenuClose();
-                    }}
-                    sx={{
-                      ...dropdownItemSx,
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 1,
-                      color: isDarkMode ? 'white' : '#333',
-                      opacity: memoryRagEnabled ? 1 : 0.5,
-                      cursor: memoryRagEnabled ? 'pointer' : 'not-allowed',
-                    }}
-                  >
-                    <KbIcon sx={{ fontSize: 18, color: isDarkMode ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.6)', flexShrink: 0 }} />
-                    <Typography sx={{ flex: 1, minWidth: 0, fontSize: MENU_ACTION_TEXT_SIZE, whiteSpace: 'nowrap' }}>
-                      {useKbRag ? 'Отключить общий RAG' : 'Общий RAG'}
-                    </Typography>
-                    {useKbRag ? (
-                      <CheckIcon sx={{ fontSize: 16, color: 'primary.main', flexShrink: 0 }} />
-                    ) : null}
-                  </Box>
-                </span>
-              </Tooltip>
               <Box
                 onClick={() => {
                   setInputMessage('');

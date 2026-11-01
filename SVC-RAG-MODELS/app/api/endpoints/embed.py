@@ -41,15 +41,6 @@ class EmbedRequest(BaseModel):
         return []
 
 
-class EmbedResponse(BaseModel):
-    """Legacy-ответ POST /v1/embed (обратная совместимость)."""
-
-    embeddings: List[List[float]]
-    embedding_dim: int
-    model: Optional[str] = None
-    prompt: Optional[str] = None
-
-
 def _prompt_name_for(model, kind: Optional[str]) -> Optional[str]:
     """Имя промпта для асимметричной модели, если она его знает.
 
@@ -94,14 +85,16 @@ async def _compute_embeddings(
     texts: List[str],
     model_name: Optional[str],
     kind: Optional[str],
-) -> tuple[List[List[float]], str, Optional[str], int]:
+) -> tuple[List[List[float]], str, Optional[str]]:
     try:
         entry = await get_embedding_model(model_name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
+        # Подробности (в т.ч. серверные пути) только в лог, клиенту - общий текст (CWE-209)
+        logger.exception("Не удалось загрузить эмбеддинг-модель")
         raise HTTPException(
-            status_code=503, detail=f"Эмбеддинг-модель не загружена: {e}"
+            status_code=503, detail="Эмбеддинг-модель не загружена"
         ) from e
 
     model = entry["model"]
@@ -126,21 +119,18 @@ async def _compute_embeddings(
     else:
         embeddings = embeddings.tolist()
     if embeddings and embeddings[0]:
-        dim = len(embeddings[0])
-        entry["dim"] = dim
-    else:
-        dim = int(entry.get("dim") or 384)
-    return embeddings, resolved_name, prompt_name, int(dim)
+        entry["dim"] = len(embeddings[0])
+    return embeddings, resolved_name, prompt_name
 
 
 @router.post("/embeddings")
-async def embed_texts_openai(request: EmbedRequest):
+async def embed_texts(request: EmbedRequest):
     """OpenAI-совместимый POST /v1/embeddings — основной контракт для SVC-RAG."""
     if not settings.rag_models.enabled:
         raise HTTPException(status_code=503, detail="Сервис RAG-моделей выключен")
 
     texts = request.get_texts()
-    embeddings, model_name, _prompt, _dim = await _compute_embeddings(
+    embeddings, model_name, _prompt = await _compute_embeddings(
         texts, request.model, request.kind
     )
 
@@ -153,21 +143,3 @@ async def embed_texts_openai(request: EmbedRequest):
         "model": model_name,
         "usage": {"prompt_tokens": 0, "total_tokens": 0},
     }
-
-
-@router.post("/embed", response_model=EmbedResponse)
-async def embed_texts_legacy(request: EmbedRequest):
-    """Legacy POST /v1/embed — оставляем для старых клиентов."""
-    if not settings.rag_models.enabled:
-        raise HTTPException(status_code=503, detail="Сервис RAG-моделей выключен")
-
-    texts = request.get_texts()
-    embeddings, model_name, prompt_name, dim = await _compute_embeddings(
-        texts, request.model, request.kind
-    )
-    return EmbedResponse(
-        embeddings=embeddings,
-        embedding_dim=dim,
-        model=model_name,
-        prompt=prompt_name,
-    )

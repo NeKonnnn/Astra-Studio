@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useCallback, useContext, useState, useEffect, ReactNode } from 'react';
 import axios from 'axios';
 import { initSettings, parseLoginErrorDetail } from '../settings';
 import {
@@ -10,6 +10,7 @@ import {
 } from '../settings/sessionTimeout';
 import { cacheServerInstanceId, clearServerInstanceId, resolveLoginSessionNoticeReason, setLoginSessionNotice, type LoginSessionNoticeReason } from '../settings/sessionValidity';
 import { getApiUrl, fetchSessionPolicy } from '../config/api';
+import { setAuthTokenRefreshHandler } from '../utils/authFetch';
 import { isMissingRoleLoginError, MISSING_ROLE_LOGIN_MESSAGE } from './missingRoleLoginError';
 
 export type LoginErrorMeta = {
@@ -38,11 +39,18 @@ interface User {
   full_name: string | null;
   is_active: boolean;
   is_admin: boolean;
+  avatar_url?: string | null;
+  /** Короткий статус профиля */
+  status?: string | null;
   /** owner | editor | viewer | base */
   platform_role?: string | null;
+  /** Доступ к агентам (конструктор, галерея, picker, чат) */
   can_use_agents?: boolean;
+  /** Доступ к MCP */
   can_use_mcp?: boolean;
+  /** Создание агентов и skills (owner / editor) */
   can_create_agents?: boolean;
+  /** Публикация в галерею (только owner) */
   can_publish_to_library?: boolean;
   features?: {
     agents?: boolean;
@@ -55,6 +63,8 @@ interface User {
 interface AuthContextType {
   user: User | null;
   token: string | null;
+  /** Готовый src для <Avatar>: внешний URL или один blob на сессию (LDAP). */
+  avatarSrc: string | undefined;
   login: (username: string, password: string) => Promise<void>;
   completeSsoLogin: (ticket: string) => Promise<void>;
   logout: () => void;
@@ -100,16 +110,29 @@ const isAccessTokenExpired = (jwtToken: string): boolean => {
   return expMs <= Date.now() + TOKEN_REFRESH_SKEW_MS;
 };
 
+const AVATAR_API_PATH = '/api/auth/me/avatar';
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
+  const [avatarSrc, setAvatarSrc] = useState<string | undefined>(undefined);
   const [isLoading, setIsLoading] = useState(true);
   const refreshInFlightRef = React.useRef<Promise<string | null> | null>(null);
+  const tokenRef = React.useRef<string | null>(null);
+  const avatarObjectUrlRef = React.useRef<string | undefined>(undefined);
+  const avatarLoadedUrlRef = React.useRef<string | null>(null);
+
+  tokenRef.current = token;
 
   const clearStoredAuth = (noticeReason?: LoginSessionNoticeReason) => {
     if (noticeReason) {
       setLoginSessionNotice(noticeReason);
     }
+    if (avatarObjectUrlRef.current?.startsWith('blob:')) {
+      URL.revokeObjectURL(avatarObjectUrlRef.current);
+    }
+    avatarObjectUrlRef.current = undefined;
+    avatarLoadedUrlRef.current = null;
     localStorage.removeItem('auth_token');
     localStorage.removeItem(REFRESH_TOKEN_STORAGE_KEY);
     localStorage.removeItem('auth_user');
@@ -117,6 +140,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearServerInstanceId();
     setToken(null);
     setUser(null);
+    setAvatarSrc(undefined);
   };
 
   // Проверка валидности токена
@@ -146,11 +170,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const refreshAccessToken = async (refreshToken: string): Promise<string | null> => {
     try {
-      const response = await axios.post(
-        authApiUrl('/api/auth/refresh'),
-        { refresh_token: refreshToken },
-        { timeout: 10000 },
-      );
+      const response = await axios.post(authApiUrl('/api/auth/refresh'), {
+        refresh_token: refreshToken,
+      }, {
+        timeout: 10000,
+      });
       const { access_token, refresh_token, user: userData } = response.data;
       if (!access_token || !refresh_token) {
         return null;
@@ -246,9 +270,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }
 
           const latestUserRaw = localStorage.getItem('auth_user');
+          let nextUser: User = latestUserRaw
+            ? (JSON.parse(latestUserRaw) as User)
+            : parsedUser;
+
+          // Обновить platform_role / can_use_agents с бэка (LDAP base без конструктора).
+          // Иначе в localStorage может остаться старый профиль без флагов → UI показывает конструктор.
+          try {
+            const meResp = await axios.get(authApiUrl('/api/auth/me'), {
+              headers: { Authorization: `Bearer ${effectiveToken}` },
+              timeout: 10000,
+            });
+            if (meResp.data && typeof meResp.data === 'object') {
+              nextUser = { ...nextUser, ...meResp.data };
+              localStorage.setItem('auth_user', JSON.stringify(nextUser));
+            }
+          } catch (meError: any) {
+            if (meError?.response?.status === 401) {
+              clearStoredAuth(
+                resolveLoginSessionNoticeReason(meError?.response?.data?.detail),
+              );
+              if (!cancelled) setIsLoading(false);
+              return;
+            }
+            console.warn('Не удалось обновить профиль /me:', meError?.message || meError);
+          }
+
           if (!cancelled) {
             setToken(localStorage.getItem('auth_token') || effectiveToken);
-            setUser(latestUserRaw ? (JSON.parse(latestUserRaw) as User) : parsedUser);
+            setUser(nextUser);
           }
         } catch (error) {
           console.error('Ошибка при инициализации авторизации:', error);
@@ -305,6 +355,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         clearServerInstanceId();
         setToken(null);
         setUser(null);
+        setAvatarSrc(undefined);
       }
     }, targetTimeMs);
 
@@ -312,6 +363,69 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       window.clearTimeout(timerId);
     };
   }, [token]);
+
+  // Фото пользователя: один запрос на сессию через API (LDAP blob + Keycloak redirect).
+  useEffect(() => {
+    let cancelled = false;
+    const hasAvatar = Boolean(user?.avatar_url?.trim());
+
+    const revokeBlob = () => {
+      if (avatarObjectUrlRef.current?.startsWith('blob:')) {
+        URL.revokeObjectURL(avatarObjectUrlRef.current);
+      }
+      avatarObjectUrlRef.current = undefined;
+      avatarLoadedUrlRef.current = null;
+    };
+
+    if (!hasAvatar) {
+      revokeBlob();
+      setAvatarSrc(undefined);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const currentToken = tokenRef.current;
+    if (!currentToken) {
+      setAvatarSrc(undefined);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const avatarKey = String(user?.avatar_url || AVATAR_API_PATH);
+    if (avatarLoadedUrlRef.current === avatarKey && avatarObjectUrlRef.current) {
+      setAvatarSrc(avatarObjectUrlRef.current);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    revokeBlob();
+
+    void (async () => {
+      try {
+        const response = await axios.get(authApiUrl(AVATAR_API_PATH), {
+          headers: { Authorization: `Bearer ${currentToken}` },
+          responseType: 'blob',
+          params: { _: Date.now() },
+        });
+        if (cancelled) return;
+        const objectUrl = URL.createObjectURL(response.data);
+        avatarObjectUrlRef.current = objectUrl;
+        avatarLoadedUrlRef.current = avatarKey;
+        setAvatarSrc(objectUrl);
+      } catch {
+        if (!cancelled) {
+          setAvatarSrc(undefined);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.avatar_url]);
 
   // Настройка axios для автоматического добавления токена
   useEffect(() => {
@@ -324,6 +438,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [token]);
 
   useEffect(() => {
+    const runSharedRefresh = async (): Promise<string | null> => {
+      const refreshToken = localStorage.getItem(REFRESH_TOKEN_STORAGE_KEY);
+      if (!refreshToken) return null;
+      if (!refreshInFlightRef.current) {
+        refreshInFlightRef.current = refreshAccessToken(refreshToken).finally(() => {
+          refreshInFlightRef.current = null;
+        });
+      }
+      return refreshInFlightRef.current;
+    };
+
+    // raw fetch (projects / reindex) использует тот же refresh, что и axios.
+    setAuthTokenRefreshHandler(runSharedRefresh);
+
     const interceptorId = axios.interceptors.response.use(
       (response: any) => response,
       async (error: any) => {
@@ -334,20 +462,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return Promise.reject(error);
         }
 
-        const refreshToken = localStorage.getItem(REFRESH_TOKEN_STORAGE_KEY);
-        if (!refreshToken) {
-          return Promise.reject(error);
-        }
-
         originalRequest._retry = true;
-        if (!refreshInFlightRef.current) {
-          refreshInFlightRef.current = refreshAccessToken(refreshToken)
-            .finally(() => {
-              refreshInFlightRef.current = null;
-            });
-        }
-
-        const newAccessToken = await refreshInFlightRef.current;
+        const newAccessToken = await runSharedRefresh();
         if (!newAccessToken) {
           localStorage.removeItem('auth_token');
           localStorage.removeItem(REFRESH_TOKEN_STORAGE_KEY);
@@ -356,6 +472,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           clearServerInstanceId();
           setToken(null);
           setUser(null);
+          setAvatarSrc(undefined);
           return Promise.reject(error);
         }
 
@@ -366,11 +483,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     );
 
     return () => {
+      setAuthTokenRefreshHandler(null);
       axios.interceptors.response.eject(interceptorId);
     };
   }, []);
 
-  const applyLoginResponse = async (responseData: {
+  const applyLoginResponse = useCallback(async (responseData: {
     access_token: string;
     refresh_token: string;
     user: User;
@@ -402,9 +520,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.setItem('auth_token', access_token);
     localStorage.setItem(REFRESH_TOKEN_STORAGE_KEY, refresh_token);
     localStorage.setItem('auth_user', JSON.stringify(userData));
-  };
+  }, []);
 
-  const login = async (username: string, password: string) => {
+  const login = useCallback(async (username: string, password: string) => {
     try {
       try {
         await initSettings();
@@ -450,9 +568,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       throw new AuthLoginError('Ошибка при входе в систему');
     }
-  };
+  }, [applyLoginResponse]);
 
-  const completeSsoLogin = async (ticket: string) => {
+  const completeSsoLogin = useCallback(async (ticket: string) => {
     // Сбрасываем старую LDAP/SSO-сессию до обмена ticket — иначе параллельные запросы
     // с устаревшим client binding дают 401 и мешают новому входу.
     setToken(null);
@@ -471,7 +589,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     const response = await axios.post(authApiUrl('/api/auth/sso/keycloak/exchange'), { ticket });
     await applyLoginResponse(response.data);
-  };
+  }, [applyLoginResponse]);
 
   const logout = async () => {
     try {
@@ -486,8 +604,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       console.error('Ошибка при выходе:', error);
     } finally {
       // Очищаем данные независимо от результата запроса
+      if (avatarObjectUrlRef.current?.startsWith('blob:')) {
+        URL.revokeObjectURL(avatarObjectUrlRef.current);
+      }
+      avatarObjectUrlRef.current = undefined;
+      avatarLoadedUrlRef.current = null;
       setToken(null);
       setUser(null);
+      setAvatarSrc(undefined);
       localStorage.removeItem('auth_token');
       localStorage.removeItem(REFRESH_TOKEN_STORAGE_KEY);
       localStorage.removeItem('auth_user');
@@ -507,6 +631,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const value = {
     user,
     token,
+    avatarSrc,
     login,
     completeSsoLogin,
     logout,

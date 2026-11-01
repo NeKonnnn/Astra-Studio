@@ -29,7 +29,7 @@ import {
   AudioFile as AudioIcon,
 } from '@mui/icons-material';
 import { useAppActions } from '../contexts/AppContext';
-import { getApiUrl } from '../config/api';
+import { authFetch, getApiUrl } from '../config/api';
 
 interface TabPanelProps {
   children?: React.ReactNode;
@@ -131,7 +131,7 @@ export default function TranscriptionPage() {
       const formData = new FormData();
       formData.append('file', uploadedFile);
 
-      const response = await fetch(getApiUrl('/api/transcribe/upload'), {
+      const response = await authFetch(getApiUrl('/api/transcribe/upload'), {
         method: 'POST',
         body: formData,
       });
@@ -169,7 +169,7 @@ export default function TranscriptionPage() {
     setIsTranscribing(true);
     
     try {
-      const response = await fetch(getApiUrl('/api/transcribe/youtube'), {
+      const response = await authFetch(getApiUrl('/api/transcribe/youtube'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

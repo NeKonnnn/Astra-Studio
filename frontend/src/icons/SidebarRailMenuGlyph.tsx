@@ -9,13 +9,18 @@ import { SIDEBAR_RAIL_MENU_TOGGLE_GLYPH_SIZE } from '../constants/menuStyles';
 type Props = {
   side: 'left' | 'right';
   className?: string;
+  /**
+   * Явная инверсия глифа. Можно не передавать — тогда контраст задаёт
+   * `getSidebarChromeSx` через `[data-memo-rail-menu-glyph]`.
+   */
+  invert?: boolean;
 };
 
 /**
  * Кнопка меню rail: `<img>` + data URL (надёжнее `background-image` для data:).
  * Общий для left_bar и right_bar.
  */
-export default function SidebarRailMenuGlyph({ side, className }: Props) {
+export default function SidebarRailMenuGlyph({ side, className, invert }: Props) {
   const src =
     side === 'left' ? SIDEBAR_RAIL_MENU_TOGGLE_DATA_URL_LEFT : SIDEBAR_RAIL_MENU_TOGGLE_DATA_URL_RIGHT;
 
@@ -33,6 +38,7 @@ export default function SidebarRailMenuGlyph({ side, className }: Props) {
         display: 'block',
         flexShrink: 0,
         objectFit: 'contain',
+        ...(invert ? { filter: 'invert(1) brightness(0)' } : null),
       }}
     />
   );

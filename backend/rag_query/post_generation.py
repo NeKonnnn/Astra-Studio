@@ -30,7 +30,8 @@ def strip_strict_not_found_message(answer: str, replacement: str) -> str:
     if ans_stripped == rep_stripped:
         return ans
     if rep_stripped and rep_stripped in ans:
-        cleaned = ans.replace(rep, "").strip()
+        # replace(rep) с краевыми пробелами в rep может не найти фразу в ответе
+        cleaned = ans.replace(rep, "").strip() if rep in ans else ""
         if cleaned:
             return re.sub("[ ]{2,}", " ", cleaned)
         cleaned = ans.replace(rep_stripped, "").strip()
@@ -73,6 +74,10 @@ async def verify_answer_grounded(context_excerpt: str, answer: str) -> bool:
         f"ОТВЕТ:\n{ans}"
     )
     loop = asyncio.get_running_loop()
+    # Модель этого чата, см. llm_judge.py: читаем до потока.
+    from backend.settings.cef_logger.cef_audit_context import chat_model_peek
+
+    _model_path = chat_model_peek()
 
     def _call() -> str:
         return ask_agent(
@@ -80,6 +85,7 @@ async def verify_answer_grounded(context_excerpt: str, answer: str) -> bool:
             history=[],
             streaming=False,
             system_prompt="Ты строгий аудитор: отвечай только «да» или «нет».",
+            model_path=_model_path,
             max_tokens=8,
             # Ответ - одно слово. Мышление здесь съело бы весь бюджет целиком.
             service_call=True,
@@ -94,7 +100,9 @@ async def verify_answer_grounded(context_excerpt: str, answer: str) -> bool:
         return True
 
 
-async def maybe_replace_ungrounded(context_excerpt: str, answer: str, replacement: str) -> str:
+async def maybe_replace_ungrounded(
+    context_excerpt: str, answer: str, replacement: str
+) -> str:
     cleaned_answer = strip_strict_not_found_message(answer, replacement)
     if not post_verify_enabled():
         return cleaned_answer

@@ -30,6 +30,8 @@ class RerankRequest(BaseModel):
             docs = []
         self.passages = list(docs)
         n = self.top_k if self.top_k is not None else self.top_n
+        if n is not None and int(n) < 0:
+            raise ValueError("top_k/top_n не может быть отрицательным")
         self.top_k = int(n) if n is not None else 20
         return self
 
@@ -60,11 +62,14 @@ async def rerank_passages(request: RerankRequest):
     except ValueError as e:  # модель не разрешена конфигом
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Реранкер не загружен: {e}") from e
+        # Подробности (в т.ч. серверные пути) только в лог, клиенту - общий текст (CWE-209)
+        logger.exception("Не удалось загрузить реранкер")
+        raise HTTPException(status_code=503, detail="Реранкер не загружен") from e
 
     model = entry["model"]
     model_name = entry.get("path", "").rstrip("/").split("/")[-1] or "?"
-    top_k = int(request.top_k or 20)
+    # top_k уже нормализован валидатором (None -> 20, 0 -> пустой ответ, <0 -> 422)
+    top_k = int(request.top_k)
     print(
         f"[RERANK] model={model_name} passages={len(passages)} top_k={top_k}",
         flush=True,
@@ -84,9 +89,7 @@ async def rerank_passages(request: RerankRequest):
     top = indexed[:top_k]
     indices = [i for i, _ in top]
     score_vals = [float(s) for _, s in top]
-    results = [
-        {"index": i, "relevance_score": s} for i, s in zip(indices, score_vals)
-    ]
+    results = [{"index": i, "relevance_score": s} for i, s in zip(indices, score_vals)]
     return RerankResponse(
         indices=indices,
         scores=score_vals,

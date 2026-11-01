@@ -53,6 +53,9 @@ module.exports = {
       jestConfig.moduleNameMapper = {
         ...(jestConfig.moduleNameMapper || {}),
         '^@/(.*)$': '<rootDir>/src/$1',
+        '^@tests/(.*)$': '<rootDir>/tests/$1',
+        // axios 1.x поставляет ESM в корне пакета — Jest 27 берёт CJS-сборку
+        '^axios$': '<rootDir>/node_modules/axios/dist/node/axios.cjs',
         // react-router-dom v7 exports map poorly under Jest 27 / CRA
         '^react-router-dom$': '<rootDir>/node_modules/react-router-dom/dist/index.js',
         '^react-router$': '<rootDir>/node_modules/react-router/dist/development/index.js',

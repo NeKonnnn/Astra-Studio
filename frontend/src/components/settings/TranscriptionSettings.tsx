@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useTheme } from '@mui/material/styles';
 import {
   Box,
@@ -38,9 +38,9 @@ import { getApiUrl } from '../../config/api';
 type Engine = 'whisperx';
 type Language = 'ru' | 'en' | 'auto';
 
-export default function TranscriptionSettings() {
+export default function TranscriptionSettings({ isDarkMode: isDarkModeProp }: { isDarkMode?: boolean } = {}) {
   const theme = useTheme();
-  const isDarkMode = theme.palette.mode === 'dark';
+  const isDarkMode = isDarkModeProp ?? theme.palette.mode === 'dark';
   const dropdownItemSx = useMemo(() => getDropdownItemSx(isDarkMode), [isDarkMode]);
   const dropdownTriggerSx = useMemo(() => getDropdownTriggerButtonSx(isDarkMode), [isDarkMode]);
   const dropdownTriggerTextSx = useMemo(() => getDropdownTriggerTextSx(isDarkMode), [isDarkMode]);
@@ -56,13 +56,21 @@ export default function TranscriptionSettings() {
 
   const { showNotification } = useAppActions();
 
+  // BUG-FE-33: автосохранение разрешено только после завершения первой загрузки и только
+  // для правок пользователя; значения по умолчанию и загруженные данные на сервер не уходят.
+  const settingsLoadedRef = useRef(false);
+  const dirtyRef = useRef(false);
+
   useEffect(() => {
     loadTranscriptionSettings();
   }, []);
 
   // Автосохранение настроек транскрибации
   useEffect(() => {
+    if (!settingsLoadedRef.current || !dirtyRef.current) return undefined;
     const timeoutId = setTimeout(() => {
+      if (!settingsLoadedRef.current || !dirtyRef.current) return;
+      dirtyRef.current = false;
       saveTranscriptionSettings();
     }, 1000);
 
@@ -75,11 +83,14 @@ export default function TranscriptionSettings() {
       const response = await fetch(getApiUrl('/api/transcription/settings'));
       if (response.ok) {
         const data = await response.json();
+        // Данные сервера приоритетнее неотправленных правок: загрузка не должна вызывать PUT.
+        dirtyRef.current = false;
         setTranscriptionSettings(prev => ({ ...prev, ...data, engine: 'whisperx' as Engine }));
       }
     } catch (error) {
       console.error('Ошибка загрузки настроек транскрибации:', error);
     } finally {
+      settingsLoadedRef.current = true;
       setIsLoading(false);
     }
   };
@@ -104,10 +115,12 @@ export default function TranscriptionSettings() {
   };
 
   const handleSettingChange = (key: keyof typeof transcriptionSettings, value: any) => {
+    dirtyRef.current = true;
     setTranscriptionSettings(prev => ({ ...prev, [key]: value }));
   };
 
   const resetToDefaults = () => {
+    dirtyRef.current = true;
     setTranscriptionSettings({
       engine: 'whisperx',
       language: 'ru',

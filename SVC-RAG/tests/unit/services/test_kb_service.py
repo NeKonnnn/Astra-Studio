@@ -11,7 +11,7 @@ from app.services import embed_routing, kb_service, text_duplicate
 from app.services import hierarchical_indexing
 from app.services.document_duplicate import DUPLICATE_CODE, file_content_hash
 
-from .fakes import BIG, CATS, DOGS, TAXES
+from .fakes import BIG, CATS, DOGS, TAXES, FakeVectorRepo
 
 pytestmark = pytest.mark.unit
 
@@ -458,6 +458,85 @@ class TestSearch:
 
     async def test_search_on_empty_base_returns_nothing(self, kb):
         assert await kb.search("что угодно", k=5, use_reranking=False) == []
+
+    async def test_dim_mismatch_rematch_switches_to_other_table(self, kb, monkeypatch):
+        """Настройки → dim=8 пустая, чанки в 2048 → rematch + lexical без имени файла."""
+        from types import SimpleNamespace
+
+        alt = FakeVectorRepo(embedding_dim=2048, doc_repo=kb.doc_repo)
+        alt.rows[42] = [
+            DocumentVector(
+                document_id=42,
+                chunk_index=0,
+                embedding=[0.0] * 8,
+                content="кошки любят спать на подоконнике и охотиться",
+                metadata={},
+            )
+        ]
+        kb.vector_repo.extra_dims = [(2048, 1)]
+
+        async def fake_profile_for_dim(_client, dim, prefer_provider=None):
+            assert int(dim) == 2048
+            return SimpleNamespace(
+                provider="gigachat", model="Embeddings", dim=2048, client=kb.rag_client
+            )
+
+        real_vector_repo_for = embed_routing.vector_repo_for
+
+        async def fake_vector_repo_for(base, dim):
+            if int(dim or 0) == 2048:
+                return alt
+            return await real_vector_repo_for(base, dim)
+
+        monkeypatch.setattr(embed_routing, "profile_for_dim", fake_profile_for_dim)
+        monkeypatch.setattr(embed_routing, "vector_repo_for", fake_vector_repo_for)
+
+        hits, trace = await kb.search(
+            "расскажи про кошки",
+            k=3,
+            strategy="vector",
+            use_reranking=False,
+            document_ids=[42],
+            return_trace=True,
+        )
+        assert hits and hits[0][2] == 42
+        # При найденном профиле dim остаётся vector на alt-таблице.
+        assert trace.resolved_strategy == "vector"
+
+    async def test_dim_mismatch_without_profile_still_uses_alt_repo_lexical(self, kb, monkeypatch):
+        alt = FakeVectorRepo(embedding_dim=2048, doc_repo=kb.doc_repo)
+        alt.rows[7] = [
+            DocumentVector(
+                document_id=7,
+                chunk_index=0,
+                embedding=None,
+                content="налог на прибыль уплачивается ежеквартально",
+                metadata={},
+            )
+        ]
+        kb.vector_repo.extra_dims = [(2048, 1)]
+
+        async def no_profile(*_a, **_kw):
+            return None
+
+        real_vector_repo_for = embed_routing.vector_repo_for
+
+        async def fake_vector_repo_for(base, dim):
+            if int(dim or 0) == 2048:
+                return alt
+            return await real_vector_repo_for(base, dim)
+
+        monkeypatch.setattr(embed_routing, "profile_for_dim", no_profile)
+        monkeypatch.setattr(embed_routing, "vector_repo_for", fake_vector_repo_for)
+
+        hits = await kb.search(
+            "какой налог",
+            k=3,
+            strategy="hybrid",
+            use_reranking=False,
+            document_ids=[7],
+        )
+        assert hits and hits[0][2] == 7
 
     async def test_bm25_index_is_cached_per_scope(self, kb):
         ids = await self._fill(kb)

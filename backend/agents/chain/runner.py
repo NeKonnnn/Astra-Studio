@@ -53,6 +53,24 @@ def _collect_profile_kb_ids(profile: Optional[dict]) -> list:
     return out
 
 
+def _profile_direct_doc_ids(profile: Optional[dict]) -> list:
+    """document_ids из профиля (kb_document_ids), если включён file_search_enabled."""
+    if not isinstance(profile, dict) or not profile.get("file_search_enabled"):
+        return []
+    raw_ids = profile.get("kb_document_ids")
+    if not isinstance(raw_ids, list):
+        return []
+    out: list = []
+    for raw in raw_ids:
+        try:
+            did = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if did not in out:
+            out.append(did)
+    return out
+
+
 async def run_direct_or_chain(
     sio,
     sid,
@@ -280,35 +298,33 @@ async def run_direct_or_chain(
                 len(chain),
                 profile.get("agent_id"),
             )
-        # Scope шага: floor (Tools/project/head из handlers) + своя entity/legacy БЗ
-        # шага; при shared — ещё и общая база головного.
+        # Scope шага: floor (Tools/project/head) + entity БЗ шага; при shared —
+        # общая база головного (document_ids уже развёрнуты).
         step_own_ids: list = []
         try:
             from backend.app_state import rag_client as _rag_step
             from backend.realtime.helpers import resolve_agent_kb_document_ids
 
-            if _rag_step is not None:
-                step_own_ids = await resolve_agent_kb_document_ids(
-                    _rag_step, step_profile
-                )
+            step_own_ids = list(
+                await resolve_agent_kb_document_ids(_rag_step, step_profile)
+            )
+            if not step_own_ids:
+                # Если БЗ не развернулись в document_ids (нет rag_client или БЗ не
+                # заданы) - берём document_ids из профиля (file_search_enabled).
+                step_own_ids = _profile_direct_doc_ids(step_profile)
         except Exception:
             log.exception(
                 "[agent-chain] шаг %s: resolve_agent_kb_document_ids failed",
                 i + 1,
             )
-            raw_legacy = step_profile.get("kb_document_ids") or []
-            if (
-                bool(step_profile.get("file_search_enabled"))
-                and isinstance(raw_legacy, list)
-            ):
-                for _v in raw_legacy:
-                    try:
-                        step_own_ids.append(int(_v))
-                    except (TypeError, ValueError):
-                        continue
-        merged = set(chat_floor_ids) | set(step_own_ids)
         if step_takes_shared:
-            merged |= set(int(x) for x in shared_kb_ids if str(x).strip().lstrip("-").isdigit())
+            merged = set(chat_floor_ids) | set(
+                int(x)
+                for x in shared_kb_ids
+                if str(x).strip().lstrip("-").isdigit()
+            )
+        else:
+            merged = set(chat_floor_ids) | set(step_own_ids)
         step_kb_ids = sorted(merged)
         step_use_kb = bool(step_kb_ids)
         step_entity_kb_ids = list(floor_kb_ids)

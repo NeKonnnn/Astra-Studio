@@ -36,11 +36,7 @@ import {
   getProjectIconColorOptions,
   resolveProjectIconColor,
 } from '../constants/projectIcons';
-import ProjectRagLibraryInline from './ProjectRagLibraryInline';
 import ProjectKnowledgeBasesField from './ProjectKnowledgeBasesField';
-import RAGSettings from './settings/RAGSettings';
-import { saveEntityRagSettings, type EntityRagDraft } from '../utils/entityRagSettings';
-import { useRagReindexStatus } from '../contexts/RagReindexStatusContext';
 
 const emojiOptions = [
   '📁', '💰', '📝', '❤️', '✈️', '🎯', '🚀', '💡', '📊', '🎨', '🏠', '🎓', '💼', '🏥', '🍕', '☕',
@@ -58,7 +54,6 @@ export default function EditProjectModal({ open, onClose, project, onSave }: Edi
   const theme = useTheme();
   const isDarkMode = theme.palette.mode === 'dark';
   const colorOptions = getProjectIconColorOptions(isDarkMode);
-  const { notifyReindexStarted } = useRagReindexStatus();
   const [projectName, setProjectName] = useState('');
   const [selectedIcon, setSelectedIcon] = useState<string | null>(null);
   const [selectedEmoji, setSelectedEmoji] = useState<string | null>(null);
@@ -66,12 +61,9 @@ export default function EditProjectModal({ open, onClose, project, onSave }: Edi
   const [selectedColor, setSelectedColor] = useState(() => getDefaultProjectIconColor(false));
   const [memory, setMemory] = useState<'default' | 'project-only'>('default');
   const [instructions, setInstructions] = useState('');
-  /** Черновик настроек РАГ: записывается по «Сохранить» проекта, не раньше. */
-  const [ragDraft, setRagDraft] = useState<EntityRagDraft | null>(null);
   const [knowledgeBasesEnabled, setKnowledgeBasesEnabled] = useState(false);
   const [knowledgeBaseIds, setKnowledgeBaseIds] = useState<number[]>([]);
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [showRagSettingsPanel, setShowRagSettingsPanel] = useState(false);
   const [showIconPicker, setShowIconPicker] = useState(false);
   const [iconTab, setIconTab] = useState(0);
   const iconPickerRef = useRef<HTMLDivElement>(null);
@@ -94,10 +86,6 @@ export default function EditProjectModal({ open, onClose, project, onSave }: Edi
           : [],
       );
       setShowAdvanced(false);
-      setShowRagSettingsPanel(false);
-      // Черновик принадлежит тому проекту, у которого его набрали: открыли
-      // другой — сбрасываем, иначе его настройки уехали бы не туда.
-      setRagDraft(null);
     }
   }, [open, project, theme.palette.mode]);
 
@@ -120,43 +108,21 @@ export default function EditProjectModal({ open, onClose, project, onSave }: Edi
   const handleClose = () => {
     setShowIconPicker(false);
     setShowAdvanced(false);
-    setShowRagSettingsPanel(false);
     onClose();
   };
 
-  const handleSave = async () => {
+  const handleSave = () => {
     if (!project || !projectName.trim()) return;
-    const trimmedName = projectName.trim();
-    const trimmedInstructions = instructions.trim();
     onSave(project.id, {
-      name: trimmedName,
+      name: projectName.trim(),
       icon: iconType === 'icon' ? (selectedIcon || undefined) : (selectedEmoji || undefined),
       iconType,
       iconColor: selectedColor,
       memory,
-      instructions: trimmedInstructions,
+      instructions: instructions.trim(),
       knowledgeBasesEnabled,
       knowledgeBaseIds: knowledgeBasesEnabled ? knowledgeBaseIds : [],
     });
-
-    // Настройки РАГ пишутся здесь, по «Сохранить» проекта: панель их только
-    // накапливает. Нужна ли перечанковка, решает backend.
-    const ragApplied = await saveEntityRagSettings({
-      scope: 'project',
-      entityId: project.id,
-      entityName: trimmedName,
-      instructions: trimmedInstructions,
-      draft: ragDraft,
-    });
-    if (ragApplied.ok) {
-      setRagDraft(null);
-      if (ragApplied.reindexed) {
-        notifyReindexStarted();
-      }
-    } else {
-      console.warn(`[RAG] Проект сохранён; настройки РАГ не применены: ${ragApplied.message}`);
-    }
-
     handleClose();
   };
 
@@ -216,30 +182,9 @@ export default function EditProjectModal({ open, onClose, project, onSave }: Edi
         sx: {
           backgroundColor: theme.palette.mode === 'dark' ? '#1e1e1e' : '#ffffff',
           borderRadius: 2,
-          ...(showRagSettingsPanel
-            ? { height: 'min(90vh, 820px)', display: 'flex', flexDirection: 'column' }
-            : {}),
         },
       }}
     >
-      {showRagSettingsPanel ? (
-        <Box sx={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          <RAGSettings
-            variant="panel"
-            lockedScope="project"
-            entityId={project.id}
-            entityName={project.name}
-            entityInstructionsPrompt={instructions}
-            draft
-            draftValue={ragDraft}
-            onDraftChange={setRagDraft}
-            isDarkMode={theme.palette.mode === 'dark'}
-            panelTitle={`Настройки РАГ: ${project.name}`}
-            onClose={() => setShowRagSettingsPanel(false)}
-          />
-        </Box>
-      ) : (
-        <>
       <DialogTitle
         sx={{
           display: 'flex',
@@ -389,34 +334,13 @@ export default function EditProjectModal({ open, onClose, project, onSave }: Edi
           />
         </Box>
 
-        {/* Файлы RAG — сразу видны, как в настройках «База данных» памяти */}
-        {project && (
-          <Box sx={{ mb: 2, mt: 1 }}>
-            <ProjectRagLibraryInline projectId={project.id} dense />
-          </Box>
-        )}
-
-        <ProjectKnowledgeBasesField
-          enabled={knowledgeBasesEnabled}
-          selectedIds={knowledgeBaseIds}
-          onEnabledChange={setKnowledgeBasesEnabled}
-          onSelectedIdsChange={setKnowledgeBaseIds}
-        />
-
-        {/* RAG-настройки проекта (scope=project) */}
-        <Box sx={{ mb: 2 }}>
-          <Button
-            fullWidth
-            onClick={() => setShowRagSettingsPanel(true)}
-            endIcon={<ExpandMoreIcon />}
-            sx={{
-              justifyContent: 'space-between',
-              textTransform: 'none',
-              color: 'text.primary',
-            }}
-          >
-            Настройки РАГ для этого проекта
-          </Button>
+        <Box sx={{ mb: 2, mt: 1 }}>
+          <ProjectKnowledgeBasesField
+            enabled={knowledgeBasesEnabled}
+            selectedIds={knowledgeBaseIds}
+            onEnabledChange={setKnowledgeBasesEnabled}
+            onSelectedIdsChange={setKnowledgeBaseIds}
+          />
         </Box>
 
         {/* Память / инструкции */}
@@ -551,8 +475,6 @@ export default function EditProjectModal({ open, onClose, project, onSave }: Edi
           Сохранить
         </Button>
       </DialogActions>
-        </>
-      )}
     </Dialog>
   );
 }

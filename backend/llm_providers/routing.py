@@ -17,10 +17,10 @@ def should_use_llm_svc_direct(
     *, model_path: Optional[str] = None, images: Optional[List[Any]] = None
 ) -> bool:
     """
-    True → ``ask_agent_llm_svc`` / ``generate_response`` (legacy llm-svc HTTP, vision).
+    True → ```ask_agent_llm_svc``` / ```generate_response``` (legacy llm-svc HTTP, vision).
 
     - Изображения: только llm-svc path (vision в generate_response).
-    - ``llm-svc://…``: legacy URI — полная логика host/swap в llm_client.
+    - ```llm-svc://…```: legacy URI — полная логика host/swap в llm_client.
     """
     if images:
         return True
@@ -36,6 +36,14 @@ def registry_response_usable(response: Optional[str]) -> bool:
     return bool(str(response).strip())
 
 
+# Текст в чат при обрыве/HTTP-сбое связи с моделью (404/500/stream и т.п.).
+# Технические детали httpx остаются только в логах сервера.
+LLM_USER_FACING_OUTAGE_TEXT = (
+    "Упс! Кажется, связь с моделью упала в результате технических работ! "
+    "Попробуйте сменить выбранную модель, а после поменять обратно. "
+    "Если ВДРУГ не сработало - пишите в техподдержку!"
+)
+
 # Тексты, которые ask_agent и format_llm_http_error возвращают ВМЕСТО ответа
 # модели — с точки зрения вызывающего кода это обычная строка, исключения нет.
 # Для чата так и надо: пользователю показывают понятную причину. Но для служебных
@@ -44,12 +52,26 @@ def registry_response_usable(response: Optional[str]) -> bool:
 # содержимое чанков («Ошибка LLM (HTTP 422)» вместо summary документа).
 _LLM_ERROR_MARKERS = (
     "ошибка llm (http",
+    "ошибка потока",
     "не удалось получить ответ от модели",
     "ошибка при обращении к модели",
     "сервис llm недоступен",
     "модель не загружена на стороне провайдера",
     "запрос не помещается в контекстное окно модели",
+    "связь с моделью упала",
+    "упс! кажется, связь с моделью",
 )
+
+
+def is_llm_outage_text(text: Optional[str]) -> bool:
+    """Сообщение об обрыве/HTTP-сбое LLM (новый текст или legacy «Ошибка потока»)."""
+    s = str(text or "").strip()
+    if not s:
+        return False
+    if s == LLM_USER_FACING_OUTAGE_TEXT or s.startswith(LLM_USER_FACING_OUTAGE_TEXT):
+        return True
+    low = s.lower()
+    return low.startswith("ошибка потока") or "связь с моделью упала" in low[:160]
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -95,7 +117,7 @@ _EXTRA_PARAM_KEYS = ("chat_template_kwargs", "top_k", "min_p", "repetition_penal
 def passthrough_extra_params_enabled() -> bool:
     """Слать ли заголовок проброса нестандартных полей.
 
-    ``LLM_PASSTHROUGH_EXTRA_PARAMS=0`` — не слать (если шлюз отвечает на
+    ```LLM_PASSTHROUGH_EXTRA_PARAMS=0``` — не слать (если шлюз отвечает на
     заголовок 4xx; тогда остаются /no_think и страховка по max_tokens).
     """
     return _env_flag("LLM_PASSTHROUGH_EXTRA_PARAMS", True)
@@ -127,7 +149,7 @@ _SAMPLING_FIELDS: Dict[str, str] = {
 
 
 def sampling_enabled() -> bool:
-    """Слать ли поля выборки вообще. ``LLM_SAMPLING_ENABLED=0`` — не слать.
+    """Слать ли поля выборки вообще. ```LLM_SAMPLING_ENABLED=0``` — не слать.
 
     Аварийный рубильник: пер-агентные настройки и доставка полей до модели едут
     одним коммитом, и если шлюз или модель поведут себя неожиданно, выключать
@@ -142,11 +164,11 @@ def sampling_send_all() -> bool:
 
     По умолчанию НЕТ. До сих пор эти значения не доезжали до модели вообще, и
     отправка их всех разом поменяла бы ответы у всех сразу: у vLLM свои дефолты
-    (``top_k`` отключён, ``min_p`` 0, ``repetition_penalty`` 1), а в
-    ``llm_settings.json`` лежат 40 / 0.05 / 1.05. Поэтому шлём только то, что
+    (```top_k``` отключён, ```min_p``` 0, ```repetition_penalty``` 1), а в
+    ```llm_settings.json``` лежат 40 / 0.05 / 1.05. Поэтому шлём только то, что
     человек осознанно изменил относительно дефолтов кластера.
 
-    ``LLM_SAMPLING_SEND_ALL=1`` — слать всё, что показано в интерфейсе.
+    ```LLM_SAMPLING_SEND_ALL=1``` — слать всё, что показано в интерфейсе.
     """
     return _env_flag("LLM_SAMPLING_SEND_ALL", False)
 
@@ -164,7 +186,7 @@ def sampling_request_extra() -> Dict[str, Any]:
     """Поля выборки из АКТИВНЫХ настроек генерации — итога «кластер → пользователь → агент».
 
     Активные настройки биндит обработчик чата (см.
-    ``user_llm_settings.bind_user_model_runtime``), поэтому здесь достаточно их
+    ```user_llm_settings.bind_user_model_runtime```), поэтому здесь достаточно их
     прочитать. Пустой словарь — значит слать нечего и заголовок проброса не
     понадобится.
     """
@@ -209,9 +231,9 @@ _NO_THINK_TAG = "/no_think"
 
 
 def service_no_think_tag_enabled() -> bool:
-    """Дописывать ли ``/no_think`` в промпт служебных вызовов.
+    """Дописывать ли ```/no_think``` в промпт служебных вызовов.
 
-    ``LLM_SERVICE_NO_THINK_TAG=0`` — не дописывать (если модель не Qwen3 и тег
+    ```LLM_SERVICE_NO_THINK_TAG=0``` — не дописывать (если модель не Qwen3 и тег
     попадает в ответ как обычный текст).
     """
     return _env_flag("LLM_SERVICE_NO_THINK_TAG", True)
@@ -222,7 +244,7 @@ def apply_no_think_tag(
 ) -> List[Dict[str, Any]]:
     """Мягкий выключатель мышления Qwen3: тег в тексте последнего user-сообщения.
 
-    В отличие от ``chat_template_kwargs`` тег едет в ``messages`` — поле, которое
+    В отличие от ```chat_template_kwargs``` тег едет в ```messages``` — поле, которое
     шлюз обязан передать дословно. Это единственный способ, не зависящий от
     того, пробрасывает ли шлюз нестандартные параметры.
 
@@ -251,8 +273,8 @@ def thinking_request_extra(enable_thinking: bool) -> Dict[str, Any]:
     """Поля запроса для включения/выключения мышления у reasoning-моделей.
 
     UI «Быстрый» → False, «Мышление» → True. Способ через
-    ``chat_template_kwargs`` документирован vLLM для Qwen3.
-    Верхнеуровневый ``enable_thinking`` НЕ шлём: нестандартное поле некоторые
+    ```chat_template_kwargs``` документирован vLLM для Qwen3.
+    Верхнеуровневый ```enable_thinking``` НЕ шлём: нестандартное поле некоторые
     шлюзы отвергают с 422.
     """
     return {"chat_template_kwargs": {"enable_thinking": bool(enable_thinking)}}
@@ -279,8 +301,8 @@ def service_call_request_extra() -> Dict[str, Any]:
     рассуждение, до ответа не доходит, и вызывающий получает пустую строку
     (01.08: так подменился поисковый запрос).
 
-    Если шлюз не понимает и это — ``LLM_SERVICE_DISABLE_THINKING=0``,
-    и останется только страховка по ``max_tokens``.
+    Если шлюз не понимает и это — ```LLM_SERVICE_DISABLE_THINKING=0```,
+    и останется только страховка по ```max_tokens```.
     """
     if not service_thinking_disabled():
         return {}
@@ -300,7 +322,12 @@ def is_llm_error_text(text: Optional[str]) -> bool:
 
 
 def format_llm_http_error(exc: httpx.HTTPStatusError) -> str:
-    """Человекочитаемая ошибка LLM API (контекст, 503, пр.)."""
+    """Текст для чата при HTTP-ошибке LLM API.
+
+    Детали статуса/URL — только в лог вызывающего кода. В UI не светим httpx
+    (404/500 «Client error… for url …»). Исключение: переполнение контекста —
+    там нужна конкретная подсказка, а не «смените модель».
+    """
     status = exc.response.status_code
     body = ""
     detail = ""
@@ -335,16 +362,7 @@ def format_llm_http_error(exc: httpx.HTTPStatusError) -> str:
             "(output_tokens) превышает лимит. Уменьшите файл, сократите max_tokens или историю чата."
             + (f" ({detail[:240]})" if detail else "")
         )
-    if status == 503:
-        if "not loaded" in haystack or "не загруж" in haystack:
-            return "Модель не загружена на стороне провайдера (503). Проверьте доступность модели."
-        return "Сервис LLM недоступен (503). Повторите запрос через несколько секунд."
-    if detail:
-        return f"Ошибка LLM (HTTP {status}): {detail[:400]}"
-    try:
-        return f"Ошибка LLM (HTTP {status}): {json.dumps(exc.response.json(), ensure_ascii=False)[:400]}"
-    except Exception:
-        return f"Ошибка LLM (HTTP {status}): {body[:400] or exc}"
+    return LLM_USER_FACING_OUTAGE_TEXT
 
 
 def build_chat_messages(

@@ -25,6 +25,7 @@ import {
   type GalleryCardItem,
 } from '../components/galleryCards';
 import { formatAuthorLabel } from '../utils/formatAuthorLabel';
+import { useFeatureAccess } from '../hooks/useFeatureAccess';
 
 interface GalleryAgent {
   id: number;
@@ -75,6 +76,7 @@ export default function AgentGalleryPage() {
 
 export function AgentGalleryContent({ embedded = false }: { embedded?: boolean }) {
   const { token } = useAuth();
+  const { canUseAgents } = useFeatureAccess();
   const { showNotification } = useAppActions();
   const theme = useTheme();
   const isDarkMode = theme.palette.mode === 'dark';
@@ -82,29 +84,54 @@ export function AgentGalleryContent({ embedded = false }: { embedded?: boolean }
 
   const [agents, setAgents] = useState<GalleryAgent[]>([]);
   const [loading, setLoading] = useState(false);
-  const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [showBookmarks, setShowBookmarks] = useState(false);
+  // BUG-FE-66: номер страницы привязан к текущим фильтрам; при смене поиска/закладок страница
+  // становится 1 сразу в том же рендере, и запрос не уходит со старым page.
+  const filtersKey = `${debouncedSearch}\u0000${showBookmarks ? 1 : 0}`;
+  const [pageState, setPageState] = useState({ key: filtersKey, page: 1 });
+  const page = pageState.key === filtersKey ? pageState.page : 1;
+  const setPage = (next: number) => setPageState({ key: filtersKey, page: next });
   const [usingId, setUsingId] = useState<number | null>(null);
   const [cloningId, setCloningId] = useState<number | null>(null);
-  const [showBookmarks, setShowBookmarks] = useState(false);
-  const loadingRef = useRef(false);
+  // Актуальный запрос: предыдущий отменяется, а его устаревший ответ игнорируется.
+  const requestSeqRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(searchQuery.trim()), 400);
     return () => clearTimeout(t);
   }, [searchQuery]);
 
-  useEffect(() => {
-    setPage(1);
-  }, [debouncedSearch, showBookmarks]);
+  useEffect(
+    () => () => {
+      abortRef.current?.abort();
+    },
+    [],
+  );
 
   const loadAgents = useCallback(async () => {
-    if (loadingRef.current) return;
-    loadingRef.current = true;
+    if (!canUseAgents) {
+      abortRef.current?.abort();
+      requestSeqRef.current += 1;
+      setAgents([]);
+      setTotalPages(0);
+      setLoading(false);
+      return;
+    }
+    // Новый запрос отменяет предыдущий (смена поиска/страницы во время загрузки).
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const seq = ++requestSeqRef.current;
+    const isStale = () => seq !== requestSeqRef.current;
     setLoading(true);
     try {
+      const headers: HeadersInit = {};
+      if (token) headers.Authorization = `Bearer ${token}`;
+
       let url: string;
       if (showBookmarks) {
         if (!token) {
@@ -125,23 +152,25 @@ export function AgentGalleryContent({ embedded = false }: { embedded?: boolean }
         url = `${getApiUrl('/api/agents/')}?${params}`;
       }
 
-      const resp = await authFetch(url);
+      const resp = await authFetch(url, { headers, signal: controller.signal });
+      if (isStale()) return;
       if (!resp.ok) {
         setAgents([]);
         setTotalPages(0);
         return;
       }
       const data = await resp.json();
+      if (isStale()) return;
       setAgents(data.agents || []);
       setTotalPages(data.pages || 1);
     } catch {
+      if (isStale()) return;
       setAgents([]);
       setTotalPages(0);
     } finally {
-      setLoading(false);
-      loadingRef.current = false;
+      if (!isStale()) setLoading(false);
     }
-  }, [page, debouncedSearch, token, showBookmarks]);
+  }, [page, debouncedSearch, token, showBookmarks, canUseAgents]);
 
   useEffect(() => {
     void loadAgents();
@@ -156,6 +185,7 @@ export function AgentGalleryContent({ embedded = false }: { embedded?: boolean }
       const method = agent.is_bookmarked ? 'DELETE' : 'POST';
       const resp = await authFetch(getApiUrl(`/api/agents/${agent.id}/bookmark`), {
         method,
+        headers: { Authorization: `Bearer ${token}` },
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
@@ -187,7 +217,10 @@ export function AgentGalleryContent({ embedded = false }: { embedded?: boolean }
     try {
       const resp = await authFetch(getApiUrl(`/api/agents/${agentId}/rate`), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({ rating }),
       });
       if (!resp.ok) {
@@ -215,6 +248,7 @@ export function AgentGalleryContent({ embedded = false }: { embedded?: boolean }
     }
     setCloningId(agent.id);
     try {
+      // Тот же deep-clone API, что и в конструкторе: родитель + цепочка + субагенты.
       const result = await cloneAgentDeep(agent.id, token);
       showNotification(
         'success',
@@ -239,14 +273,13 @@ export function AgentGalleryContent({ embedded = false }: { embedded?: boolean }
     }
     setUsingId(agent.id);
     try {
+      const headers: HeadersInit = { Authorization: `Bearer ${token}` };
+
       if (!agent.is_bookmarked) {
-        const bookmarkResp = await authFetch(getApiUrl(`/api/agents/${agent.id}/bookmark`), {
+        await authFetch(getApiUrl(`/api/agents/${agent.id}/bookmark`), {
           method: 'POST',
+          headers,
         });
-        if (!bookmarkResp.ok) {
-          const err = await bookmarkResp.json().catch(() => ({}));
-          throw new Error(err.detail || 'Не удалось добавить агента в «Агенты из галереи»');
-        }
         setAgents((prev) =>
           prev.map((a) => (a.id === agent.id ? { ...a, is_bookmarked: true } : a)),
         );
@@ -254,11 +287,12 @@ export function AgentGalleryContent({ embedded = false }: { embedded?: boolean }
 
       await authFetch(getApiUrl(`/api/agents/${agent.id}/use`), {
         method: 'POST',
+        headers,
       });
 
       let full = agent;
       try {
-        const detailResp = await authFetch(getApiUrl(`/api/agents/${agent.id}`));
+        const detailResp = await authFetch(getApiUrl(`/api/agents/${agent.id}`), { headers });
         if (detailResp.ok) {
           full = { ...agent, ...(await detailResp.json()) };
         }
@@ -332,7 +366,7 @@ export function AgentGalleryContent({ embedded = false }: { embedded?: boolean }
                 </Button>
               </Box>
               <Typography variant="body2" color="text.secondary">
-                «Использовать» — добавить в чат · «Клонировать» — полная копия себе (с цепочкой/субагентами)
+                Нажмите на карточку, чтобы открыть в конструкторе · «Использовать» — в чат · «Клонировать» — своя копия
               </Typography>
             </Box>
           </Container>
@@ -340,7 +374,7 @@ export function AgentGalleryContent({ embedded = false }: { embedded?: boolean }
       )}
       {embedded && (
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5, textAlign: 'center' }}>
-          «Использовать» — добавить в чат · «Клонировать» — полная копия себе (с цепочкой/субагентами)
+          Нажмите на карточку, чтобы открыть в конструкторе · «Использовать» — в чат · «Клонировать» — своя копия
         </Typography>
       )}
 
@@ -366,7 +400,9 @@ export function AgentGalleryContent({ embedded = false }: { embedded?: boolean }
           </Box>
         ) : agents.length === 0 ? (
           <Alert severity="info">
-            {showBookmarks
+            {!canUseAgents
+              ? 'Агенты недоступны для вашей роли.'
+              : showBookmarks
               ? 'В закладках пока нет агентов. Добавьте агента кнопкой-закладкой на карточке.'
               : 'Публичных агентов пока нет. Опубликуйте агента из конструктора кнопкой «Опубликовать в галерее».'}
           </Alert>

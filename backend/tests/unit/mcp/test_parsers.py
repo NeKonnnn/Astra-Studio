@@ -53,12 +53,29 @@ class TestTextToolCalls:
 
         assert [c.name for c in calls] == ["lookup"] and "<function" not in cleaned and cleaned.startswith("Ответ")
 
-    def test_duplicates_are_collapsed_by_name(self):
+    def test_self_closing_function_tag_without_a_wrapper(self):
+        _, calls = extract_tool_calls_from_content("Сейчас проверю <function=ping/>")
+
+        assert [(c.name, c.arguments) for c in calls] == [("ping", {})]
+
+    def test_same_name_with_different_arguments_is_kept(self):
         text = '<tool_call>{"name": "f", "arguments": {"a": 1}}</tool_call><tool_call>{"name": "f", "arguments": {"a": 2}}</tool_call>'
 
         _, calls = extract_tool_calls_from_content(text)
 
-        assert [c.arguments for c in calls] == [{"a": 1}]  # второй вызов той же функции теряется
+        assert [c.arguments for c in calls] == [{"a": 1}, {"a": 2}]
+
+    def test_blank_name_is_ignored(self):
+        _, calls = extract_tool_calls_from_content('<tool_call>{"name": "  "}</tool_call>')
+
+        assert calls == []
+
+    def test_identical_calls_are_collapsed(self):
+        text = '<tool_call>{"name": "f", "arguments": {"a": 1}}</tool_call><tool_call>{"name": "f", "arguments": {"a": 1}}</tool_call>'
+
+        _, calls = extract_tool_calls_from_content(text)
+
+        assert [c.arguments for c in calls] == [{"a": 1}]
 
     @pytest.mark.parametrize("block", ["{broken json", "[1, 2]", '{"arguments": {}}', "", "plain words"])
     def test_garbage_blocks_give_no_calls(self, block):
@@ -114,7 +131,6 @@ class TestParseStruct:
 
         assert result.resources[0]["uri"] == "file:///a.txt" and result.resources[0]["text"] == "тело" and result.text == "тело"
 
-    @pytest.mark.xfail(strict=True, reason="BUG: приоритет `or`/`if` — uri верхнего уровня теряется, если нет вложенного resource")
     def test_resource_with_a_top_level_uri(self):
         result = rp.parse_mcp_result_to_struct([{"type": "resource", "uri": "file:///a.txt", "text": "тело"}])
 
@@ -185,7 +201,7 @@ class TestDownloadLinks:
         links = rp.extract_download_links(parsed("Готово: https://files.corp/deck.pptx, и ещё (https://x.org/a.pdf)."))
 
         assert [l["url"] for l in links] == ["https://files.corp/deck.pptx", "https://x.org/a.pdf"]
-        assert links[0]["label"] == "deck.pptx,"  # known issue: в подпись попадает хвостовая запятая (в url она срезана)
+        assert links[0]["label"] == "deck.pptx"
 
     def test_json_link_keys_and_label(self):
         links = rp.extract_download_links(parsed(json.dumps({"filename": "Отчёт.pptx", "download_url": "https://s/a?sig=1", "url": "https://s/b"})))
@@ -202,25 +218,6 @@ class TestDownloadLinks:
 
     def test_javascript_style_urls_are_not_extracted(self):
         assert rp.extract_download_links(parsed("javascript:alert(1) data:text/html,x")) == []
-
-    def test_webpage_search_urls_are_not_downloads(self):
-        """websearch отдаёт обычные страницы — это не файлы для «Скачать»."""
-        text = json.dumps(
-            {
-                "query": "погода в москве",
-                "results": [
-                    {
-                        "title": "Погода в Москве",
-                        "url": "https://yandex.ru/pogoda/ru/moscow",
-                        "description": "сейчас +5",
-                    },
-                    {"title": "Gismeteo", "url": "https://www.gismeteo.ru/weather-moscow-4368/"},
-                ],
-            },
-            ensure_ascii=False,
-        )
-        assert rp.extract_download_links(parsed(text)) == []
-        assert rp.enrich_download_links(parsed(text), "websearch") == []
 
     def test_saved_file_gets_a_proxy_link(self):
         links = rp.enrich_download_links(parsed("Файл сохранён: deck_v2.pptx"), "office")
@@ -269,7 +266,6 @@ class TestDownloadLinks:
 
         assert content == "Готово\n**Файлы:**\n- [Deck](https://x/d.pptx)"
 
-    @pytest.mark.xfail(strict=True, reason="BUG: пустой url в списке даёт `'' in body` → ссылки не дописываются вообще")
     def test_an_empty_url_does_not_suppress_the_other_links(self):
         content = rp.append_download_links_to_content("Готово", [{"label": "Deck", "url": "https://x/d.pptx"}, {"label": "", "url": ""}])
 

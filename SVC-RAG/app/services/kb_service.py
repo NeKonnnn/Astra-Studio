@@ -731,9 +731,102 @@ class KbService:
         # Запрос считаем моделью пользователя и ищем в таблице ЕЁ размерности.
         prof, repo = await self._route(model, provider)
         # Реранкер выбирается независимо от эмбеддера: хранилища у него нет.
-        from app.services.embed_routing import rerank_client_for
+        from app.services.embed_routing import (
+            profile_for_dim,
+            rerank_client_for,
+            vector_repo_for,
+        )
 
         rr_client = rerank_client_for(self.rag_client, rerank_provider, rerank_model)
+
+        # Если в активной dim 0 чанков, а в другой они есть (настройки БЗ
+        # сменили FRIDA, индекс остался Giga/2048) — переключаем профиль/таблицу.
+        # Работает и со scope document_ids, и по всей БЗ — без имени файла.
+        eff_strategy = strategy
+        scope_ids: List[int] = []
+        if document_id is not None:
+            try:
+                scope_ids.append(int(document_id))
+            except (TypeError, ValueError):
+                pass
+        for raw in document_ids or []:
+            try:
+                scope_ids.append(int(raw))
+            except (TypeError, ValueError):
+                continue
+        scope_ids = list(dict.fromkeys(scope_ids))
+        active_dim = int(getattr(prof, "dim", 0) or 0)
+        try:
+            if scope_ids:
+                n_active = await repo.count_chunks_for_documents(scope_ids)
+            else:
+                n_active = await repo.count_active_chunks()
+        except Exception:
+            logger.exception("KB search: count active chunks failed")
+            n_active = -1
+        try:
+            dims_all = await self.vector_repo.dims_with_documents(
+                scope_ids if scope_ids else None
+            )
+        except Exception:
+            logger.exception("KB search: dims_with_documents failed")
+            dims_all = []
+        # Чанки scope лежат в другой dim (настройки FRIDA/1536, индекс Giga/2048).
+        # Переключаемся, если в активной пусто ИЛИ доминирующая dim другая и там
+        # больше чанков по этому scope — иначе ответы без имени файла будут пустые.
+        other_dims = [(d, c) for d, c in dims_all if int(d) != active_dim]
+        need_rematch = False
+        dominant_dim = 0
+        dominant_cnt = 0
+        if other_dims:
+            dominant_dim = int(other_dims[0][0])
+            dominant_cnt = int(other_dims[0][1])
+            if n_active == 0:
+                need_rematch = True
+            elif scope_ids and dominant_cnt > int(n_active or 0):
+                need_rematch = True
+        if need_rematch and dominant_dim:
+            alt_prof = await profile_for_dim(
+                self.rag_client,
+                dominant_dim,
+                prefer_provider=provider or getattr(prof, "provider", None),
+            )
+            alt_repo = await vector_repo_for(self.vector_repo, dominant_dim)
+            if alt_prof is not None:
+                logger.warning(
+                    "[KB] dim mismatch: settings→%s/%s dim=%s, чанки в dim=%s "
+                    "(%s шт, active=%s) → переключаем поиск на %s/%s",
+                    getattr(prof, "provider", None) or "cluster",
+                    getattr(prof, "model", None) or "-",
+                    getattr(prof, "dim", None),
+                    dominant_dim,
+                    dominant_cnt,
+                    n_active,
+                    alt_prof.provider or "cluster",
+                    alt_prof.model or "-",
+                )
+                prof, repo = alt_prof, alt_repo
+            else:
+                logger.warning(
+                    "[KB] dim mismatch: чанки в dim=%s (active dim=%s count=%s), "
+                    "профиля эмбеддера нет → lexical/BM25 по dim=%s "
+                    "(переиндексируйте БЗ моделью из настроек для vector-поиска)",
+                    dominant_dim,
+                    active_dim,
+                    n_active,
+                    dominant_dim,
+                )
+                repo = alt_repo
+                # Без matching embed cosine в чужой таблице нельзя.
+                if (eff_strategy or "auto").lower() in {
+                    "auto",
+                    "hybrid",
+                    "vector",
+                    "flat",
+                    "standard",
+                    "",
+                }:
+                    eff_strategy = "lexical"
 
         async def _vectors(emb, lim):
             return await repo.similarity_search(
@@ -762,7 +855,8 @@ class KbService:
             )
 
         async def _fetch_doc(doc_id: int):
-            return await repo.get_vectors_by_document(doc_id)
+            # Cross-dim: get_vectors_by_document обходит все таблицы.
+            return await self.vector_repo.get_vectors_by_document(doc_id)
 
         async def _find_docs_by_filename(name: str):
             return await self.doc_repo.find_document_ids_by_filename(name)
@@ -775,7 +869,7 @@ class KbService:
             document_id=document_id,
             document_ids=document_ids,
             use_reranking=use_reranking,
-            strategy=strategy,
+            strategy=eff_strategy,
             filters=filters,
             rag_client=prof.client,
             embed_model=prof.model,
@@ -868,6 +962,64 @@ class KbService:
             "filename": doc.filename,
             "metadata": doc.metadata,
             "created_at": doc.created_at.isoformat() if doc.created_at else None,
+        }
+
+    async def get_document_chunks(
+        self,
+        document_id: int,
+        *,
+        start: int = 0,
+        limit: int = 20,
+    ) -> Optional[Dict[str, Any]]:
+        """Чанки документа из любой dim-таблицы; иначе сырой content.
+
+        Нужен для «что в файле X?», когда семантический поиск пустой из‑за
+        mismatch размерности (индекс 2048, query FRIDA/1536).
+        """
+        doc = await self.doc_repo.get_document(document_id)
+        if not doc:
+            return None
+        start = max(0, int(start or 0))
+        limit = max(1, min(int(limit or 20), 64))
+        vectors = await self.vector_repo.get_vectors_by_document(document_id)
+        if vectors:
+            sliced = vectors[start : start + limit]
+            return {
+                "document_id": document_id,
+                "filename": doc.filename,
+                "total": len(vectors),
+                "chunks": [
+                    {
+                        "content": v.content or "",
+                        "document_id": document_id,
+                        "chunk_index": int(v.chunk_index or 0),
+                    }
+                    for v in sliced
+                ],
+            }
+        body = (doc.content or "").strip()
+        if not body:
+            return {
+                "document_id": document_id,
+                "filename": doc.filename,
+                "total": 0,
+                "chunks": [],
+            }
+        piece = 3500
+        parts = [body[i : i + piece] for i in range(0, len(body), piece)]
+        sliced = parts[start : start + limit]
+        return {
+            "document_id": document_id,
+            "filename": doc.filename,
+            "total": len(parts),
+            "chunks": [
+                {
+                    "content": p,
+                    "document_id": document_id,
+                    "chunk_index": start + i,
+                }
+                for i, p in enumerate(sliced)
+            ],
         }
 
     async def clone_document(

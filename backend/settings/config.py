@@ -2,86 +2,110 @@
 Основной модуль конфигурации для astrachat Backend
 Загружает настройки из YAML и переменных окружения
 """
-import yaml
+
 import os
 import re
+import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional
+
+import yaml
 from pydantic import BaseModel, Field, model_validator
-# Попытка загрузить переменные окружения из .env файла
+
+from backend.settings.connections import (
+    LLMHostEntry,
+    LLMServiceConnectionConfig,
+    MinIOConnectionConfig,
+    MongoDBConnectionConfig,
+    PostgreSQLConnectionConfig,
+    _get_env_value,
+    _get_env_value_int,
+)
+from backend.settings.logging import get_logger
+from backend.utils.safe_paths import resolve_config_file_path, sanitize_log_value
+
+logger = get_logger(__name__)
+
 try:
     from dotenv import load_dotenv
-    # Ищем .env в разных местах
-    # Ищем .env файл в корне проекта
+
     root_dir = Path(__file__).parent.parent.parent
     current_workdir = Path.cwd()
     env_paths = [
         current_workdir / ".env",
-        root_dir / ".env",        
+        root_dir / ".env",
         Path(__file__).parent.parent / ".env",
-        Path("/app") / ".env", # в docer у меня путь прописан как app/.env
+        Path("/app") / ".env",
     ]
-    # Пробуем загрузить из стандартных путей
     loaded = False
     for env_path in env_paths:
         if env_path.exists():
-            load_dotenv(env_path, override=False)  # override=False - env переменные имеют приоритет
+            load_dotenv(env_path, override=False)
             loaded = True
             break
-    # Если .env не найден, пробуем найти любой файл, начинающийся с .env в корне
     if not loaded:
         for search_dir in [current_workdir, root_dir, Path("/app")]:
             if search_dir.exists():
                 for env_file in search_dir.glob(".env*"):
-                    if env_file.is_file() and not env_file.name.endswith('.example'):
+                    if env_file.is_file() and (not env_file.name.endswith(".example")):
                         load_dotenv(env_file, override=False)
-                        print(f"[config] Загружен .env файл: {env_file}")
+                        logger.info("Загружен .env файл: %s", env_file)
                         loaded = True
                         break
                 if loaded:
                     break
     if not loaded:
-        print(f"[config] .env файл не найден, используются только системные переменные окружения")
+        logger.debug(
+            ".env файл не найден, используются только системные переменные окружения"
+        )
 except ImportError:
-    print(f"[config] python-dotenv не установлен, используются только системные переменные окружения")
-    pass
-from .connections import (
-    MongoDBConnectionConfig,
-    PostgreSQLConnectionConfig,
-    MinIOConnectionConfig,
-    LLMServiceConnectionConfig,
-    LLMHostEntry,
-    _get_env_value,
-    _get_env_value_int,
-)
-# Глобальный экземпляр настроек
-_settings: Optional['Settings'] = None
+    logger.debug(
+        "python-dotenv не установлен, используются только системные переменные окружения"
+    )
+
+_settings: Optional["Settings"] = None
+
+
+def _default_server_host() -> str:
+    return os.getenv("SERVER_HOST", "127.0.0.1")
+
+
 class ServerConfig(BaseModel):
     """Конфигурация сервера"""
-    host: str = "0.0.0.0"
+
+    host: str = Field(default_factory=_default_server_host)
     port: int = 8000
     log_level: str = "INFO"
     workers: int = 1
+
+
 class CorsConfig(BaseModel):
     """Конфигурация CORS"""
+
     allowed_origins: List[str] = []
     allow_credentials: bool = True
     allow_methods: List[str] = ["*"]
     allow_headers: List[str] = ["*"]
+
+
 class AppConfig(BaseModel):
     """Конфигурация приложения"""
+
     name: str = "astrachat Backend"
     version: str = "1.0.0"
     description: str = "Backend service for astrachat with microservice architecture"
     debug: bool = False
+
+
 class MemoryConfig(BaseModel):
     """Конфигурация памяти"""
+
     enabled: bool = True
-    storage_type: str = "file"  # file, redis, database
+    storage_type: str = "file"
     file_path: str = "/app/memory"
     max_history_length: int = 100
     auto_save: bool = True
-    save_interval: int = 30  # секунды
+    save_interval: int = 30
 
 
 class ImageGenerationNodeMapEntry(BaseModel):
@@ -307,14 +331,38 @@ def _truthy_env_optional(name: str) -> Optional[bool]:
 
 class LoggingConfig(BaseModel):
     """Конфигурация логирования"""
+
     level: str = "INFO"
     format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     file: Optional[str] = "/app/logs/backend.log"
-    max_size: int = 10485760  # 10MB
+    max_size: int = 10485760
     backup_count: int = 5
     console: bool = True
+
+
+class AuditConfig(BaseModel):
+    """CEF-аудит. Отдельный канал (логгер cef, свой обработчик,
+    propagate=False), уровень логирования на него не влияет."""
+
+    # Аудировать ли фоновый поллинг интерфейса — исходящие GET в SVC-RAG по
+    # /reindex/status и спискам документов. Плашка переиндексации даёт четыре
+    # таких вызова на каждый тик, с каждой открытой вкладки.
+    # true (по умолчанию) — аудируем, но не чаще cef_polling_interval_seconds.
+    # false — не аудируем такие чтения вовсе.
+    # Изменения (POST/DELETE) и ошибки аудируются ВСЕГДА.
+    # ENV перекрывает: CEF_AUDIT_POLLING.
+    cef_polling: bool = True
+
+    # Окно прореживания, секунд. Одно событие на (пользователь, метод, путь) в
+    # окно; в нём cn1 = сколько обращений оно представляет.
+    # 0 — без прореживания, событие на каждый вызов (поведение до правки).
+    # ENV перекрывает: CEF_AUDIT_POLLING_INTERVAL.
+    cef_polling_interval_seconds: int = 120
+
+
 class SecurityConfig(BaseModel):
     """Конфигурация безопасности"""
+
     enabled: bool = False
     api_key: Optional[str] = None
     api_key_header: str = "X-API-Key"
@@ -329,6 +377,7 @@ class LoginLockoutConfig(BaseModel):
     ENV: AUTH_LOGIN_LOCKOUT_ENABLED, AUTH_LOGIN_LOCKOUT_MAX_FAILED_ATTEMPTS,
          AUTH_LOGIN_LOCKOUT_DURATION_SECONDS.
     """
+
     enabled: bool = True
     max_failed_attempts: int = 5
     lockout_duration_seconds: int = 900
@@ -339,27 +388,31 @@ class LoginLockoutConfig(BaseModel):
         if not isinstance(data, dict):
             data = {}
         result = dict(data)
-
-        # Легаси YAML: lockout_duration_minutes → секунды
-        if "lockout_duration_seconds" not in result and result.get("lockout_duration_minutes") is not None:
+        if (
+            "lockout_duration_seconds" not in result
+            and result.get("lockout_duration_minutes") is not None
+        ):
             try:
-                result["lockout_duration_seconds"] = int(result["lockout_duration_minutes"]) * 60
+                result["lockout_duration_seconds"] = (
+                    int(result["lockout_duration_minutes"]) * 60
+                )
             except (TypeError, ValueError):
                 pass
         result.pop("lockout_duration_minutes", None)
-
         env_enabled = _get_env_value("AUTH_LOGIN_LOCKOUT_ENABLED")
         if env_enabled is not None and str(env_enabled).strip():
-            result["enabled"] = str(env_enabled).strip().lower() in {"1", "true", "yes", "on"}
-
+            result["enabled"] = str(env_enabled).strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
         env_max = _get_env_value_int("AUTH_LOGIN_LOCKOUT_MAX_FAILED_ATTEMPTS")
         if env_max is not None:
             result["max_failed_attempts"] = env_max
-
         env_seconds = _get_env_value_int("AUTH_LOGIN_LOCKOUT_DURATION_SECONDS")
         if env_seconds is not None:
             result["lockout_duration_seconds"] = env_seconds
-
         return result
 
 
@@ -369,6 +422,7 @@ class SessionTimeoutConfig(BaseModel):
     Источник: только AUTH_SESSION_TIMEOUT_SECONDS (ConfigMap / ENV пода).
     0 = отключено. Значения из config.yml не используются.
     """
+
     timeout_seconds: int
 
     @model_validator(mode="before")
@@ -376,10 +430,11 @@ class SessionTimeoutConfig(BaseModel):
     def load_from_env_only(cls, data: dict) -> dict:
         env_seconds = _get_env_value_int("AUTH_SESSION_TIMEOUT_SECONDS")
         if env_seconds is None:
-            raise ValueError(
+            msg = (
                 "AUTH_SESSION_TIMEOUT_SECONDS не задан. "
                 "Укажите переменную в ConfigMap/Deployment контейнера astra-chat-backend."
             )
+            raise ValueError(msg)
         return {"timeout_seconds": env_seconds}
 
 
@@ -425,46 +480,58 @@ class ModelHealthConfig(BaseModel):
         return result
 
 
-class MicroservicesEnabledConfig(BaseModel):
-    """ENV перекрывает в service_toggles; без явных YAML-значений — всегда False."""
-
-    stt: bool = False
-    tts: bool = False
-    diarization: bool = False
-    rag: bool = False
-    rag_models: bool = False
-    agents: bool = False
-    minio: bool = False
-    postgresql: bool = False
-    model_config = {"extra": "allow"}
-
-
 class AuthConfig(BaseModel):
     """Настройки аутентификации"""
+
     login_lockout: LoginLockoutConfig = Field(default_factory=LoginLockoutConfig)
     session_timeout: SessionTimeoutConfig = Field(default_factory=SessionTimeoutConfig)
+
+
 class WebSocketConfig(BaseModel):
     """Конфигурация WebSocket"""
+
     enabled: bool = True
-    ping_interval: int = 30  # секунды
-    ping_timeout: int = 10  # секунды
+    ping_interval: int = 30
+    ping_timeout: int = 10
     max_connections: int = 100
+
+
 class FilesConfig(BaseModel):
     """Конфигурация файлов"""
+
     upload_dir: str = "/app/uploads"
-    max_file_size: int = 104857600  # 100MB
-    allowed_extensions: List[str] = [".txt", ".md", ".pdf", ".docx", ".wav", ".mp3", ".mp4", ".m4a", ".flac", ".ogg"]
-    temp_dir: str = "/tmp/astrachat"
+    max_file_size: int = 104857600
+    allowed_extensions: List[str] = [
+        ".txt",
+        ".md",
+        ".pdf",
+        ".docx",
+        ".wav",
+        ".mp3",
+        ".mp4",
+        ".m4a",
+        ".flac",
+        ".ogg",
+    ]
+    temp_dir: str = Field(
+        default_factory=lambda: os.path.join(tempfile.gettempdir(), "astrachat")
+    )
+
+
 def _docker_runtime() -> bool:
     de = os.getenv("DOCKER_ENV")
     if de is not None:
         return str(de).lower() == "true"
     return os.path.exists("/.dockerenv")
+
+
 def _preprocess_urls_and_microservices(config_data: Dict[str, Any]) -> None:
     """Легаси-ключ diarization_docker; base_url для llm host local из urls; убрать дублирующие microservices.url."""
     urls = config_data.get("urls")
     if isinstance(urls, dict):
-        if urls.get("diarization_docker") and not urls.get("diarization_service_docker"):
+        if urls.get("diarization_docker") and (
+            not urls.get("diarization_service_docker")
+        ):
             urls["diarization_service_docker"] = urls["diarization_docker"]
     if not isinstance(urls, dict):
         urls = {}
@@ -472,22 +539,24 @@ def _preprocess_urls_and_microservices(config_data: Dict[str, Any]) -> None:
     llm_u = (
         (urls.get("llm_service_docker") or "").strip()
         if docker
-        else (urls.get("llm_service_port") or urls.get("llm_service_docker") or "").strip()
+        else (
+            urls.get("llm_service_port") or urls.get("llm_service_docker") or ""
+        ).strip()
     ).rstrip("/")
-    # Новая схема: llm_providers[].base_url может быть пустым в YAML.
-    # Для локальных OpenAI-compat/vLLM/Ollama/LiteLLM провайдеров подставляем
-    # llm_service** из urls, как это давно делалось для legacy microservices.llm.hosts.
     providers = config_data.get("llm_providers")
     if isinstance(providers, list):
         local_kinds = {"llm-svc", "openai-compat", "vllm", "ollama", "litellm"}
         for p in providers:
             if not isinstance(p, dict):
                 continue
-            # legacy alias: llm_key -> api_key_env
-            if p.get("llm_key") and not p.get("api_key_env"):
+            if p.get("llm_key") and (not p.get("api_key_env")):
                 p["api_key_env"] = p["llm_key"]
             kind = str(p.get("kind") or "").strip().lower()
-            if kind in local_kinds and not str(p.get("base_url") or "").strip() and llm_u:
+            if (
+                kind in local_kinds
+                and (not str(p.get("base_url") or "").strip())
+                and llm_u
+            ):
                 p["base_url"] = llm_u
     ms = config_data.get("microservices")
     if not isinstance(ms, dict):
@@ -496,7 +565,11 @@ def _preprocess_urls_and_microservices(config_data: Dict[str, Any]) -> None:
     if isinstance(llm, dict):
         llm.pop("url", None)
         for h in llm.get("hosts") or []:
-            if isinstance(h, dict) and not (str(h.get("base_url") or "").strip()) and llm_u:
+            if (
+                isinstance(h, dict)
+                and (not str(h.get("base_url") or "").strip())
+                and llm_u
+            ):
                 h["base_url"] = llm_u
     for key in ("stt", "tts", "ocr", "diarization"):
         svc = ms.get(key)
@@ -506,26 +579,42 @@ def _preprocess_urls_and_microservices(config_data: Dict[str, Any]) -> None:
 
 class McpPoolConfig(BaseModel):
     """Параметры warm session pool для streamable-http MCP."""
+
     max_size: int = 4
     idle_ttl_seconds: int = 120
     acquire_timeout_seconds: float = 5.0
 
 
 class McpForwardHeadersUserMapping(BaseModel):
-    username: Optional[str] = "X-Ldap-User"
-    user_id: Optional[str] = "X-User-Id"
-    email: Optional[str] = "X-User-Email"
+    username: Optional[str] = "X-GPB-Ldap-User"
+    user_id: Optional[str] = "X-GPB-User-Id"
 
 
 class McpForwardHeadersConfig(BaseModel):
     enabled: bool = True
-    user: McpForwardHeadersUserMapping = Field(default_factory=McpForwardHeadersUserMapping)
+    user: McpForwardHeadersUserMapping = Field(
+        default_factory=McpForwardHeadersUserMapping
+    )
     chat_id_header: str = "X-OpenWebUI-Chat-Id"
     message_id_header: str = "X-OpenWebUI-Message-Id"
 
 
+class McpFilesStorageConfig(BaseModel):
+    """S3/MinIO для скачивания файлов, созданных MCP-сервером (PowerPoint и др.)."""
+
+    enabled: bool = True
+    bucket: str = ""
+    prefix: str = "presentations"
+    endpoint: str = ""
+    port: int = 443
+    use_ssl: bool = True
+    access_key: str = ""
+    secret_key: str = ""
+
+
 class McpServerConfig(BaseModel):
     """Конфигурация одного MCP-сервера."""
+
     id: str
     display_name: str = ""
     enabled: bool = True
@@ -549,8 +638,8 @@ class McpServerConfig(BaseModel):
     command: Optional[str] = None
     args: List[str] = Field(default_factory=list)
     cwd: Optional[str] = None
-    env: Dict[str, str] = Field(default_factory=dict)
     custom_headers: Dict[str, str] = Field(default_factory=dict)
+    files_storage: Optional[McpFilesStorageConfig] = None
 
 
 class WorkspacePreset(BaseModel):
@@ -607,16 +696,212 @@ class CodingAgentConfig(BaseModel):
 
 class McpPlatformConfig(BaseModel):
     """Глобальные настройки MCP-платформы."""
+
     enabled: bool = False
     servers: List[McpServerConfig] = Field(default_factory=list)
+    server_defaults: Dict[str, Any] = Field(default_factory=dict)
+    hubs: Dict[str, str] = Field(default_factory=dict)
+    allowed_transports: List[str] = Field(default_factory=lambda: ["streamable-http"])
     tools_cache_ttl_seconds: int = 60
     pool: McpPoolConfig = Field(default_factory=McpPoolConfig)
     fc_task_model: str = ""
-    forward_headers: McpForwardHeadersConfig = Field(default_factory=McpForwardHeadersConfig)
+    forward_headers: McpForwardHeadersConfig = Field(
+        default_factory=McpForwardHeadersConfig
+    )
     session_pool_enabled: bool = True
     tool_calling_mode_default: str = "auto"
     chat_default: str = "none"
     llm_provider_allowlist: Optional[List[str]] = None
+
+    _DEFAULT_SERVER_CONFIG: ClassVar[Dict[str, Any]] = {
+        "enabled": True,
+        "transport": "streamable-http",
+        "base_path": "/mcp",
+        "health_path": "/mcp",
+        "stateless": True,
+        "timeout_seconds": 60,
+        "credential_provider": None,
+        "auth_mode": "service_account",
+        "auth_type": "none",
+    }
+
+    @staticmethod
+    def _bool_env(value: str) -> bool:
+        return value.strip().lower() in ("1", "true", "yes", "on")
+
+    @staticmethod
+    def _normalize_hubs(raw: Any) -> dict[str, str]:
+        """Принимает map[name: url] или list[{id/name, base_url/url}]."""
+        if raw is None:
+            return {}
+        if isinstance(raw, dict):
+            hubs: dict[str, str] = {}
+            for name, value in raw.items():
+                hub_name = str(name).strip()
+                if isinstance(value, dict):
+                    hub_url = (
+                        str(value.get("base_url") or value.get("url") or "")
+                        .strip()
+                        .rstrip("/")
+                    )
+                else:
+                    hub_url = str(value or "").strip().rstrip("/")
+                if hub_name and hub_url:
+                    hubs[hub_name] = hub_url
+            return hubs
+        if isinstance(raw, list):
+            hubs: dict[str, str] = {}
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("id") or item.get("name") or "").strip()
+                url = (
+                    str(item.get("base_url") or item.get("url") or "")
+                    .strip()
+                    .rstrip("/")
+                )
+                if name and url:
+                    hubs[name] = url
+            return hubs
+        return {}
+
+    @staticmethod
+    def _normalize_servers(raw: Any) -> list[dict]:
+        """Принимает list[{id,...}] или map[id: {...}] и возвращает list."""
+        if raw is None:
+            return []
+        if isinstance(raw, list):
+            return [dict(item) for item in raw if isinstance(item, dict)]
+        if isinstance(raw, dict):
+            servers: list[dict] = []
+            for sid, cfg in raw.items():
+                if isinstance(cfg, dict):
+                    item = dict(cfg)
+                elif cfg is None:
+                    item = {}
+                else:
+                    item = {"base_url": str(cfg)}
+                item.setdefault("id", str(sid))
+                servers.append(item)
+            return servers
+        return []
+
+    @staticmethod
+    def _normalize_string_list(value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [
+                str(item).strip()
+                for item in value
+                if item is not None and str(item).strip()
+            ]
+        raw = str(value).strip()
+        if not raw:
+            return []
+        try:
+            parsed = yaml.safe_load(raw)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, list):
+            return [
+                str(item).strip()
+                for item in parsed
+                if item is not None and str(item).strip()
+            ]
+        return [item.strip() for item in raw.split(",") if item.strip()]
+
+    @classmethod
+    def _server_env_prefix(cls, server_id: str) -> str:
+        """MCP_SERVER_<ID>_… — id: websearch → MCP_SERVER_WEBSEARCH_."""
+        slug = re.sub(r"[^A-Za-z0-9]+", "_", str(server_id or "")).strip("_").upper()
+        return f"MCP_SERVER_{slug}_" if slug else ""
+
+    @classmethod
+    def _apply_per_server_env(cls, srv: dict) -> dict:
+        """Перекрывает поля сервера из env (docker-compose → streamable-http).
+
+        Примеры: MCP_SERVER_WEBSEARCH_TRANSPORT, MCP_SERVER_WEBSEARCH_BASE_PATH.
+        YAML остаётся дефолтом для локальной разработки (stdio/npx).
+        Любой MCP_SERVER_<ID>_<FIELD> из окружения перекрывает YAML.
+        """
+        if not isinstance(srv, dict):
+            return srv
+        prefix = cls._server_env_prefix(str(srv.get("id") or ""))
+        if not prefix:
+            return srv
+        result = dict(srv)
+        bool_fields = {"enabled", "verify_ssl", "stateless"}
+        list_fields = {"args", "enabled_tools", "function_name_filter_list", "access_grants"}
+        int_fields = {"timeout_seconds"}
+        # Сканируем все MCP_SERVER_<ID>_* — compose/K8s могут задать любое поле.
+        for env_key, raw in os.environ.items():
+            if not env_key.startswith(prefix):
+                continue
+            field = env_key[len(prefix) :].lower()
+            if not field or raw is None:
+                continue
+            if field in bool_fields:
+                result[field] = cls._bool_env(raw)
+            elif field in list_fields:
+                result[field] = cls._normalize_string_list(raw)
+            elif field in int_fields:
+                try:
+                    result[field] = int(str(raw).strip())
+                except ValueError:
+                    continue
+            else:
+                result[field] = str(raw).strip()
+        return result
+
+    @classmethod
+    def _apply_server_defaults(
+        cls,
+        srv: dict,
+        defaults: dict,
+        *,
+        hubs: dict[str, str],
+        allowed_transports: set[str],
+    ) -> dict:
+        sid = str(srv.get("id") or "").strip()
+        explicit_health_path = "health_path" in srv
+        result = {**cls._DEFAULT_SERVER_CONFIG, **defaults, **srv}
+        result["id"] = sid
+        result.setdefault(
+            "display_name", sid.replace("-", " ").replace("_", " ").title()
+        )
+        result["transport"] = str(result.get("transport") or "streamable-http").strip()
+        if not str(result.get("tool_name_prefix") or "").strip():
+            result["tool_name_prefix"] = f"mcp_{sid.replace('-', '_')}_"
+        result["args"] = cls._normalize_string_list(result.get("args"))
+        hub_path = str(result.pop("hub_path", "") or "").strip()
+        if hub_path:
+            hub_name = str(result.pop("hub", "") or "").strip()
+            hub_url = hubs.get(hub_name, "") if hub_name else ""
+            if not hub_name:
+                logger.warning("MCP server '%s' disabled: hub_path requires hub", sid)
+                result["enabled"] = False
+            elif not hub_url:
+                logger.warning(
+                    "MCP server '%s' disabled: unknown hub '%s'", sid, hub_name
+                )
+                result["enabled"] = False
+            else:
+                result["base_url"] = hub_url
+            if not hub_path.startswith("/"):
+                hub_path = f"/{hub_path}"
+            result["base_path"] = hub_path
+            if not explicit_health_path:
+                result["health_path"] = hub_path
+        if result["transport"] not in allowed_transports:
+            logger.warning(
+                "MCP server '%s' disabled: transport '%s' is not allowed (allowed=%s)",
+                sid,
+                result["transport"],
+                sorted(allowed_transports),
+            )
+            result["enabled"] = False
+        return result
 
     @model_validator(mode="before")
     @classmethod
@@ -638,15 +923,63 @@ class McpPlatformConfig(BaseModel):
         mode_default = os.getenv("MCP_TOOL_CALLING_MODE_DEFAULT")
         if mode_default is not None:
             data["tool_calling_mode_default"] = mode_default.strip()
+        hubs_raw = data.get("hubs")
+        hubs = cls._normalize_hubs(
+            hubs_raw if isinstance(hubs_raw, (dict, list)) else {}
+        )
+        data["hubs"] = hubs
+        allowed_transports = data.get("allowed_transports")
+        env_allowed_transports = os.getenv("MCP_ALLOWED_TRANSPORTS")
+        if env_allowed_transports is not None:
+            allowed_transports = env_allowed_transports
+        allowed = cls._normalize_string_list(allowed_transports) or ["streamable-http"]
+        data["allowed_transports"] = allowed
+        defaults = data.get("server_defaults")
+        if not isinstance(defaults, dict):
+            defaults = {}
+        for env_key, field in (
+            ("MCP_SERVER_DEFAULT_TRANSPORT", "transport"),
+            ("MCP_SERVER_DEFAULT_BASE_PATH", "base_path"),
+            ("MCP_SERVER_DEFAULT_HEALTH_PATH", "health_path"),
+            ("MCP_SERVER_DEFAULT_CREDENTIAL_PROVIDER", "credential_provider"),
+            ("MCP_SERVER_DEFAULT_TOOL_NAME_PREFIX", "tool_name_prefix"),
+            ("MCP_SERVER_DEFAULT_AUTH_MODE", "auth_mode"),
+            ("MCP_SERVER_DEFAULT_AUTH_TYPE", "auth_type"),
+        ):
+            val = os.getenv(env_key)
+            if val is not None:
+                defaults[field] = val.strip()
+        for env_key, field in (
+            ("MCP_SERVER_DEFAULT_ENABLED", "enabled"),
+            ("MCP_SERVER_DEFAULT_VERIFY_SSL", "verify_ssl"),
+            ("MCP_SERVER_DEFAULT_STATELESS", "stateless"),
+        ):
+            val = os.getenv(env_key)
+            if val is not None:
+                defaults[field] = cls._bool_env(val)
+        timeout_default = os.getenv("MCP_SERVER_DEFAULT_TIMEOUT_SECONDS")
+        if timeout_default is not None:
+            try:
+                defaults["timeout_seconds"] = int(timeout_default)
+            except ValueError:
+                pass
+        data["server_defaults"] = defaults
         chat_default = os.getenv("MCP_CHAT_DEFAULT")
         if chat_default is not None:
             data["chat_default"] = chat_default.strip()
         allowlist = os.getenv("MCP_LLM_PROVIDER_ALLOWLIST")
         if allowlist is not None:
-            data["llm_provider_allowlist"] = [p.strip() for p in allowlist.split(",") if p.strip()]
+            data["llm_provider_allowlist"] = [
+                p.strip() for p in allowlist.split(",") if p.strip()
+            ]
         pool_enabled = os.getenv("MCP_SESSION_POOL_ENABLED")
         if pool_enabled is not None:
-            data["session_pool_enabled"] = pool_enabled.strip().lower() in ("1", "true", "yes", "on")
+            data["session_pool_enabled"] = pool_enabled.strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
         pool = data.get("pool")
         if not isinstance(pool, dict):
             pool = {}
@@ -659,7 +992,9 @@ class McpPlatformConfig(BaseModel):
             val = os.getenv(env_key)
             if val is not None:
                 try:
-                    pool[field] = float(val) if field == "acquire_timeout_seconds" else int(val)
+                    pool[field] = (
+                        float(val) if field == "acquire_timeout_seconds" else int(val)
+                    )
                 except ValueError:
                     pass
         data["pool"] = pool
@@ -681,52 +1016,36 @@ class McpPlatformConfig(BaseModel):
             if msg_hdr:
                 fh["message_id_header"] = msg_hdr
             data["forward_headers"] = fh
-        servers = data.get("servers")
-        if isinstance(servers, list):
-            patched = []
-            for srv in servers:
-                if not isinstance(srv, dict):
-                    patched.append(srv)
-                    continue
-                sid = str(srv.get("id") or "").strip()
-                if sid:
-                    env_prefix = f"MCP_SERVER_{sid.upper().replace('-', '_')}_"
-                    for field, env_suffix in (
-                        ("transport", "TRANSPORT"),
-                        ("base_url", "BASE_URL"),
-                        ("base_path", "BASE_PATH"),
-                        ("health_path", "HEALTH_PATH"),
-                        ("credential_provider", "CREDENTIAL_PROVIDER"),
-                        ("tool_name_prefix", "TOOL_NAME_PREFIX"),
-                        ("auth_mode", "AUTH_MODE"),
-                        ("auth_type", "AUTH_TYPE"),
-                        ("auth_token", "AUTH_TOKEN"),
-                        ("auth_header_name", "AUTH_HEADER_NAME"),
-                        ("auth_header_value", "AUTH_HEADER_VALUE"),
-                        ("command", "COMMAND"),
-                        ("cwd", "CWD"),
-                    ):
-                        env_val = os.getenv(f"{env_prefix}{env_suffix}")
-                        if env_val is not None:
-                            srv[field] = env_val
-                    enabled_env = os.getenv(f"{env_prefix}ENABLED")
-                    if enabled_env is not None:
-                        srv["enabled"] = enabled_env.strip().lower() in ("1", "true", "yes", "on")
-                    timeout_env = os.getenv(f"{env_prefix}TIMEOUT_SECONDS")
-                    if timeout_env is not None:
-                        try:
-                            srv["timeout_seconds"] = int(timeout_env)
-                        except ValueError:
-                            pass
-                    # В Docker нет npx/node — websearch подключается по HTTP к контейнеру mcp-websearch
-                    if sid == "websearch" and _docker_runtime():
-                        if os.getenv(f"{env_prefix}TRANSPORT") is None:
-                            if str(srv.get("transport") or "").strip() == "stdio":
-                                srv["transport"] = "streamable-http"
-                                srv.setdefault("base_path", "/mcp")
-                                srv.setdefault("health_path", "/mcp")
-                patched.append(srv)
-            data["servers"] = patched
+        servers = cls._normalize_servers(data.get("servers"))
+        # Полный список серверов из env (JSON list/map) — поверх/вместо YAML.
+        servers_json = os.getenv("MCP_SERVERS_JSON") or os.getenv("MCP_SERVERS")
+        if servers_json is not None and str(servers_json).strip():
+            try:
+                parsed = yaml.safe_load(servers_json)
+            except Exception:
+                parsed = None
+            env_servers = cls._normalize_servers(parsed)
+            if env_servers:
+                by_id = {
+                    str(s.get("id") or "").strip(): dict(s)
+                    for s in servers
+                    if str(s.get("id") or "").strip()
+                }
+                for item in env_servers:
+                    sid = str(item.get("id") or "").strip()
+                    if not sid:
+                        continue
+                    by_id[sid] = {**by_id.get(sid, {}), **item, "id": sid}
+                servers = list(by_id.values())
+        data["servers"] = [
+            cls._apply_server_defaults(
+                cls._apply_per_server_env(srv),
+                defaults,
+                hubs=hubs,
+                allowed_transports=set(allowed),
+            )
+            for srv in servers
+        ]
         return data
 
 
@@ -803,6 +1122,7 @@ class PluginsPlatformConfig(BaseModel):
         env_enabled = os.getenv("PLUGINS_ENABLED")
         if env_enabled is not None:
             data["enabled"] = env_enabled.strip().lower() in ("1", "true", "yes", "on")
+        # catalog | plugins | items — map или list
         raw_catalog = data.get("catalog")
         if raw_catalog is None:
             raw_catalog = data.get("plugins")
@@ -830,7 +1150,7 @@ class UrlsConfig(BaseModel):
     """Конфигурация URL адресов
     Все значения должны быть заданы в YAML или ENV
     """
-    # Адреса
+
     frontend_port: str
     backend_port: str
     ingress_port: str
@@ -840,20 +1160,7 @@ class UrlsConfig(BaseModel):
     cash_flow_service_port: Optional[str] = None
     cash_flow_service_docker: Optional[str] = None
     model_config = {"extra": "allow"}
-    # =============== Когда будем подрубать остальные микросервисы, прочекать эти моменты ===============
-    # llm_service_docker: Optional[str] = None
-    # stt_service_docker: Optional[str] = None
-    # stt_service_port: Optional[str] = None
-    # tts_service_docker: Optional[str] = None
-    # tts_service_port: Optional[str] = None
-    # ocr_service_docker: Optional[str] = None
-    # ocr_service_port: Optional[str] = None
-    # diarization_service_docker: Optional[str] = None
-    # diarization_service_port: Optional[str] = None
-    # rag_service_docker: Optional[str] = None
-    # rag_service_port: Optional[str] = None
-    # rag_models_service_docker: Optional[str] = None
-    # rag_models_service_port: Optional[str] = None
+
     @model_validator(mode="before")
     @classmethod
     def load_from_yaml_or_env(cls, data: dict) -> dict:
@@ -862,37 +1169,60 @@ class UrlsConfig(BaseModel):
             data = {}
         result = dict(data)
         required_keys = [
-            "ingress_port", "frontend_port",
-            "backend_port", "llm_service_port",
+            "ingress_port",
+            "frontend_port",
+            "backend_port",
+            "llm_service_port",
         ]
         for key in required_keys:
             if key in data:
                 result[key] = data[key]
             else:
-                # Пробуем получить из ENV (например, FRONTEND_PORT, BACKEND_PORT и т.д.)
                 env_key = key.upper()
                 env_value = os.getenv(env_key)
                 if env_value is None:
-                    raise ValueError(f"{key} не задан в YAML (urls.{key}) или ENV ({env_key})")
+                    msg = f"{key} не задан в YAML (urls.{key}) или ENV ({env_key})"
+                    raise ValueError(msg)
                 result[key] = env_value
         return result
+
+
+class MicroservicesEnabledConfig(BaseModel):
+    """ENV перекрывает в service_toggles; тут только YAML-значения, дефолт False."""
+
+    stt: bool = False
+    tts: bool = False
+    diarization: bool = False
+    rag: bool = False
+    rag_models: bool = False
+    agents: bool = False
+    minio: bool = False
+    postgresql: bool = False
+    model_config = {"extra": "allow"}
+
+
 class Settings(BaseModel):
     """Основной класс настроек приложения"""
+
     app: AppConfig = Field(default_factory=AppConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     cors: CorsConfig = Field(default_factory=CorsConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    audit: AuditConfig = Field(default_factory=AuditConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     websocket: WebSocketConfig = Field(default_factory=WebSocketConfig)
     files: FilesConfig = Field(default_factory=FilesConfig)
     urls: UrlsConfig = Field(default_factory=UrlsConfig)
-    # Подключения к внешним сервисам
     mongodb: MongoDBConnectionConfig = Field(default_factory=MongoDBConnectionConfig)
-    postgresql: PostgreSQLConnectionConfig = Field(default_factory=PostgreSQLConnectionConfig)
+    postgresql: PostgreSQLConnectionConfig = Field(
+        default_factory=PostgreSQLConnectionConfig
+    )
     minio: MinIOConnectionConfig = Field(default_factory=MinIOConnectionConfig)
-    llm_service: LLMServiceConnectionConfig = Field(default_factory=LLMServiceConnectionConfig)
+    llm_service: LLMServiceConnectionConfig = Field(
+        default_factory=LLMServiceConnectionConfig
+    )
     llm_providers: List[Dict[str, Any]] = Field(default_factory=list)
     default_llm_provider: Optional[str] = None
     model_health: ModelHealthConfig = Field(default_factory=ModelHealthConfig)
@@ -900,31 +1230,39 @@ class Settings(BaseModel):
     plugins: PluginsPlatformConfig = Field(default_factory=PluginsPlatformConfig)
     microservices_enabled: MicroservicesEnabledConfig = Field(
         default_factory=MicroservicesEnabledConfig
-    )  # FEATURE-FLAG
+    )
     coding_agent: CodingAgentConfig = Field(default_factory=CodingAgentConfig)
-    image_generation: ImageGenerationConfig = Field(default_factory=ImageGenerationConfig)
-    video_generation: VideoGenerationConfig = Field(default_factory=VideoGenerationConfig)
+    image_generation: ImageGenerationConfig = Field(
+        default_factory=ImageGenerationConfig
+    )
+    video_generation: VideoGenerationConfig = Field(
+        default_factory=VideoGenerationConfig
+    )  # FEATURE-FLAG
+
     class Config:
         """Настройки Pydantic"""
-        extra = "allow"  # Разрешаем дополнительные поля из YAML
+
+        extra = "allow"
+
     def microservice_http_base(self, docker_field: str, port_field: str) -> str:
         """Базовый URL микросервиса: в Docker — *_docker, с хоста — *_port (или fallback _docker)."""
         u = self.urls
         if _docker_runtime():
+            # В K8s часто задают только *_port; не падаем, если *_docker пуст.
             v = getattr(u, docker_field, None) or getattr(u, port_field, None)
         else:
             v = getattr(u, port_field, None) or getattr(u, docker_field, None)
         if not v or not str(v).strip():
-            raise ValueError(
-                f"Задайте urls.{docker_field} и urls.{port_field} в backend/config/config.yml"
-            )
+            msg = f"Задайте urls.{docker_field} и urls.{port_field} в backend/config/config.yml"
+            raise ValueError(msg)
         return str(v).strip().rstrip("/")
 
     def resolve_mcp_server_base_url(self, server_id: str) -> str:
         """Базовый URL MCP-сервера: base_url из конфига или urls.mcp_{id}_service_*."""
         sid = str(server_id or "").strip()
         if not sid:
-            raise ValueError("server_id обязателен")
+            msg = "server_id обязателен"
+            raise ValueError(msg)
         for srv in self.mcp.servers:
             if srv.id == sid and str(srv.base_url or "").strip():
                 return str(srv.base_url).strip().rstrip("/")
@@ -942,14 +1280,20 @@ class Settings(BaseModel):
         """Базовый URL плагина: base_url из конфига или urls.{id}_service_*."""
         pid = str(plugin_id or "").strip()
         if not pid:
-            raise ValueError("plugin_id обязателен")
+            msg = "plugin_id обязателен"
+            raise ValueError(msg)
         for plugin in self.plugins.catalog:
             if plugin.id == pid and str(plugin.base_url or "").strip():
                 return str(plugin.base_url).strip().rstrip("/")
+        # cash-flow → cash_flow_service_*; generic plugin_x → plugin_x_service_*
         key = pid.replace("-", "_")
         if key == "cash_flow":
-            return self.microservice_http_base("cash_flow_service_docker", "cash_flow_service_port")
-        return self.microservice_http_base(f"{key}_service_docker", f"{key}_service_port")
+            return self.microservice_http_base(
+                "cash_flow_service_docker", "cash_flow_service_port"
+            )
+        return self.microservice_http_base(
+            f"{key}_service_docker", f"{key}_service_port"
+        )
 
     def get_plugin_config(self, plugin_id: str) -> Optional[PluginConfig]:
         pid = str(plugin_id or "").strip()
@@ -959,7 +1303,7 @@ class Settings(BaseModel):
         return None
 
     @classmethod
-    def from_yaml(cls, config_path: Optional[str] = None) -> 'Settings':
+    def from_yaml(cls, config_path: Optional[str] = None) -> "Settings":
         """
         Загрузка конфигурации из YAML файла
         Args:
@@ -967,11 +1311,24 @@ class Settings(BaseModel):
         Returns:
             Экземпляр Settings с загруженной конфигурацией
         """
+        if config_path is not None:
+            safe_config_path = resolve_config_file_path(config_path)
+            if safe_config_path is None:
+                logger.warning(
+                    "CONFIG_PATH отклонён (вне разрешённой директории): %s",
+                    sanitize_log_value(config_path),
+                )
+                config_path = None
+            else:
+                config_path = str(safe_config_path)
+
         if config_path is None:
-            # Поиск config.yml в различных возможных местах
             possible_paths = [
-                Path(__file__).parent.parent / "config" / "config.yml",  # backend/config/config.yml
-                Path(__file__).parent.parent.parent / "backend" / "config" / "config.yml",  # из корня проекта
+                Path(__file__).parent.parent / "config" / "config.yml",
+                Path(__file__).parent.parent.parent
+                / "backend"
+                / "config"
+                / "config.yml",
                 "config/config.yml",
                 "../config/config.yml",
                 "./config.yml",
@@ -982,40 +1339,19 @@ class Settings(BaseModel):
                     config_path = str(path_obj.absolute())
                     break
             else:
-                # Если файл не найден, используем значения по умолчанию
-                return cls()
-        else:
-            # Если CONFIG_PATH задан, проверяем существование файла
-            if not os.path.exists(config_path):
-                # Если файл не найден по указанному пути, пробуем найти в стандартных местах
-                possible_paths = [
-                    Path(__file__).parent.parent / "config" / "config.yml",
-                    Path(__file__).parent.parent.parent / "backend" / "config" / "config.yml",
-                ]
-                for path in possible_paths:
-                    if path.exists():
-                        config_path = str(path.absolute())
-                        break
-                else:
-                    # Если файл не найден, используем значения по умолчанию
-                    return cls()
+                settings = cls()
+                _log_model_health_config(settings)
+                return settings
         try:
-            with open(config_path, 'r', encoding='utf-8') as f:
+            with open(config_path, "r", encoding="utf-8") as f:
                 config_data = yaml.safe_load(f) or {}
             _preprocess_urls_and_microservices(config_data)
-            # Подготавливаем данные для создания Settings
-            # Классы подключений сами загрузят значения из env через model_validator,
-            # если они не заданы в YAML
             settings_data = {}
-            # Копируем все секции из YAML
             for key, value in config_data.items():
                 if key in ["mongodb", "postgresql", "minio", "llm_service"]:
-                    # Для секций подключений передаем данные как есть (может быть пустым dict)
-                    # model_validator в классах подключений сам загрузит из env, если секция пустая
                     settings_data[key] = value if value is not None else {}
                 else:
                     settings_data[key] = value
-            # Если секций подключений нет в YAML, создаем пустые dict для загрузки из ENV
             if "mongodb" not in settings_data:
                 settings_data["mongodb"] = {}
             if "postgresql" not in settings_data:
@@ -1028,77 +1364,125 @@ class Settings(BaseModel):
                 isinstance(config_data.get("llm_providers"), list)
                 and len(config_data.get("llm_providers") or []) > 0
             )
-            # Обработка LLM Service - может быть в секции microservices.llm_svc
-            if "microservices" in config_data and "llm_svc" in config_data["microservices"]:
+            if (
+                "microservices" in config_data
+                and "llm_svc" in config_data["microservices"]
+            ):
                 llm_svc_data = config_data["microservices"]["llm_svc"]
-                # Объединяем данные из microservices.llm_svc с данными из llm_service
                 if isinstance(llm_svc_data, dict):
-                    # Копируем настройки из microservices.llm_svc в llm_service
                     for key, value in llm_svc_data.items():
                         if key not in settings_data["llm_service"]:
                             settings_data["llm_service"][key] = value
-            # microservices.llm (config.yml) — алиас к llm_service
-            if "microservices" in config_data and "llm" in config_data.get("microservices", {}):
+            if "microservices" in config_data and "llm" in config_data.get(
+                "microservices", {}
+            ):
                 llm_ms = config_data["microservices"]["llm"]
                 if isinstance(llm_ms, dict):
-                    if "timeout" in llm_ms and "timeout" not in settings_data["llm_service"]:
+                    if (
+                        "timeout" in llm_ms
+                        and "timeout" not in settings_data["llm_service"]
+                    ):
                         settings_data["llm_service"]["timeout"] = llm_ms["timeout"]
                     models_block = llm_ms.get("models")
                     if isinstance(models_block, dict):
-                        if models_block.get("default") and "default_model" not in settings_data["llm_service"]:
-                            settings_data["llm_service"]["default_model"] = models_block["default"]
-                        if models_block.get("fallback") is not None and "fallback_model" not in settings_data["llm_service"]:
-                            settings_data["llm_service"]["fallback_model"] = models_block["fallback"]
+                        if (
+                            models_block.get("default")
+                            and "default_model" not in settings_data["llm_service"]
+                        ):
+                            settings_data["llm_service"]["default_model"] = (
+                                models_block["default"]
+                            )
+                        if (
+                            models_block.get("fallback") is not None
+                            and "fallback_model" not in settings_data["llm_service"]
+                        ):
+                            settings_data["llm_service"]["fallback_model"] = (
+                                models_block["fallback"]
+                            )
                     hosts_raw = llm_ms.get("hosts")
-                    if isinstance(hosts_raw, list) and hosts_raw and "hosts" not in settings_data["llm_service"]:
+                    if (
+                        isinstance(hosts_raw, list)
+                        and hosts_raw
+                        and ("hosts" not in settings_data["llm_service"])
+                    ):
                         parsed = []
                         for h in hosts_raw:
-                            if isinstance(h, dict) and h.get("id") and h.get("base_url"):
-                                parsed.append(LLMHostEntry(id=str(h["id"]), base_url=str(h["base_url"]).rstrip("/")))
+                            if (
+                                isinstance(h, dict)
+                                and h.get("id")
+                                and h.get("base_url")
+                            ):
+                                parsed.append(
+                                    LLMHostEntry(
+                                        id=str(h["id"]),
+                                        base_url=str(h["base_url"]).rstrip("/"),
+                                    )
+                                )
                         if parsed:
-                            settings_data["llm_service"]["hosts"] = [e.model_dump() for e in parsed]
-                    if llm_ms.get("default_host_id") and "default_host_id" not in settings_data["llm_service"]:
-                        settings_data["llm_service"]["default_host_id"] = str(llm_ms["default_host_id"])
-            if has_new_llm_providers and not settings_data["llm_service"]:
-                # Новая схема ProviderRegistry не обязана тащить legacy llm-svc поля.
-                # Передаём внутренний флаг, чтобы LLMServiceConnectionConfig применил
-                # безопасные дефолты вместо обязательной валидации legacy-конфига.
+                            settings_data["llm_service"]["hosts"] = [
+                                e.model_dump() for e in parsed
+                            ]
+                    if (
+                        llm_ms.get("default_host_id")
+                        and "default_host_id" not in settings_data["llm_service"]
+                    ):
+                        settings_data["llm_service"]["default_host_id"] = str(
+                            llm_ms["default_host_id"]
+                        )
+            if has_new_llm_providers and (not settings_data["llm_service"]):
                 settings_data["llm_service"]["_allow_empty_legacy"] = True
-            # Создаем экземпляр Settings
             settings = cls(**settings_data)
-            # Обновляем URL для LLM Service из секции urls (Docker → *_docker, хост → *_port)
             if config_data.get("urls"):
-                try:
-                    llm_url = settings.microservice_http_base("llm_service_docker", "llm_service_port")
-                    settings.llm_service.base_url = llm_url
-                    ext = (config_data["urls"].get("llm_service_port") or "").strip().rstrip("/")
-                    if ext:
-                        settings.llm_service.external_url = ext
-                except ValueError:
-                    pass
-            # Если в config.yml allowed_origins пустой массив, заполняем автоматически из urls
+                urls = config_data["urls"]
+                docker_env = os.getenv("DOCKER_ENV")
+                if docker_env is None:
+                    docker_env = str(os.path.exists("/.dockerenv")).lower()
+                docker_env = docker_env.lower() == "true"
+                llm_url = urls.get("llm_service_port", "")
+                if llm_url:
+                    settings.llm_service.base_url = llm_url.rstrip("/")
+                    settings.llm_service.external_url = urls.get(
+                        "llm_service_port", ""
+                    ).rstrip("/")
             cors_config = config_data.get("cors", {})
             cors_allowed_origins_from_config = cors_config.get("allowed_origins", [])
-            # Если allowed_origins не указан или пустой, заполняем из urls
-            if config_data.get("urls") and (not cors_allowed_origins_from_config or len(cors_allowed_origins_from_config) == 0):
+            if config_data.get("urls") and (
+                not cors_allowed_origins_from_config
+                or len(cors_allowed_origins_from_config) == 0
+            ):
                 urls = config_data["urls"]
                 cors_origins = [
                     urls.get("ingress_port", ""),
                     urls.get("frontend_port", ""),
                 ]
-                # Фильтруем пустые значения
                 cors_origins = [origin for origin in cors_origins if origin]
                 if cors_origins:
                     settings.cors.allowed_origins = cors_origins
-            # Если allowed_origins явно указан, то применяем его
             elif cors_allowed_origins_from_config:
                 settings.cors.allowed_origins = cors_allowed_origins_from_config
+            _log_model_health_config(settings)
             return settings
         except Exception as e:
-            raise ValueError(f"Ошибка загрузки конфигурации из {config_path}: {str(e)}")
+            logger.exception("Ошибка операции")
+            msg = f"Ошибка загрузки конфигурации из {config_path}: {str(e)}"
+            raise ValueError(msg) from e
+
     def get_llm_service_url(self) -> str:
         """URL LLM для текущего окружения (см. urls.llm_service в config.yml)."""
         return self.microservice_http_base("llm_service_docker", "llm_service_port")
+
+
+def _log_model_health_config(settings: Settings) -> None:
+    mh = settings.model_health
+    logger.info(
+        "[ModelHealth] MODEL_HEALTH_FILTER_ENABLED=%s MODEL_HEALTH_PROBE_MAX=%d "
+        "MODELS_AVAILABLE_CACHE_SECONDS=%d (ConfigMap/ENV astra-chat-backend)",
+        mh.filter_enabled,
+        mh.probe_max,
+        mh.models_available_cache_seconds,
+    )
+
+
 def get_settings() -> Settings:
     """
     Получение глобального экземпляра настроек (singleton)
@@ -1110,6 +1494,8 @@ def get_settings() -> Settings:
         config_path = os.environ.get("CONFIG_PATH")
         _settings = Settings.from_yaml(config_path)
     return _settings
+
+
 def reset_settings() -> Settings:
     """
     Сброс и принудительная перезагрузка настроек
@@ -1129,14 +1515,13 @@ def _clear_dependent_caches() -> None:
         from backend.auth.agent_platform_roles import clear_role_cache
 
         clear_role_cache()
-    except Exception:
-        # Сброс кэша не должен ломать перезагрузку конфига.
-        pass
+    except Exception:  # noqa: BLE001 - сброс кэша не должен ломать перезагрузку конфига
+        logger.warning("Не удалось сбросить кэш платформенных ролей", exc_info=True)
 
 
-# Инициализация настроек при импорте модуля (ленивая)
-# Не инициализируем сразу, чтобы избежать ошибок при импорте
 settings = None
+
+
 def _init_settings():
     """Ленивая инициализация настроек"""
     global settings

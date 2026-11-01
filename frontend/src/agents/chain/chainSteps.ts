@@ -55,6 +55,9 @@ function mapDocumentSearchTrace(raw: unknown): Message['documentSearch'] | undef
   if (!hits.length && !sourceFiles.length && !String(ds.query ?? '').trim()) {
     return undefined;
   }
+  if (!hits.length && !sourceFiles.length) {
+    return { query: String(ds.query ?? '') };
+  }
   return {
     query: String(ds.query ?? ''),
     sourceFiles,

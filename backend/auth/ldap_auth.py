@@ -2,6 +2,9 @@
 LDAP аутентификация (Active Directory) через ldap3.
 """
 
+# Отложенные аннотации: без ldap3 имя Connection не определено, но модуль должен загрузиться.
+from __future__ import annotations
+
 import os
 import re
 import ssl

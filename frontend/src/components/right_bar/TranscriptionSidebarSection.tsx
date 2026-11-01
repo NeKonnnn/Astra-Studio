@@ -12,7 +12,7 @@ import {
   YouTube as YouTubeIcon,
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
-import { getApiUrl, API_ENDPOINTS } from '../../config/api';
+import { authFetch, getApiUrl, API_ENDPOINTS } from '../../config/api';
 import { useAppActions } from '../../contexts/AppContext';
 import { incrementTabNotification } from '../../utils/tabNotifications';
 import TranscriptionResultModal from '../TranscriptionResultModal';
@@ -81,7 +81,7 @@ export default function TranscriptionSidebarSection({ open }: TranscriptionSideb
       const formData = new FormData();
       formData.append('file', file);
       formData.append('request_id', currentId);
-      const response = await fetch(getApiUrl(API_ENDPOINTS.TRANSCRIBE_UPLOAD), {
+      const response = await authFetch(getApiUrl(API_ENDPOINTS.TRANSCRIBE_UPLOAD), {
         method: 'POST',
         body: formData,
       });
@@ -120,7 +120,7 @@ export default function TranscriptionSidebarSection({ open }: TranscriptionSideb
   const handleStop = async () => {
     if (!transcriptionId) return;
     try {
-      const response = await fetch(getApiUrl('/api/transcribe/stop'), {
+      const response = await authFetch(getApiUrl('/api/transcribe/stop'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ transcription_id: transcriptionId }),
@@ -150,7 +150,7 @@ export default function TranscriptionSidebarSection({ open }: TranscriptionSideb
     }
     setIsTranscribing(true);
     try {
-      const response = await fetch(getApiUrl(API_ENDPOINTS.TRANSCRIBE_YOUTUBE), {
+      const response = await authFetch(getApiUrl(API_ENDPOINTS.TRANSCRIBE_YOUTUBE), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url }),

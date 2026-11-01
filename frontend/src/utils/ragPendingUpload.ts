@@ -173,3 +173,69 @@ export async function mapWithConcurrency<T, R>(
   await Promise.all(runners);
   return results;
 }
+
+/** SHA-256 файла в hex. Нужен только чтобы сравнить файлы пачки между собой. */
+async function fileContentHash(file: File): Promise<string> {
+  const buf = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest('SHA-256', buf);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/**
+
+* Схлопнуть одинаковые по содержимому файлы ВНУТРИ одной загрузки.
+* 
+* Сервер грузит по RAG_UPLOAD_CONCURRENCY файлов сразу, а проверка дубликата
+* и вставка там не атомарны: параллельные запросы успевают увидеть пустую
+* базу до того, как первый из них запишется. Сколько копий проскочит -
+* зависит от таймингов, поэтому результат выглядел случайным.
+* 
+* Убираем повторы до отправки: в параллель уходят только разные файлы.
+* Межпакетные дубликаты по-прежнему ловит сервер - там гонки нет.
+* 
+* Сначала сравниваем размеры: файлы разной длины заведомо различны, и
+* хэшировать (а значит читать целиком в память) нужно только совпавших по
+* размеру. В обычной пачке таких нет вовсе.
+* 
+* Хэш посчитать не удалось (нет secure context для crypto.subtle, ошибка
+* чтения) - файл идёт на загрузку как есть, поведение прежнее.
+ */
+export async function dedupeFilesByContent(
+  files: File[],
+): Promise<{ unique: File[]; skipped: string[] }> {
+  if (files.length < 2) return { unique: files, skipped: [] };
+
+  const sizeCount = new Map<number, number>();
+  for (const f of files) {
+    sizeCount.set(f.size, (sizeCount.get(f.size) || 0) + 1);
+  }
+
+  const seen = new Set<string>();
+  const unique: File[] = [];
+  const skipped: string[] = [];
+  for (const file of files) {
+    if ((sizeCount.get(file.size) || 0) < 2) {
+      unique.push(file);
+      continue;
+    }
+    let key: string | null = null;
+    try {
+      key = await fileContentHash(file);
+    } catch {
+      key = null;
+    }
+    if (key === null) {
+      unique.push(file);
+      continue;
+    }
+    if (seen.has(key)) {
+      skipped.push(file.name);
+      continue;
+    }
+    seen.add(key);
+    unique.push(file);
+  }
+  return { unique, skipped };
+}

@@ -1062,6 +1062,46 @@ class RagClient:
         resp = await self._request("GET", f"/kb/documents/{document_id}")
         return resp if isinstance(resp, dict) else None
 
+    async def kb_get_document_chunks(
+        self, document_id: int, max_chunks: int = 20
+    ) -> List[Tuple[str, float, Optional[int], Optional[int]]]:
+        """Чанки KB-документа напрямую (без vector search).
+
+        Нужен, когда эмбеддинг запроса и индекс в разных dim-таблицах
+        (FRIDA/1536 vs Giga/2048) и /kb/search даёт 0 hits при живых чанках.
+        """
+        try:
+            resp = await self._request(
+                "GET",
+                f"/kb/documents/{int(document_id)}/chunks",
+                params={"start": 0, "limit": max(1, int(max_chunks))},
+            )
+        except Exception:
+            logger.warning(
+                "kb_get_document_chunks: doc=%s недоступен",
+                document_id,
+                exc_info=True,
+            )
+            return []
+        chunks = resp.get("chunks", []) if isinstance(resp, dict) else []
+        out: List[Tuple[str, float, Optional[int], Optional[int]]] = []
+        for c in chunks:
+            if not isinstance(c, dict):
+                continue
+            text = str(c.get("content") or "").strip()
+            if not text:
+                continue
+            try:
+                did = int(c.get("document_id", document_id))
+            except (TypeError, ValueError):
+                did = int(document_id)
+            try:
+                cidx = int(c.get("chunk_index") or 0)
+            except (TypeError, ValueError):
+                cidx = 0
+            out.append((text, 1.0, did, cidx))
+        return out
+
     async def kb_clone_document(
         self,
         document_id: int,

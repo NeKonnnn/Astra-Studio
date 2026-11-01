@@ -41,7 +41,7 @@ async def load_mcp_langgraph_tools(
         try:
             specs.extend(await platform.list_tools_for_server(sid, mcp_ctx))
         except Exception:
-            log.exception("langgraph MCP list_tools failed server=")
+            log.exception("langgraph MCP list_tools failed server=%s", sid)
     specs = platform.filter_tools_by_context(
         specs, mcp_ctx, enabled_server_ids=server_ids
     )

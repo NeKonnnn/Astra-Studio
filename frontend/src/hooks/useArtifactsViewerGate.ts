@@ -21,7 +21,7 @@ import {
   getChatArtifactsToolsState,
   isChatArtifactsToolsActive,
 } from '../utils/artifactsSelectionStorage';
-import { hasGpbSlideClass } from '../utils/presentationViewer';
+import { hasDeckSlideClass } from '../utils/presentationViewer';
 
 function chatSkillsAllowViewer(chatId?: string | null): boolean {
   return getActiveSkillIds(chatId).some(skillImpliesArtifactsViewer);
@@ -47,7 +47,7 @@ export function contentImpliesLegacyArtifactsViewer(content?: string | null): bo
   const text = content || '';
   if (!text) return false;
   if (text.includes(':::artifact{')) return true;
-  if (hasGpbSlideClass(text)) return true;
+  if (hasDeckSlideClass(text)) return true;
   return false;
 }
 

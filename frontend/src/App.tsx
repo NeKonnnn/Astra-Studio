@@ -25,6 +25,7 @@ import PluginGalleryPage from './pages/PluginGalleryPage';
 import GalleryHubPage from './pages/GalleryHubPage';
 import SkillsPage from './pages/SkillsPage';
 import ReleaseNotesPage from './pages/ReleaseNotesPage';
+import UserGuidePage from './pages/UserGuidePage';
 import ProjectPage from './pages/ProjectPage';
 import KnowledgeBasePage from './pages/KnowledgeBasePage';
 import { SocketProvider } from './contexts/SocketContext';
@@ -443,6 +444,7 @@ function App() {
                               path="/docs/astrachat-release-1.0.html"
                               element={<ReleaseNotesPage version="1.0" />}
                             />
+                            <Route path="/docs/user-guide" element={<UserGuidePage />} />
                             <Route path="/profile" element={<ProfilePage />} />
                             <Route path="/history" element={<HistoryPage />} />
                           </Routes>

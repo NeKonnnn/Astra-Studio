@@ -912,23 +912,107 @@ class KbVectorRepository:
             )
         return [r["document_id"] for r in rows]
 
+    async def count_active_chunks(self) -> int:
+        """Сколько чанков в АКТИВНОЙ dim-таблице (вся таблица)."""
+        async with await self.db.acquire() as conn:
+            table = await self._table(conn)
+            row = await conn.fetchrow(f"SELECT COUNT(*)::int AS c FROM {table}")
+        return int(row["c"] or 0) if row else 0
+
+    async def count_chunks_for_documents(self, document_ids: List[int]) -> int:
+        """Сколько чанков этих документов в АКТИВНОЙ dim-таблице."""
+        ids = [int(d) for d in (document_ids or []) if d is not None]
+        if not ids:
+            return 0
+        async with await self.db.acquire() as conn:
+            table = await self._table(conn)
+            row = await conn.fetchrow(
+                f"SELECT COUNT(*)::int AS c FROM {table} WHERE document_id = ANY($1::int[])",
+                ids,
+            )
+        return int(row["c"] or 0) if row else 0
+
+    async def dims_with_documents(
+        self, document_ids: Optional[List[int]] = None
+    ) -> List[Tuple[int, int]]:
+        """(dim, count) по всем kb_vectors*.
+
+        document_ids=None — по всей таблице (общий поиск без scope).
+        """
+        from app.database.embedding_schema import get_column_vector_dim
+
+        ids = (
+            [int(d) for d in document_ids if d is not None]
+            if document_ids is not None
+            else None
+        )
+        if document_ids is not None and not ids:
+            return []
+        out: List[Tuple[int, int]] = []
+        async with await self.db.acquire() as conn:
+            for table in await self._all_tables(conn):
+                dim = await get_column_vector_dim(conn, table)
+                if not dim:
+                    continue
+                if ids is not None:
+                    row = await conn.fetchrow(
+                        f"SELECT COUNT(*)::int AS c FROM {table} "
+                        "WHERE document_id = ANY($1::int[])",
+                        ids,
+                    )
+                else:
+                    row = await conn.fetchrow(
+                        f"SELECT COUNT(*)::int AS c FROM {table}"
+                    )
+                cnt = int(row["c"] or 0) if row else 0
+                if cnt > 0:
+                    out.append((int(dim), cnt))
+        out.sort(key=lambda t: (-t[1], t[0]))
+        return out
+
     async def get_all_contents_for_bm25(
         self, document_ids: Optional[List[int]] = None
     ) -> List[Tuple[int, int, str]]:
         """Возвращает (document_id, chunk_index, content) для BM25
 
         document_ids сужает корпус до перечисленных документов. Без него
-        берётся вся таблица - это нужно, только когда белого списка нет
+        берётся вся таблица - это нужно, только когда белого списка нет.
+
+        Если в активной dim для scope пусто, а чанки лежат в другой таблице
+        (mismatch emb), читаем content из всех таблиц с этими document_ids.
         """
+        ids = (
+            [int(d) for d in document_ids if d is not None]
+            if document_ids is not None
+            else None
+        )
         async with await self.db.acquire() as conn:
             table = await self._table(conn)
-            if document_ids:
+            if ids is not None:
                 rows = await conn.fetch(
                     f"SELECT document_id, chunk_index, content FROM {table} "
                     "WHERE document_id = ANY($1::int[]) "
                     "ORDER BY document_id, chunk_index",
-                    [int(d) for d in document_ids if d is not None],
+                    ids,
                 )
+                if not rows:
+                    # Fallback: чанки в другой dim (Giga/2048 при query FRIDA/1536).
+                    seen: set = set()
+                    merged: List[Tuple[int, int, str]] = []
+                    for t in await self._all_tables(conn):
+                        alt = await conn.fetch(
+                            f"SELECT document_id, chunk_index, content FROM {t} "
+                            "WHERE document_id = ANY($1::int[]) "
+                            "ORDER BY document_id, chunk_index",
+                            ids,
+                        )
+                        for r in alt:
+                            key = (int(r["document_id"]), int(r["chunk_index"]))
+                            if key in seen:
+                                continue
+                            seen.add(key)
+                            merged.append((key[0], key[1], r["content"]))
+                    return merged
             else:
                 rows = await conn.fetch(
                     f"SELECT document_id, chunk_index, content FROM {table} "

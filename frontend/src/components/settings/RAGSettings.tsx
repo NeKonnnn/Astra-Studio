@@ -47,7 +47,6 @@ import {
   AGENT_CONSTRUCTOR_SAVE_ICON_SX,
   SIDEBAR_HIDE_SCROLLBAR_SX,
 } from '../../constants/menuStyles';
-import MemoryRagLibrarySection from './MemoryRagLibrarySection';
 import RagModelSelector from '../RagModelSelector';
 import { saveEntityRagSettings, type EntityRagDraft } from '../../utils/entityRagSettings';
 import { dispatchRagEntitySettingsApplied } from '../../constants/ragEntityEvents';
@@ -504,6 +503,14 @@ export default function RAGSettings({
   };
 
   const saveRAGSettings = async (): Promise<boolean> => {
+    // BUG-FE-38: перекрытие чанков должно быть строго меньше размера чанка.
+    if (Number(ragChunkOverlap) >= Number(ragChunkSize)) {
+      showNotification(
+        'error',
+        `Перекрытие чанков (${ragChunkOverlap}) должно быть меньше размера чанка (${ragChunkSize})`,
+      );
+      return false;
+    }
     // Режим черновика: сначала запоминаем у родителя. Если у сущности уже есть
     // id (черновик проекта создан при открытии RAG) — сразу пишем в БД, иначе
     // пользователь думает, что «Применить» ничего не сделало.
@@ -804,12 +811,22 @@ export default function RAGSettings({
     }
   };
 
-  // Страница «Настройки → RAG»: только библиотека памяти.
-  // Карточки project/agent перенесены в конструктор агента и модалки проекта.
+  // Страница «Настройки → RAG»: документы только через Базы знаний.
   if (!isPanel) {
     return (
       <Box sx={{ p: 3 }}>
-        <MemoryRagLibrarySection variant="prominent" />
+        <Typography variant="h6" sx={{ mb: 1 }}>
+          Базы знаний
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          Загрузка документов и настройки эмбеддингов/реранкера — у каждой базы знаний
+          в правой панели («Базы знаний»). К чату, агенту и проекту можно прикрепить
+          одну или несколько БЗ.
+        </Typography>
+        <Typography variant="body2" color="text.secondary">
+          Старая «общая библиотека», заливка файлов в агента/проект и тумблер «Общий RAG»
+          отключены.
+        </Typography>
       </Box>
     );
   }

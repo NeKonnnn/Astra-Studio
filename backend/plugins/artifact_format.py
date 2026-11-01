@@ -19,8 +19,13 @@ def format_markdown_artifact(
         return ""
     # 4 backticks, чтобы внутри вердикта спокойно жили ``` fences
     fence = "````"
-    safe_id = re.sub(r"[^a-zA-Z0-9_-]+", "-", identifier).strip("-").lower() or "plugin-verdict"
-    safe_title = (title or "Вердикт").replace('"', "'")
+    safe_id = (
+        re.sub(r"[^a-zA-Z0-9_-]+", "-", identifier).strip("-").lower()
+        or "plugin-verdict"
+    )
+    # перевод строки и скобки заголовка ломали бы строку атрибутов :::artifact{...}
+    safe_title = re.sub(r"\s+", " ", title or "Вердикт").replace('"', "'")
+    safe_title = safe_title.replace("{", "(").replace("}", ")").strip() or "Вердикт"
     return (
         f':::artifact{{identifier="{safe_id}" type="text/markdown" title="{safe_title}"}}\n'
         f"{fence}\n"
@@ -56,7 +61,7 @@ def findings_fallback_markdown(result: Any) -> str:
     status = payload.get("status") or "unknown"
     message = payload.get("message") or ""
     findings = payload.get("deterministic_findings") or []
-    lines = [f"# Аудит денежного потока", "", f"**Статус:** `{status}`", ""]
+    lines = ["# Аудит денежного потока", "", f"**Статус:** `{status}`", ""]
     if message:
         lines.extend([str(message), ""])
     if isinstance(findings, list) and findings:
@@ -86,7 +91,9 @@ def build_cash_flow_artifact_from_invoke(result: Any) -> str:
     )
 
 
-def extract_plugin_artifacts_from_tool_results(tool_results: List[Dict[str, Any]]) -> str:
+def extract_plugin_artifacts_from_tool_results(
+    tool_results: List[Dict[str, Any]],
+) -> str:
     """
     Ищет успешные вызовы audit_cash_flow_model и собирает markdown-артефакты.
     """

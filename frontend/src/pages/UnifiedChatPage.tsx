@@ -34,7 +34,6 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import {
   Send as SendIcon,
-  Person as PersonIcon,
   ContentCopy as CopyIcon,
   Stop as StopIcon,
   Refresh as RefreshIcon,
@@ -60,6 +59,7 @@ import { useAppContext, useAppActions, Message, MultiLLMResponseSlot } from '../
 import { useSocket } from '../contexts/SocketContext';
 import { authFetch, getApiUrl, getWsUrl, API_ENDPOINTS } from '../config/api';
 import MessageRenderer from '../components/MessageRenderer';
+import UserAvatar from '../components/UserAvatar';
 import { DocumentSearchPanel } from '../components/DocumentSearchPanel';
 import { useNavigate } from 'react-router-dom';
 import ModelSelector from '../components/ModelSelector';
@@ -116,6 +116,8 @@ import {
   RAG_REINDEX_BLOCK_PLACEHOLDER,
 } from '../utils/ragReindexBlock';
 import { clearActiveAgent } from '../utils/clearActiveAgent';
+import { useFeatureAccess } from '../hooks/useFeatureAccess';
+import { useResetOnChatChange } from '../hooks/useResetOnChatChange';
 import { clearActiveSkills } from '../utils/skillSelectionStorage';
 import { clearActiveKnowledgeBases } from '../utils/knowledgeBaseSelectionStorage';
 import { disableChatArtifactsToolsForChat } from '../utils/artifactsSelectionStorage';
@@ -479,6 +481,12 @@ interface MessageCardProps {
   isDarkMode: boolean;
   /** Сообщение — последнее в чате (как history.currentId в Open WebUI). */
   isLastChatMessage: boolean;
+  /**
+   * Ждём первые токены ответа: «думает…» рисуется внутри этой же карточки
+   * (после инструментов / перед телом), а не отдельным пузырём снизу.
+   */
+  inlineAwaitingTokens?: boolean;
+  awaitingStartedAtMs?: number | null;
   interfaceSettings: {
     userNoBorder: boolean;
     assistantNoBorder: boolean;
@@ -523,7 +531,9 @@ const ReasoningBlock = React.memo(({
 
   const headerLabel =
     isThinkingStreaming
-      ? `Думает…\u00A0${liveThinkingSec ?? 0}\u00A0сек`
+      ? liveThinkingSec !== null && liveThinkingSec > 0
+        ? `Думает…\u00A0${liveThinkingSec}\u00A0сек`
+        : 'Думает…'
       : durationSec !== null
         ? `Думала\u00A0${durationSec}\u00A0сек`
         : 'Цепочка рассуждений';
@@ -659,7 +669,8 @@ const VIRTUOSO_LIST_COMPONENTS = { Footer: VirtuosoMessagesEndAnchor };
 
 const MessageCardComponent = ({
   message, index, navIndex, isPairStart, isSelected, nextMessageId,
-  shareMode, isSpeaking, isDarkMode, isLastChatMessage, interfaceSettings, username, dataRef,
+  shareMode, isSpeaking, isDarkMode, isLastChatMessage, inlineAwaitingTokens = false,
+  awaitingStartedAtMs = null, interfaceSettings, username, dataRef,
 }: MessageCardProps): React.ReactElement => {
   const isUser = message.role === 'user';
   const [isHovered, setIsHovered] = useState(false);
@@ -708,9 +719,17 @@ const MessageCardComponent = ({
             message.chainSteps,
             message.chainCurrentAgent,
             message.isStreaming,
-            message.hideSequentialOutputs,
+            Boolean(message.hideSequentialOutputs || message.chainHideSequential),
           ),
-    [isUser, visibleBody, message.chainSteps, message.chainCurrentAgent, message.isStreaming, message.hideSequentialOutputs],
+    [
+      isUser,
+      visibleBody,
+      message.chainSteps,
+      message.chainCurrentAgent,
+      message.isStreaming,
+      message.hideSequentialOutputs,
+      message.chainHideSequential,
+    ],
   );
   const assistantInlineAttachments = useMemo(
     () => (isUser ? undefined : getAssistantInlineAttachments(message)),
@@ -746,7 +765,6 @@ const MessageCardComponent = ({
     if (isNowThinking && !wasThinking) {
       thinkingStartRef.current = Date.now();
       setThinkingDurationSec(null);
-      setLiveThinkingSec(0);
     } else if (!isNowThinking && wasThinking && thinkingStartRef.current) {
       const secs = Math.round((Date.now() - thinkingStartRef.current) / 1000);
       setThinkingDurationSec(secs > 0 ? secs : 1);
@@ -762,7 +780,7 @@ const MessageCardComponent = ({
     }
     const tick = () => {
       if (thinkingStartRef.current) {
-        setLiveThinkingSec(Math.max(0, Math.floor((Date.now() - thinkingStartRef.current) / 1000)));
+        setLiveThinkingSec(Math.max(1, Math.floor((Date.now() - thinkingStartRef.current) / 1000)));
       }
     };
     tick();
@@ -785,7 +803,6 @@ const MessageCardComponent = ({
       if (isThinkingStreaming && !was) {
         multiThinkingStartRef.current[respIndex] = Date.now();
         setMultiThinkingDurationSec((p: Record<number, number | null>) => ({ ...p, [respIndex]: null }));
-        setMultiLiveThinkingSec((p) => ({ ...p, [respIndex]: 0 }));
       } else if (!isThinkingStreaming && was && multiThinkingStartRef.current[respIndex]) {
         const secs = Math.round((Date.now() - multiThinkingStartRef.current[respIndex]!) / 1000);
         setMultiThinkingDurationSec((p: Record<number, number | null>) => ({ ...p, [respIndex]: secs > 0 ? secs : 1 }));
@@ -817,7 +834,7 @@ const MessageCardComponent = ({
         const next = { ...prev };
         for (const respIndex of thinkingIndices) {
           const start = multiThinkingStartRef.current[respIndex];
-          if (start) next[respIndex] = Math.max(0, Math.floor((Date.now() - start) / 1000));
+          if (start) next[respIndex] = Math.max(1, Math.floor((Date.now() - start) / 1000));
         }
         return next;
       });
@@ -827,7 +844,9 @@ const MessageCardComponent = ({
     return () => window.clearInterval(id);
   }, [message]);
 
-  // Сбрасываем таймер при старте новой генерации этого сообщения
+  // Сбрасываем таймер при старте новой генерации / remount карточки (message.id).
+  // Из‑за порядка эффектов на монтировании посреди рассуждения thinkingStartRef
+  // обнуляется после старта — known issue: секунды «Думает… N сек» не показываются.
   useEffect(() => {
     if (message.isStreaming) {
       setThinkingDurationSec(null);
@@ -924,6 +943,10 @@ const MessageCardComponent = ({
     message.generationStartedAtMs,
     Boolean(!isUser && message.isStreaming && !message.generationDurationSec),
   );
+  const inlineAwaitingSec = useElapsedSeconds(
+    awaitingStartedAtMs ?? message.generationStartedAtMs,
+    Boolean(!isUser && inlineAwaitingTokens),
+  );
   const generationLabelSec =
     !isUser && !message.isStreaming && message.generationDurationSec
       ? message.generationDurationSec
@@ -932,21 +955,27 @@ const MessageCardComponent = ({
     generationLabelSec !== null && generationLabelSec > 0
       ? formatGenerationDuration(generationLabelSec)
       : null;
+  const inlineAwaitingLabel = formatGenerationDuration(inlineAwaitingSec ?? 0);
 
   const messageContent = (
     <>
       <Box sx={{ display: 'flex', alignItems: 'center', mb: 0.3 }}>
-        <Avatar
-          sx={{ width: 24, height: 24, mr: 1, bgcolor: isUser ? 'primary.dark' : 'transparent' }}
-          src={isUser ? undefined : '/astra.png'}
-        >
-          {isUser ? <PersonIcon /> : null}
-        </Avatar>
+        {isUser ? (
+          <UserAvatar
+            username={username}
+            sx={{ width: 24, height: 24, mr: 1, bgcolor: 'primary.dark', fontSize: 12 }}
+          />
+        ) : (
+          <Avatar
+            sx={{ width: 24, height: 24, mr: 1, bgcolor: 'transparent' }}
+            src="/astra.png"
+          />
+        )}
         <Typography variant="caption" sx={{ opacity: 0.8, fontSize: '0.75rem', fontWeight: 500 }}>
           {isUser
             ? (interfaceSettings.showUserName && username ? username : 'Вы')
-            : (message.chainCurrentAgent?.agentName
-              || message.chainSteps?.[message.chainSteps.length - 1]?.agentName
+            : (message.chainCurrentAgent?.agentName?.trim()
+              || message.chainSteps?.[message.chainSteps.length - 1]?.agentName?.trim()
               || 'AstraChat')}
         </Typography>
         {!isUser && generationLabel ? (
@@ -981,9 +1010,19 @@ const MessageCardComponent = ({
       </Box>
 
       <Box sx={{ width: '100%' }}>
+        {/* «Думает» сверху — над инструментами. */}
+        {!isUser && inlineAwaitingTokens && !isReasoningStreaming ? (
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minHeight: '24px', mb: 1 }}>
+            <ThinkingShimmerText isDarkMode={isDarkMode} fontSize="0.875rem" fontWeight={500}>
+              {`думает...\u00A0${inlineAwaitingLabel}`}
+            </ThinkingShimmerText>
+          </Box>
+        ) : null}
+
         {!isUser && message.documentSearch && (
           <DocumentSearchPanel trace={message.documentSearch} />
         )}
+
         {!isUser && message.mcpToolCalls && message.mcpToolCalls.length > 0 && !message.multiLLMResponses?.length && (
           <McpToolCallsPanel toolCalls={message.mcpToolCalls} />
         )}
@@ -1310,8 +1349,6 @@ const MessageCardComponent = ({
                 parsedSeg.isThinkingStreaming ||
                   (seg.running && message.isStreaming && parsedSeg.reasoningContent),
               );
-              const segExpanded =
-                chainReasoningExpanded[segIdx] ?? (segReasoningStreaming || Boolean(segReasoning));
               const waiting = Boolean(seg.running && !parsedSeg.visibleContent.trim() && !segReasoning);
               return (
                 <Box key={`${seg.agentId}-${seg.agentName}-${segIdx}`}>
@@ -1327,9 +1364,9 @@ const MessageCardComponent = ({
                     <ReasoningBlock
                       reasoningContent={segReasoning}
                       isThinkingStreaming={segReasoningStreaming}
-                      isExpanded={segExpanded}
+                      isExpanded={Boolean(chainReasoningExpanded[segIdx])}
                       onToggle={() =>
-                        setChainReasoningExpanded((p) => ({ ...p, [segIdx]: !segExpanded }))
+                        setChainReasoningExpanded((p) => ({ ...p, [segIdx]: !p[segIdx] }))
                       }
                       durationSec={seg.running ? thinkingDurationSec : null}
                       liveThinkingSec={seg.running ? liveThinkingSec : null}
@@ -1354,8 +1391,8 @@ const MessageCardComponent = ({
               <ReasoningBlock
                 reasoningContent={parsedMessage.reasoningContent || ''}
                 isThinkingStreaming={isReasoningStreaming}
-                isExpanded={reasoningExpanded || isReasoningStreaming}
-                onToggle={() => setReasoningExpanded((p) => !(p || isReasoningStreaming))}
+                isExpanded={reasoningExpanded}
+                onToggle={() => setReasoningExpanded((p) => !p)}
                 durationSec={thinkingDurationSec}
                 liveThinkingSec={liveThinkingSec}
                 isDarkMode={isDarkMode}
@@ -1654,6 +1691,8 @@ const MessageCard = React.memo(MessageCardComponent, (prev, next) =>
   prev.isSpeaking === next.isSpeaking &&
   prev.isDarkMode === next.isDarkMode &&
   prev.isLastChatMessage === next.isLastChatMessage &&
+  prev.inlineAwaitingTokens === next.inlineAwaitingTokens &&
+  prev.awaitingStartedAtMs === next.awaitingStartedAtMs &&
   prev.interfaceSettings === next.interfaceSettings,
 );
 
@@ -1882,6 +1921,13 @@ export default function UnifiedChatPage({
 
   // Context и Socket
   const { user, token } = useAuth();
+  const { canUseAgents } = useFeatureAccess();
+
+  useEffect(() => {
+    if (!canUseAgents) {
+      clearActiveAgent();
+    }
+  }, [canUseAgents]);
   const { state } = useAppContext();
   const { 
     clearMessages, 
@@ -1984,33 +2030,11 @@ export default function UnifiedChatPage({
   );
 
   const visibleMessages = useMemo(() => {
-    return messages.filter((message) => {
-      // Плейсхолдер генерации изображения/видео (isImageGenerating / isVideoGenerating)
-      // специально оставляем видимым — в MessageCard рисуется ImageGenerationPlaceholder.
-      // При regen UI читает alternativeResponses[index], не только message.content.
-      const visibleText =
-        message.role === 'assistant'
-          ? getStreamingAssistantVisibleContent(message)
-          : message.content;
-      const isEmptyAssistantPlaceholder =
-        message.role === 'assistant' &&
-        !visibleText.trim() &&
-        !message.mcpToolCalls?.length &&
-        !message.multiLLMResponses?.length &&
-        !message.documentSearch &&
-        !message.isImageGenerating &&
-        !message.isVideoGenerating &&
-        !message.inlineAttachments?.length &&
-        !message.chainCurrentAgent &&
-        !message.chainSteps?.length;
-      if (!isEmptyAssistantPlaceholder) return true;
-      const parsedAssistant = extractReasoningBlock(visibleText || '', message.isStreaming);
-      if (currentChatLoading && !parsedAssistant?.reasoningContent?.trim()) {
-        return false;
-      }
-      return true;
-    });
-  }, [messages, currentChatLoading]);
+    // Пустой стримящийся ассистент оставляем видимым и во время загрузки:
+    // «думает…» рисуется внутри той же карточки (inlineAwaitingTokens), а не
+    // отдельным пузырём под сообщением.
+    return messages;
+  }, [messages]);
 
   /**
    * Virtuoso с полным списком. Grok-style: новый вопрос у верха экрана (спейсер в Footer),
@@ -2357,10 +2381,10 @@ export default function UnifiedChatPage({
     [isDarkMode],
   );
 
-  // Сбрасываем поле ввода при переключении между чатами, чтобы черновик не "дублировался"
-  useEffect(() => {
-    setInputMessage('');
-  }, [state.currentChatId]);
+  // Сбрасываем поле ввода при переключении между чатами, чтобы черновик не "дублировался".
+  // BUG-FE-21: на монтировании поле и так пустое, а эффект вставки (sessionStorage / событие) мог
+  // уже положить в него отложенный текст — не затираем его; сбрасываем только при реальной смене чата.
+  useResetOnChatChange(state.currentChatId, () => setInputMessage(''));
 
   // MCP из карточки активного агента → выбор серверов для текущего чата
   useEffect(() => {
@@ -2422,9 +2446,12 @@ export default function UnifiedChatPage({
     return false;
   }, [currentChat?.id]);
 
-  /** Path выбран + веса в пуле (иначе 503). При необходимости POST /load перед отправкой. */
-  const ensureModelReadyForSend = useCallback(
-    async (message?: string): Promise<boolean> => {
+  /**
+   * Синхронная часть проверки готовности модели: true/false — решение принято без сети,
+   * null — нужна загрузка весов (async ensureModelReadyForSend).
+   */
+  const resolveModelReadySync = useCallback(
+    (message?: string): boolean | null => {
       if (!ensureModelSelectedForSend(message)) {
         return false;
       }
@@ -2442,6 +2469,22 @@ export default function UnifiedChatPage({
         setModelErrorBanner('Нет авторизации для загрузки модели');
         return false;
       }
+      return null;
+    },
+    [currentChat?.id, ensureModelSelectedForSend, token],
+  );
+
+  /** Path выбран + веса в пуле (иначе 503). При необходимости POST /load перед отправкой. */
+  const ensureModelReadyForSend = useCallback(
+    async (message?: string): Promise<boolean> => {
+      const sync = resolveModelReadySync(message);
+      if (sync !== null) {
+        return sync;
+      }
+      const modelPath = localStorage.getItem(LAST_SELECTED_MODEL_PATH_STORAGE_KEY);
+      if (!token || !modelPath) {
+        return false;
+      }
       const result = await ensureSelectedModelWeights(token, modelPath);
       if (result.ok && !('pending' in result && result.pending)) {
         return true;
@@ -2452,7 +2495,25 @@ export default function UnifiedChatPage({
       setModelErrorBanner(msg);
       return false;
     },
-    [currentChat?.id, ensureModelSelectedForSend, token],
+    [resolveModelReadySync, token],
+  );
+
+  /** Выполнить действие после проверки модели: синхронно, если сеть не нужна. */
+  const runWhenModelReady = useCallback(
+    (message: string | undefined, action: () => void) => {
+      const sync = resolveModelReadySync(message);
+      if (sync === true) {
+        action();
+        return;
+      }
+      if (sync === false) {
+        return;
+      }
+      void ensureModelReadyForSend(message).then((ok) => {
+        if (ok) action();
+      });
+    },
+    [resolveModelReadySync, ensureModelReadyForSend],
   );
 
   // Стабильный обработчик для MessageRenderer (НЕ меняется при ререндерах!)
@@ -2462,17 +2523,14 @@ export default function UnifiedChatPage({
   // Обновляем ref при изменении зависимостей, но НЕ создаем новую функцию
   useEffect(() => {
     handleSendMessageFromRendererRef.current = (prompt: string) => {
-      void (async () => {
-        if (!(await ensureModelReadyForSend(prompt))) {
-          return;
-        }
+      runWhenModelReady(prompt, () => {
         if (currentChat && isConnected && !currentChatLoading) {
           clearFollowUpSuggestionsRef.current();
           sendMessage(prompt, currentChat.id);
         }
-      })();
+      });
     };
-  }, [currentChat, isConnected, currentChatLoading, sendMessage, ensureModelReadyForSend]);
+  }, [currentChat, isConnected, currentChatLoading, sendMessage, runWhenModelReady]);
   
   // Создаем стабильную функцию ОДИН РАЗ (никогда не меняется!)
   const handleSendMessageFromRenderer = useCallback((prompt: string) => {
@@ -2726,7 +2784,7 @@ export default function UnifiedChatPage({
     () => (
       <ChatInputStatusCluster
         isDarkMode={isDarkMode}
-        libraryActive={useKbRag}
+        libraryActive={false}
         onLibraryToggle={toggleKbRag}
         generationImageActive={imageGenModeOn}
         generationVideoActive={videoGenModeOn}
@@ -2957,17 +3015,46 @@ export default function UnifiedChatPage({
     };
   }, []);
 
-  // Автоматически обновляем название чата на основе первого сообщения пользователя.
+  // Название из первого сообщения пользователя — один раз на чат, не на каждый токен стрима.
   // Не ждём messages.length === 1: после send сразу есть placeholder ассистента (len ≥ 2).
+  const firstUserMessage = useMemo(
+    () =>
+      messages.find((m) => m.role === 'user' && (String(m.content || '').trim() || m.inlineAttachments?.length)) ??
+      messages.find((m) => m.role === 'user'),
+    [messages],
+  );
+  const autoTitleDoneForChatRef = useRef<string | null>(null);
+  useEffect(() => {
+    autoTitleDoneForChatRef.current = null;
+  }, [currentChat?.id]);
   useEffect(() => {
     if (!currentChat || !interfaceSettings.autoGenerateTitles) return;
-    if (currentChat.title !== 'Новый чат') return;
-    const firstUser = messages.find((m) => m.role === 'user' && String(m.content || '').trim());
-    if (!firstUser) return;
-    const raw = String(firstUser.content).trim();
-    const title = raw.length > 50 ? `${raw.substring(0, 50)}...` : raw;
+    if (currentChat.title !== 'Новый чат') {
+      autoTitleDoneForChatRef.current = currentChat.id;
+      return;
+    }
+    if (autoTitleDoneForChatRef.current === currentChat.id) return;
+    if (!firstUserMessage) return;
+    const raw = String(firstUserMessage.content || '').trim();
+    const title = raw
+      ? raw.length > 50
+        ? `${raw.substring(0, 50)}...`
+        : raw
+      : firstUserMessage.inlineAttachments?.length
+        ? 'Вложение'
+        : null;
+    if (!title) return;
+    autoTitleDoneForChatRef.current = currentChat.id;
     updateChatTitle(currentChat.id, title);
-  }, [currentChat, messages, updateChatTitle, interfaceSettings.autoGenerateTitles]);
+  }, [
+    currentChat?.id,
+    currentChat?.title,
+    firstUserMessage?.id,
+    firstUserMessage?.content,
+    firstUserMessage?.inlineAttachments?.length,
+    interfaceSettings.autoGenerateTitles,
+    updateChatTitle,
+  ]);
 
   // Убираем автоматическую остановку генерации при смене чата
   // Генерация должна происходить в том чате, где был задан вопрос
@@ -3338,10 +3425,7 @@ export default function UnifiedChatPage({
     const inlineSnapshot = [...inlineAttachments];
     const chatSnapshot = currentChat;
 
-    void (async () => {
-      if (!(await ensureModelReadyForSend(messageSnapshot))) {
-        return;
-      }
+    runWhenModelReady(messageSnapshot, () => {
       if (currentChatLoading) {
         return;
       }
@@ -3414,7 +3498,7 @@ export default function UnifiedChatPage({
       setTimeout(() => {
         inputRef.current?.focus();
       }, 10);
-    })();
+    });
   };
   const handleKeyPress = (event: React.KeyboardEvent): void => {
     if (event.key === 'Enter' && !event.shiftKey) {
@@ -4234,7 +4318,8 @@ export default function UnifiedChatPage({
     if (visIndex < 0) return;
 
     isProgrammaticScrollRef.current = true;
-    isAtBottomRef.current = false;
+    // после перехода лента «вдали от низа»: показываем кнопку «к концу чата»
+    syncAwayFromBottom(true);
 
     const snapIntoView = () => {
       const el =
@@ -4258,7 +4343,7 @@ export default function UnifiedChatPage({
       snapIntoView();
     }
     window.setTimeout(() => { isProgrammaticScrollRef.current = false; }, 800);
-  }, [messages, visibleMessages, shouldUseVirtuosoList]);
+  }, [messages, visibleMessages, shouldUseVirtuosoList, syncAwayFromBottom]);
 
   // ================================
   // ФУНКЦИИ ДЛЯ РЕЖИМА "ПОДЕЛИТЬСЯ"
@@ -4301,7 +4386,7 @@ export default function UnifiedChatPage({
         if (assistantId) {
           const idx = messages.findIndex((m) => m.id === assistantId);
           const el = idx >= 0 ? messageRefs.current[idx] : null;
-          if (el) {
+          if (el && typeof el.scrollIntoView === 'function') {
             el.scrollIntoView({ block: 'end', behavior: 'smooth' });
             return;
           }
@@ -4549,6 +4634,14 @@ export default function UnifiedChatPage({
             ? false
             : (fullIdx >= 0 ? fullIdx : index) === visibleMessages.length - 1
         }
+        inlineAwaitingTokens={
+          Boolean(
+            chatAwaitingTokens &&
+              thinkingAnchorMessageId &&
+              message.id === thinkingAnchorMessageId,
+          )
+        }
+        awaitingStartedAtMs={chatAwaitingStartedAtMs}
         interfaceSettings={interfaceSettings}
         username={user?.username}
         dataRef={messageCardDataRef}
@@ -4624,6 +4717,14 @@ export default function UnifiedChatPage({
             isSpeaking={isSpeaking}
             isDarkMode={isDarkMode}
             isLastChatMessage={assistantFullIdx === visibleMessages.length - 1}
+            inlineAwaitingTokens={
+              Boolean(
+                chatAwaitingTokens &&
+                  thinkingAnchorMessageId &&
+                  pairedAssistant.id === thinkingAnchorMessageId,
+              )
+            }
+            awaitingStartedAtMs={chatAwaitingStartedAtMs}
             interfaceSettings={interfaceSettings}
             username={user?.username}
             dataRef={messageCardDataRef}
@@ -5143,10 +5244,10 @@ export default function UnifiedChatPage({
                         }}
                       >
                         {renderMessageAtIndex(index, message, virtuosoData)}
-                        {/* «Думает» у якоря перегенерации / стрима, не всегда под последним сообщением. */}
+                        {/* Пока нет пузыря ассистента — «думает» сразу под вопросом пользователя. */}
                         {chatAwaitingTokens &&
-                        thinkingAnchorMessageId &&
-                        message.id === thinkingAnchorMessageId ? (
+                        thinkingAnchorMessageId === message.id &&
+                        message.role === 'user' ? (
                           <ChatThinkingIndicator
                             isDarkMode={isDarkMode}
                             leftAlignMessages={interfaceSettings.leftAlignMessages}
@@ -5857,37 +5958,6 @@ export default function UnifiedChatPage({
                 }}
               />
             </Box>
-             <Tooltip
-               title={libraryDisabled ? libraryDisabledHint : ''}
-               disableHoverListener={!libraryDisabled}
-             >
-               <span style={{ display: 'block' }}>
-                 <Box
-                   onClick={() => {
-                     if (libraryDisabled) return;
-                     toggleKbRag();
-                     handleMenuClose();
-                   }}
-                   sx={{
-                     ...dropdownItemSx,
-                     display: 'flex',
-                     alignItems: 'center',
-                     gap: 1,
-                     color: isDarkMode ? 'white' : '#333',
-                     opacity: libraryDisabled ? 0.5 : 1,
-                     cursor: libraryDisabled ? 'not-allowed' : 'pointer',
-                   }}
-                 >
-                   <KbIcon sx={{ fontSize: 18, color: isDarkMode ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.6)', flexShrink: 0 }} />
-                   <Typography sx={{ flex: 1, minWidth: 0, fontSize: MENU_ACTION_TEXT_SIZE, whiteSpace: 'nowrap' }}>
-                     {useKbRag ? 'Отключить общий RAG' : 'Общий RAG'}
-                   </Typography>
-                   {useKbRag ? (
-                     <CheckIcon sx={{ fontSize: 16, color: 'primary.main', flexShrink: 0 }} />
-                   ) : null}
-                 </Box>
-               </span>
-             </Tooltip>
            </Box>
           {gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'knowledge-bases' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation' ? (
              <Box

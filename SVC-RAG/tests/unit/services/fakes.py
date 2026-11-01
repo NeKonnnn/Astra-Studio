@@ -366,6 +366,7 @@ class FakeVectorRepo:
     """Векторная таблица одной размерности: сигнатуры — надмножество трёх настоящих репозиториев.
 
     doc_repo нужен для фильтров (имя файла, даты) и для скоупа по project_id.
+    extra_dims — чужие таблицы (dim, count) для сценария rematch при dim mismatch.
     """
 
     def __init__(self, embedding_dim: int = DIM, doc_repo: Any = None):
@@ -381,6 +382,7 @@ class FakeVectorRepo:
         self.store_dropped: List[str] = []
         self.fail_store_drop: Optional[BaseException] = None
         self.tuple_single = False  # get_vector_by_document_and_chunk отдаёт (dv, score), как project
+        self.extra_dims: List[Tuple[int, int]] = []
 
     # --- запись ---
     async def create_vectors_batch(self, vectors: List[DocumentVector]) -> int:
@@ -497,6 +499,32 @@ class FakeVectorRepo:
             (v.document_id, v.chunk_index, v.content)
             for v in self._all(project_id=project_id, document_ids=document_ids)
         ]
+
+    async def count_active_chunks(self) -> int:
+        return sum(len(vs) for vs in self.rows.values())
+
+    async def count_chunks_for_documents(self, document_ids: List[int]) -> int:
+        ids = {int(d) for d in (document_ids or []) if d is not None}
+        if not ids:
+            return 0
+        return sum(len(vs) for doc_id, vs in self.rows.items() if doc_id in ids)
+
+    async def dims_with_documents(
+        self, document_ids: Optional[List[int]] = None
+    ) -> List[Tuple[int, int]]:
+        if document_ids is not None:
+            ids = [int(d) for d in document_ids if d is not None]
+            if not ids:
+                return []
+            cnt = await self.count_chunks_for_documents(ids)
+        else:
+            cnt = await self.count_active_chunks()
+        out: List[Tuple[int, int]] = []
+        if cnt > 0:
+            out.append((int(self.embedding_dim), cnt))
+        out.extend((int(d), int(c)) for d, c in self.extra_dims if int(c) > 0)
+        out.sort(key=lambda t: (-t[1], t[0]))
+        return out
 
     # --- хранилище BM25 ---
     def _fingerprint(self, **scope) -> str:

@@ -23,6 +23,7 @@ import { getMcpServerPlugin } from '../mcp/plugins/registry';
 import { isMcpServerEnabledForChat } from '../mcp/selectionStorage';
 import { useChatMcpSelection } from '../mcp/hooks/useChatMcpSelection';
 import type { McpServerConfigPublic, McpServerStatus, McpToolInfo } from '../mcp/types';
+import { useFeatureAccess } from '../hooks/useFeatureAccess';
 
 interface ChatGearMcpPanelProps {
   isDarkMode: boolean;
@@ -30,6 +31,7 @@ interface ChatGearMcpPanelProps {
 }
 
 export default function ChatGearMcpPanel({ isDarkMode, chatId }: ChatGearMcpPanelProps) {
+  const { canUseMcp } = useFeatureAccess();
   const { toggleServer } = useChatMcpSelection(chatId);
   const [servers, setServers] = useState<McpServerConfigPublic[]>([]);
   const [statusMap, setStatusMap] = useState<Map<string, McpServerStatus>>(new Map());
@@ -47,6 +49,11 @@ export default function ChatGearMcpPanel({ isDarkMode, chatId }: ChatGearMcpPane
   const dropdownItemSx = useMemo(() => getDropdownItemSx(isDarkMode), [isDarkMode]);
 
   const load = useCallback(async () => {
+    if (!canUseMcp) {
+      setServers([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       const [srv, st] = await Promise.all([fetchMcpServers(), fetchMcpStatus()]);
@@ -61,7 +68,7 @@ export default function ChatGearMcpPanel({ isDarkMode, chatId }: ChatGearMcpPane
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [canUseMcp]);
 
   useEffect(() => {
     void load();
@@ -77,13 +84,10 @@ export default function ChatGearMcpPanel({ isDarkMode, chatId }: ChatGearMcpPane
     try {
       const tools = await fetchMcpTools(serverId);
       setToolsByServer((prev) => ({ ...prev, [serverId]: tools }));
-    } catch (err) {
-      const detail = err instanceof Error && err.message.trim()
-        ? err.message.trim()
-        : 'Не удалось загрузить инструменты';
+    } catch {
       setToolsErrorByServer((prev) => ({
         ...prev,
-        [serverId]: detail,
+        [serverId]: 'Не удалось загрузить инструменты',
       }));
       setToolsByServer((prev) => ({ ...prev, [serverId]: [] }));
     } finally {
@@ -109,6 +113,27 @@ export default function ChatGearMcpPanel({ isDarkMode, chatId }: ChatGearMcpPane
     if (!q) return servers;
     return servers.filter((s) => [s.id, s.display_name].join(' ').toLowerCase().includes(q));
   }, [servers, search]);
+
+  // Хуки выше раннего return: порядок хуков не должен зависеть от прав (BUG-FE-73).
+  if (!canUseMcp) {
+    return (
+      <Box
+        sx={{
+          display: 'flex',
+          flexDirection: 'column',
+          minHeight: 0,
+          flex: 1,
+          height: '100%',
+          px: 1.5,
+          py: 2,
+        }}
+      >
+        <Typography variant="body2" sx={{ color: muted, fontSize: MENU_ACTION_TEXT_SIZE }}>
+          MCP недоступен для вашей роли.
+        </Typography>
+      </Box>
+    );
+  }
 
   if (!chatId) {
     return (

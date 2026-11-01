@@ -9,53 +9,68 @@ from typing import Optional
 from urllib.parse import quote_plus
 from backend.settings.logging import get_logger
 
-# Импортируем настройки
+logger = get_logger(__name__)
+
 try:
-    from settings import get_settings
+    from backend.settings import get_settings
+
     SETTINGS_AVAILABLE = True
 except ImportError:
     SETTINGS_AVAILABLE = False
-    logger = get_logger(__name__)
-    logger.warning("Модуль settings недоступен. Используются переменные окружения напрямую.")
-
-logger = get_logger(__name__)
+    logger.warning(
+        "Модуль settings недоступен. Используются переменные окружения напрямую."
+    )
 
 # Попытка импорта MongoDB модулей
 try:
-    # Проверяем наличие motor и pymongo
     try:
         import motor
         import pymongo
-        # Получаем версии (не все модули имеют __version__)
-        motor_version = getattr(motor, '__version__', getattr(motor, '_version', 'unknown'))
-        pymongo_version = getattr(pymongo, '__version__', 'unknown')
-        logger.info(f"motor ({motor_version}) и pymongo ({pymongo_version}) установлены")
-    except ImportError as e:
-        logger.error(f"motor или pymongo не установлены: {e}")
-        logger.error("Установите: pip install motor pymongo")
+
+        motor_version = getattr(
+            motor, "__version__", getattr(motor, "_version", "unknown")
+        )
+        pymongo_version = getattr(pymongo, "__version__", "unknown")
+        logger.debug(
+            f"motor ({motor_version}) и pymongo ({pymongo_version}) установлены"
+        )
+    except ImportError:
+        logger.exception("motor или pymongo не установлены")
+        logger.exception("Установите: pip install motor pymongo")
         raise
 
-    from .mongodb.connection import MongoDBConnection
-    from .mongodb.repository import ConversationRepository
+    from backend.database.mongodb.connection import MongoDBConnection
+    from backend.database.mongodb.repository import ConversationRepository
+
     mongodb_available = True
-    logger.info("MongoDB модули импортированы успешно")
-except ImportError as e:
-    logger.error(f"MongoDB модули недоступны: {e}")
-    logger.error(f"Traceback: {traceback.format_exc()}")
+    logger.debug("MongoDB модули импортированы успешно")
+except ImportError:
+    logger.exception("MongoDB модули недоступны")
+    logger.exception(f"Traceback: {traceback.format_exc()}")
     mongodb_available = False
     MongoDBConnection = None
     ConversationRepository = None
 
 # Попытка импорта PostgreSQL модулей
 try:
-    from .postgresql.connection import PostgreSQLConnection
-    from .postgresql.repository import DocumentRepository, VectorRepository
-    from .postgresql.agent_repository import AgentRepository
-    from .postgresql.user_settings_repository import UserSettingsRepository
-    from .postgresql.skill_repository import SkillRepository
-    from .postgresql.knowledge_base_repository import KnowledgeBaseRepository
-    from .postgresql.project_repository import ProjectRepository
-    from .postgresql.entity_settings_repository import EntitySettingsRepository
+    from backend.database.postgresql.agent_repository import AgentRepository
+    from backend.database.postgresql.connection import PostgreSQLConnection
+    from backend.database.postgresql.repository import (
+        DocumentRepository,
+        VectorRepository,
+    )
+    from backend.database.postgresql.skill_repository import SkillRepository
+    from backend.database.postgresql.knowledge_base_repository import (
+        KnowledgeBaseRepository,
+    )
+    from backend.database.postgresql.project_repository import ProjectRepository
+    from backend.database.postgresql.user_settings_repository import (
+        UserSettingsRepository,
+    )
+    from backend.database.postgresql.entity_settings_repository import (
+        EntitySettingsRepository,
+    )
+
     postgresql_available = True
     logger.debug("PostgreSQL модули импортированы успешно")
 except ImportError as e:
@@ -73,7 +88,8 @@ except ImportError as e:
 
 # Попытка импорта MinIO модулей
 try:
-    from .minio import get_minio_client
+    from backend.database.minio import get_minio_client
+
     minio_available = True
     logger.debug("MinIO модули импортированы успешно")
 except ImportError as e:
@@ -183,6 +199,14 @@ async def init_postgresql(
     После рестарта Postgres часто ещё в recovery mode, хотя healthcheck
     ``pg_isready`` уже green — поэтому здесь несколько попыток с backoff.
     """
+    from backend.settings.service_toggles import (
+        is_service_enabled as _ff_enabled,
+    )  # FEATURE-FLAG
+
+    if not _ff_enabled("postgresql"):  # FEATURE-FLAG
+        logger.info("PostgreSQL отключён (POSTGRESQL_ENABLED=false) — в эмуляции")
+        return False
+
     global postgresql_connection, document_repo, vector_repo, prompt_repo, tag_repo, agent_repo, skill_repo, knowledge_base_repo, user_settings_repo, project_repo, entity_settings_repo
 
     if not postgresql_available:
@@ -289,6 +313,14 @@ async def _migrate_agent_model_settings(repo) -> None:
 
 def init_minio() -> bool:
     """Инициализация подключения к MinIO"""
+    from backend.settings.service_toggles import (
+        is_service_enabled as _ff_enabled,
+    )  # FEATURE-FLAG
+
+    if not _ff_enabled("minio"):  # FEATURE-FLAG
+        logger.info("MinIO отключён (MINIO_ENABLED=false) — в эмуляции")
+        return False
+
     if not minio_available:
         logger.warning("MinIO модули недоступны. Пропускаем инициализацию.")
         return False

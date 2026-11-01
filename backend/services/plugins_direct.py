@@ -206,7 +206,9 @@ def pick_plugin_run(
     return None
 
 
-async def run_plugin_direct(run: PluginDirectRun, *, chat_mode: str = "chat") -> PluginDirectOutcome:
+async def run_plugin_direct(
+    run: PluginDirectRun, *, chat_mode: str = "chat"
+) -> PluginDirectOutcome:
     """Читает файл и отправляет его в сервис плагина; пишет полный след в лог."""
     from backend.plugins.artifact_format import (
         build_cash_flow_artifact_from_invoke,
@@ -293,11 +295,20 @@ async def run_plugin_direct(run: PluginDirectRun, *, chat_mode: str = "chat") ->
             invoke_url=invoke_url,
         )
 
-    verdict = verdict_markdown_from_plugin_result(result) or findings_fallback_markdown(result)
-    artifact = build_cash_flow_artifact_from_invoke(result)
+    if result:
+        verdict = verdict_markdown_from_plugin_result(
+            result
+        ) or findings_fallback_markdown(result)
+        artifact = build_cash_flow_artifact_from_invoke(result)
+    else:
+        # Пустой ответ (в том числе {}) - не успех: иначе fallback построит
+        # заголовок со статусом unknown, и пользователь увидит «результат».
+        verdict = artifact = ""
     status = ""
     if isinstance(result, dict):
-        nested = result.get("result") if isinstance(result.get("result"), dict) else result
+        nested = (
+            result.get("result") if isinstance(result.get("result"), dict) else result
+        )
         if isinstance(nested, dict):
             status = str(nested.get("status") or "")
     elapsed = monotonic() - started

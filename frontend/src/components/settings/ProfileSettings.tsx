@@ -1,38 +1,43 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Box,
   Typography,
   TextField,
   Button,
-  Avatar,
   Alert,
   CircularProgress,
   Paper,
   Divider,
+  IconButton,
+  Tooltip,
 } from '@mui/material';
 import {
   Person as PersonIcon,
   Email as EmailIcon,
   Save as SaveIcon,
+  PhotoCamera as PhotoCameraIcon,
+  DeleteOutline as DeleteIcon,
+  ChatBubbleOutline as StatusIcon,
 } from '@mui/icons-material';
 import { useAuth } from '../../contexts/AuthContext';
 import axios from 'axios';
-import { getApiUrl } from '../../config/api';
 import { getSettings } from '../../settings';
+import UserAvatar from '../UserAvatar';
 
-// Получаем базовый URL из settings
 const getApiBaseUrl = () => {
   const settings = getSettings();
   return process.env.REACT_APP_API_URL || settings.api.baseUrl;
 };
-// Используем getApiBaseUrl() напрямую в функциях
 
 export default function ProfileSettings() {
-  const { user, updateUser, token } = useAuth();
-  
+  const { user, updateUser, token, avatarSrc } = useAuth();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const [email, setEmail] = useState(user?.email || '');
   const [fullName, setFullName] = useState(user?.full_name || '');
+  const [statusText, setStatusText] = useState(user?.status || '');
   const [isLoading, setIsLoading] = useState(false);
+  const [avatarBusy, setAvatarBusy] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
 
@@ -46,6 +51,8 @@ export default function ProfileSettings() {
     );
   }
 
+  const authHeaders = { Authorization: `Bearer ${token}` };
+
   const handleSave = async () => {
     setIsLoading(true);
     setSuccessMessage('');
@@ -54,31 +61,92 @@ export default function ProfileSettings() {
     try {
       const response = await axios.put(
         `${getApiBaseUrl()}/api/auth/me`,
+        null,
         {
-          email: email || null,
-          full_name: fullName || null,
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
+          headers: authHeaders,
+          params: {
+            email: email || '',
+            full_name: fullName || '',
+            status: statusText,
           },
-        }
+        },
       );
 
       updateUser(response.data);
+      setStatusText(response.data?.status || '');
       setSuccessMessage('Профиль успешно обновлен!');
-      
-      // Автоматически скрываем сообщение через 3 секунды
       setTimeout(() => setSuccessMessage(''), 3000);
-    } catch (err: any) {
-      console.error("Failed to update profile:", err);
+    } catch (err: unknown) {
+      console.error('Failed to update profile:', err);
       if (axios.isAxiosError(err) && err.response) {
-        setErrorMessage(err.response.data.detail || "Ошибка обновления профиля");
+        setErrorMessage(err.response.data.detail || 'Ошибка обновления профиля');
       } else {
-        setErrorMessage("Произошла непредвиденная ошибка");
+        setErrorMessage('Произошла непредвиденная ошибка');
       }
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleAvatarPick = async (file: File | null) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setErrorMessage('Выберите файл изображения');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setErrorMessage('Размер аватара не должен превышать 5MB');
+      return;
+    }
+    setAvatarBusy(true);
+    setErrorMessage('');
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const response = await axios.post(`${getApiBaseUrl()}/api/auth/me/avatar`, form, {
+        headers: authHeaders,
+      });
+      updateUser({
+        ...response.data,
+        avatar_url: `/api/auth/me/avatar?v=${Date.now()}`,
+      });
+      setSuccessMessage('Аватар обновлён');
+      setTimeout(() => setSuccessMessage(''), 3000);
+    } catch (err: unknown) {
+      if (axios.isAxiosError(err) && err.response) {
+        setErrorMessage(err.response.data.detail || 'Не удалось загрузить аватар');
+      } else {
+        setErrorMessage('Не удалось загрузить аватар');
+      }
+    } finally {
+      setAvatarBusy(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const handleAvatarDelete = async () => {
+    setAvatarBusy(true);
+    setErrorMessage('');
+    try {
+      const response = await axios.delete(`${getApiBaseUrl()}/api/auth/me/avatar`, {
+        headers: authHeaders,
+      });
+      updateUser({
+        ...response.data,
+        avatar_url: response.data?.avatar_url
+          ? `${response.data.avatar_url}?v=${Date.now()}`
+          : null,
+      });
+      setSuccessMessage('Свой аватар удалён');
+      setTimeout(() => setSuccessMessage(''), 3000);
+    } catch (err: unknown) {
+      if (axios.isAxiosError(err) && err.response) {
+        setErrorMessage(err.response.data.detail || 'Не удалось удалить аватар');
+      } else {
+        setErrorMessage('Не удалось удалить аватар');
+      }
+    } finally {
+      setAvatarBusy(false);
     }
   };
 
@@ -96,7 +164,6 @@ export default function ProfileSettings() {
         </Alert>
       )}
 
-      {/* Информация о пользователе */}
       <Paper
         elevation={0}
         sx={{
@@ -111,26 +178,56 @@ export default function ProfileSettings() {
             display: 'flex',
             alignItems: 'center',
             mb: 3,
+            gap: 2,
           }}
         >
-          <Avatar
-            sx={{
-              width: 64,
-              height: 64,
-              bgcolor: 'primary.main',
-              fontSize: 28,
-              mr: 2,
-            }}
-          >
-            {user.username.charAt(0).toUpperCase()}
-          </Avatar>
-          <Box>
+          <Box sx={{ position: 'relative' }}>
+            <UserAvatar
+              sx={{
+                width: 72,
+                height: 72,
+                bgcolor: 'primary.main',
+                fontSize: 28,
+              }}
+            />
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/gif"
+              hidden
+              onChange={(e) => void handleAvatarPick(e.target.files?.[0] || null)}
+            />
+            <Tooltip title="Загрузить фото">
+              <IconButton
+                size="small"
+                disabled={avatarBusy}
+                onClick={() => fileInputRef.current?.click()}
+                sx={{
+                  position: 'absolute',
+                  right: -4,
+                  bottom: -4,
+                  bgcolor: 'background.paper',
+                  border: '1px solid',
+                  borderColor: 'divider',
+                  '&:hover': { bgcolor: 'action.hover' },
+                }}
+              >
+                {avatarBusy ? <CircularProgress size={16} /> : <PhotoCameraIcon fontSize="small" />}
+              </IconButton>
+            </Tooltip>
+          </Box>
+          <Box sx={{ flex: 1, minWidth: 0 }}>
             <Typography variant="h6" fontWeight="bold">
               {user.full_name || user.username}
             </Typography>
             <Typography variant="body2" color="text.secondary">
               @{user.username}
             </Typography>
+            {(statusText || user.status) && (
+              <Typography variant="body2" sx={{ mt: 0.5, opacity: 0.85 }}>
+                {statusText || user.status}
+              </Typography>
+            )}
             {user.is_admin && (
               <Typography
                 variant="caption"
@@ -147,12 +244,24 @@ export default function ProfileSettings() {
                 Администратор
               </Typography>
             )}
+            {avatarSrc ? (
+              <Box sx={{ mt: 1 }}>
+                <Button
+                  size="small"
+                  color="inherit"
+                  startIcon={<DeleteIcon />}
+                  disabled={avatarBusy}
+                  onClick={() => void handleAvatarDelete()}
+                >
+                  Удалить свой аватар
+                </Button>
+              </Box>
+            ) : null}
           </Box>
         </Box>
 
         <Divider sx={{ mb: 3 }} />
 
-        {/* Поля редактирования */}
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
             <PersonIcon sx={{ color: 'text.secondary' }} />
@@ -182,6 +291,21 @@ export default function ProfileSettings() {
           </Box>
 
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+            <StatusIcon sx={{ color: 'text.secondary' }} />
+            <TextField
+              fullWidth
+              label="Статус"
+              variant="outlined"
+              size="small"
+              value={statusText}
+              onChange={(e) => setStatusText(e.target.value.slice(0, 160))}
+              disabled={isLoading}
+              helperText={`${statusText.length}/160 — короткое сообщение в профиле`}
+              placeholder="Например: на связи / в фокусе / оффлайн"
+            />
+          </Box>
+
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
             <PersonIcon sx={{ color: 'text.secondary' }} />
             <TextField
               fullWidth
@@ -199,8 +323,8 @@ export default function ProfileSettings() {
           <Button
             variant="contained"
             startIcon={isLoading ? <CircularProgress size={20} /> : <SaveIcon />}
-            onClick={handleSave}
-            disabled={isLoading}
+            onClick={() => void handleSave()}
+            disabled={isLoading || avatarBusy}
           >
             Сохранить изменения
           </Button>
@@ -209,6 +333,3 @@ export default function ProfileSettings() {
     </Box>
   );
 }
-
-
-

@@ -1,10 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import ProjectRagLibraryInline from './ProjectRagLibraryInline';
 import ProjectKnowledgeBasesField from './ProjectKnowledgeBasesField';
-import RAGSettings from './settings/RAGSettings';
-import { saveEntityRagSettings, type EntityRagDraft } from '../utils/entityRagSettings';
-import { useRagReindexStatus } from '../contexts/RagReindexStatusContext';
-import { syncProjectCreate } from '../utils/projectsApi';
 import {
   Dialog,
   DialogTitle,
@@ -89,14 +84,13 @@ export default function NewProjectModal({
   open,
   onClose,
   onCreateProject,
-  ensureDraftProjectForRag,
+  ensureDraftProjectForRag: _ensureDraftProjectForRag,
   finalizeDraftProject,
   cancelDraftProject,
 }: NewProjectModalProps) {
   const theme = useTheme();
   const isDarkMode = theme.palette.mode === 'dark';
   const colorOptions = getProjectIconColorOptions(isDarkMode);
-  const { notifyReindexStarted } = useRagReindexStatus();
   const [projectName, setProjectName] = useState('');
   const [selectedIcon, setSelectedIcon] = useState<string | null>(null);
   const [selectedEmoji, setSelectedEmoji] = useState<string | null>(null);
@@ -104,13 +98,10 @@ export default function NewProjectModal({
   const [selectedColor, setSelectedColor] = useState(() => getDefaultProjectIconColor(false));
   const [memory, setMemory] = useState<'default' | 'project-only'>('default');
   const [instructions, setInstructions] = useState('');
-  /** Черновик настроек РАГ: уезжает в БД вместе с созданием проекта. */
-  const [ragDraft, setRagDraft] = useState<EntityRagDraft | null>(null);
   const [knowledgeBasesEnabled, setKnowledgeBasesEnabled] = useState(false);
   const [knowledgeBaseIds, setKnowledgeBaseIds] = useState<number[]>([]);
   const [showIconPicker, setShowIconPicker] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [showRagSettingsPanel, setShowRagSettingsPanel] = useState(false);
   const [iconTab, setIconTab] = useState(0);
   const [ragDraftProjectId, setRagDraftProjectId] = useState<string | null>(null);
   const createCompletedRef = useRef(false);
@@ -155,10 +146,8 @@ export default function NewProjectModal({
     setInstructions('');
     setShowIconPicker(false);
     setShowAdvanced(false);
-    setShowRagSettingsPanel(false);
     setIconTab(0);
     setRagDraftProjectId(null);
-    setRagDraft(null);
     setKnowledgeBasesEnabled(false);
     setKnowledgeBaseIds([]);
   };
@@ -182,18 +171,16 @@ export default function NewProjectModal({
     knowledgeBaseIds: knowledgeBasesEnabled ? knowledgeBaseIds : [],
   });
 
-  const handleCreate = async () => {
+  const handleCreate = () => {
     if (!projectName.trim()) return;
     createCompletedRef.current = true;
 
     const payload = buildDraftPayload();
-    let projectId: string | null = null;
 
     if (ragDraftProjectId && finalizeDraftProject) {
       finalizeDraftProject(ragDraftProjectId, payload);
-      projectId = ragDraftProjectId;
     } else {
-      const projectData: ProjectData = {
+      onCreateProject?.({
         name: payload.name,
         icon: payload.icon,
         iconType: payload.iconType,
@@ -203,63 +190,11 @@ export default function NewProjectModal({
         instructions: payload.instructions,
         knowledgeBasesEnabled: payload.knowledgeBasesEnabled,
         knowledgeBaseIds: payload.knowledgeBaseIds,
-      };
-      const createdId = onCreateProject?.(projectData);
-      if (typeof createdId === 'string') {
-        projectId = createdId;
-      }
-    }
-
-    if (projectId) {
-      // Настройки уходят ПОСЛЕ создания: до него id проекта ещё нет. Нужна ли
-      // перечанковка, решает backend — сравнивает индексные поля «до/после».
-      const ragApplied = await saveEntityRagSettings({
-        scope: 'project',
-        entityId: projectId,
-        entityName: payload.name,
-        instructions: payload.instructions,
-        draft: ragDraft,
       });
-      if (!ragApplied.ok) {
-        console.warn(`[RAG] Проект создан; настройки РАГ не применены: ${ragApplied.message}`);
-      } else if (ragApplied.reindexed) {
-        notifyReindexStarted();
-      }
     }
 
     resetForm();
     onClose();
-  };
-
-  const resolveProjectIdForRag = async (): Promise<string> => {
-    if (ragDraftProjectId) return ragDraftProjectId;
-    if (!projectName.trim()) {
-      throw new Error('Сначала введите название проекта');
-    }
-    if (!ensureDraftProjectForRag) {
-      throw new Error('Загрузка файлов для нового проекта недоступна');
-    }
-    const payload = buildDraftPayload();
-    const id = ensureDraftProjectForRag(payload);
-    setRagDraftProjectId(id);
-    // createProject пишет в Postgres асинхронно; без ожидания PUT RAG settings
-    // получает 403 («не владелец») — настройки «Применить» выглядят потерянными.
-    try {
-      await syncProjectCreate({
-        id,
-        name: payload.name,
-        instructions: payload.instructions,
-        memory: payload.memory,
-        icon: payload.icon,
-        iconType: payload.iconType,
-        iconColor: payload.iconColor,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      });
-    } catch (err) {
-      console.warn('[RAG] черновик проекта ещё не в БД:', err);
-    }
-    return id;
   };
 
   const renderIcon = () => {
@@ -319,35 +254,9 @@ export default function NewProjectModal({
           backgroundColor: theme.palette.mode === 'dark' ? '#1e1e1e' : '#ffffff',
           borderRadius: 2,
           minHeight: '500px',
-          ...(showRagSettingsPanel
-            ? { height: 'min(90vh, 820px)', display: 'flex', flexDirection: 'column' }
-            : {}),
         },
       }}
     >
-      {showRagSettingsPanel ? (
-        <Box sx={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          <RAGSettings
-            variant="panel"
-            lockedScope="project"
-            entityId={ragDraftProjectId}
-            entityName={projectName.trim() || 'новый проект'}
-            entityInstructionsPrompt={instructions}
-            draft
-            draftValue={ragDraft}
-            onDraftChange={setRagDraft}
-            onResolveEntityId={ensureDraftProjectForRag ? resolveProjectIdForRag : undefined}
-            isDarkMode={theme.palette.mode === 'dark'}
-            panelTitle={
-              projectName.trim()
-                ? `Настройки РАГ: ${projectName.trim()}`
-                : 'Настройки РАГ для проекта'
-            }
-            onClose={() => setShowRagSettingsPanel(false)}
-          />
-        </Box>
-      ) : (
-        <>
       <DialogTitle
         sx={{
           display: 'flex',
@@ -528,52 +437,13 @@ export default function NewProjectModal({
           />
         </Box>
 
-        {/* Файлы RAG — немедленная загрузка; при первом файле создаётся черновик проекта */}
         <Box sx={{ mb: 2, mt: 1 }}>
-          <ProjectRagLibraryInline
-            projectId={ragDraftProjectId}
-            onResolveProjectId={ensureDraftProjectForRag ? resolveProjectIdForRag : undefined}
-            dense
-            subtitle="После выбора файлов проект создаётся как черновик с текущим названием; при «Отменить» черновик удаляется."
+          <ProjectKnowledgeBasesField
+            enabled={knowledgeBasesEnabled}
+            selectedIds={knowledgeBaseIds}
+            onEnabledChange={setKnowledgeBasesEnabled}
+            onSelectedIdsChange={setKnowledgeBaseIds}
           />
-        </Box>
-
-        <ProjectKnowledgeBasesField
-          enabled={knowledgeBasesEnabled}
-          selectedIds={knowledgeBaseIds}
-          onEnabledChange={setKnowledgeBasesEnabled}
-          onSelectedIdsChange={setKnowledgeBaseIds}
-        />
-
-        {/* RAG-настройки проекта (scope=project) */}
-        <Box sx={{ mb: 2 }}>
-          <Button
-            fullWidth
-            onClick={() => {
-              if (!projectName.trim()) {
-                window.alert('Сначала введите название проекта');
-                return;
-              }
-              void (async () => {
-                if (ensureDraftProjectForRag && !ragDraftProjectId) {
-                  try {
-                    await resolveProjectIdForRag();
-                  } catch {
-                    return;
-                  }
-                }
-                setShowRagSettingsPanel(true);
-              })();
-            }}
-            endIcon={<ExpandMoreIcon />}
-            sx={{
-              justifyContent: 'space-between',
-              textTransform: 'none',
-              color: 'text.primary',
-            }}
-          >
-            Настройки РАГ для этого проекта
-          </Button>
         </Box>
 
         {/* Память / инструкции */}
@@ -680,8 +550,6 @@ export default function NewProjectModal({
           Создать проект
         </Button>
       </DialogActions>
-        </>
-      )}
     </Dialog>
   );
 }

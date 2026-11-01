@@ -47,9 +47,12 @@ from backend.realtime.helpers import (
     agent_plugin_ids,
     document_ids_from_kb_rows,
     expand_knowledge_base_document_ids,
+    kb_search_agent_documents,
     kb_search_scoped_documents,
     merge_chat_artifacts_settings,
+    pull_named_kb_hits,
     resolve_agent_kb_document_ids,
+    profile_direct_kb_document_ids,
     resolve_agent_legacy_kb_document_ids,
 )
 from backend.services.user_feedback_context import (
@@ -76,9 +79,12 @@ from backend.services.user_rag_settings import (
 )
 from backend.realtime.rag_evidence import (
     build_rag_id_to_filename,
+    documents_named_in_query,
     filter_rag_hits_by_score,
     format_rag_fragments,
     maybe_rag_no_evidence_message,
+    merge_extra_hits,
+    memory_rag_enabled,
     prepend_rag_inventory,
     rag_guard_env,
     rag_reindex_blocks_active_sources,
@@ -91,6 +97,7 @@ from backend.settings.cef_logger.cef_audit_context import cef_socket_remote_from
 from backend.settings import get_settings
 from backend.settings.logging import get_logger
 from backend.settings.logging.errors import logged_suppress
+from backend.utils.http_errors import public_error_detail
 from backend.mcp.resolvers import resolve_chat_tool_ids
 from backend.agents.config import resolve_recursion_limit
 from backend.agents.subagents.artifacts import carry_subagent_artifacts
@@ -342,6 +349,23 @@ def _get_set_tool_context():
     from backend.tools.tool_context import set_tool_context
     return set_tool_context
 
+def _apply_library_memory_flag(sources, use_memory_library_rag, use_kb_rag):
+    """Тумблер «Библиотека» (use_memory_library_rag / use_kb_rag) включает memory-RAG.
+
+    Единое правило смешивания источников (resolve_active_rag_sources) memory не
+    включает; чат-обработчики сохраняют поведение GPB: явный флаг пользователя
+    включает поиск по библиотеке памяти, если она не отключена глобально
+    (RAG_MEMORY_ENABLED=0).
+    """
+    if (
+        (use_memory_library_rag or use_kb_rag)
+        and not sources.memory
+        and memory_rag_enabled()
+    ):
+        sources.memory = True
+    return sources
+
+
 async def _notify_reindex_wait(sio, sid) -> None:
     """UI-уведомление: база переиндексируется, поиск временно без документов."""
     try:
@@ -363,6 +387,27 @@ REINDEX_WAIT_MESSAGE = (
     "База документов сейчас переиндексируется - поиск по документам "
     "временно недоступен. Повторите вопрос через пару минут."
 )
+
+
+# Комната пользователя по сокету: события генерации шлём на все вкладки/устройства
+# пользователя (если передан/известен stream id по request_id/conversation_id)
+_user_rooms: Dict[str, str] = {}
+
+
+def _gen_room(sid, payload: Optional[dict] = None) -> str:
+    """Куда слать события генерации: в комнату пользователя, если стрим с id;
+    иначе — только в этот сокет.
+
+    События без conversation_id/request_id нельзя ретранслировать на другие
+    вкладки того же пользователя — иначе стоп заденет чужой стрим."""
+    if payload is not None:
+        has_ids = payload.get("conversation_id") or payload.get("request_id")
+    else:
+        has_ids = _stream_conversation_id.get() or _stream_request_id.get()
+    if not has_ids:
+        return sid
+    return _user_rooms.get(sid, sid)
+
 
 # Номер генерации на сокет. Флаг остановки один на сокет, а генераций в один
 # момент может быть две
@@ -960,6 +1005,9 @@ def register_handlers(sio):
         }
         if _cef_remote:
             _sess["cef_remote"] = _cef_remote
+        _user_room = f"user:{user_data['user_id']}"
+        await sio.enter_room(sid, _user_room)
+        _user_rooms[sid] = _user_room
         await sio.save_session(sid, _sess)
         logger.debug(
             "Socket.IO client connected: sid=%s user_id=%s session_id=%s",
@@ -972,6 +1020,7 @@ def register_handlers(sio):
 
     @sio.event
     async def disconnect(sid):
+        _user_rooms.pop(sid, None)
         logger.debug(f"Socket.IO client disconnected: {sid}")
         stop_generation_flags.pop(sid, None)
         _forget_generation(sid)
@@ -1001,7 +1050,7 @@ def register_handlers(sio):
                 payload["conversation_id"] = data.get("conversation_id")
             if data.get("request_id"):
                 payload["request_id"] = data.get("request_id")
-        await sio.emit("generation_stopped", payload, room=sid)
+        await sio.emit("generation_stopped", payload, room=_gen_room(sid, payload))
 
     @sio.event
     async def stop_transcription(sid, data):
@@ -1095,14 +1144,37 @@ def register_handlers(sio):
                 else None
             )
             agent_profile = await _resolve_agent_chat_params(
-                data.get("agent_id"), validated_user.get("user_id") if validated_user else None
+                data.get("agent_id"),
+                validated_user.get("user_id") if validated_user else None,
+                validated_user,
             )
+            # Без права на MCP инструменты из payload игнорируем.
+            try:
+                from backend.auth.agent_platform_roles import user_can_use_mcp
+
+                if validated_user and not user_can_use_mcp(validated_user):
+                    data.pop("mcp_tool_ids", None)
+                    data.pop("tool_ids", None)
+            except Exception:
+                pass
             agent_profile = await enrich_agent_profile_with_user_settings(
                 agent_profile, validated_user.get("user_id") if validated_user else None
             )
             agent_profile = merge_chat_artifacts_settings(
                 agent_profile if isinstance(agent_profile, dict) else {},
                 data if isinstance(data, dict) else {},
+            )
+            # Модель этого чата - в контекст до RAG-поиска (judge/суммаризация в
+            # SVC-RAG отрабатывают раньше расчёта eff_model_path).
+            from backend.settings.cef_logger.cef_audit_context import chat_model_set
+
+            chat_model_set(
+                (
+                    agent_profile.get("model_path")
+                    if isinstance(agent_profile, dict)
+                    else None
+                )
+                or get_current_model_path()
             )
             _agent_ms = agent_profile.get("model_settings") if isinstance(agent_profile, dict) else None
             # Биндим ИТОГ (персональные настройки + карточка агента поверх), а не
@@ -1154,37 +1226,9 @@ def register_handlers(sio):
                 or agent_profile.get("knowledge_base_ids")
             ):
                 _collect_kb_ids(agent_profile.get("knowledge_base_ids"))
-            # БЗ из Tools чата (Мои знания / галерея) — дополняют документный scope.
+            # БЗ из Tools чата (мультивыбор) — дополняют документный scope.
+            # «Общий RAG» / personal library больше не подмешиваются — только явные KB.
             chat_kb_ids = data.get("knowledge_base_ids") if isinstance(data, dict) else None
-            # Тумблер «Библиотека» → personal entity KB (legacy memory_rag выключен).
-            if use_kb_rag or use_memory_library_rag:
-                try:
-                    from backend.services.legacy_rag_to_kb import (
-                        ensure_personal_library_kb,
-                    )
-
-                    _personal = await ensure_personal_library_kb(
-                        str(validated_user.get("user_id") or ""),
-                        author_name=str(
-                            validated_user.get("username")
-                            or validated_user.get("full_name")
-                            or ""
-                        ),
-                    )
-                    if _personal is not None and getattr(_personal, "id", None):
-                        _collect_kb_ids([int(_personal.id)])
-                        if not isinstance(chat_kb_ids, list):
-                            chat_kb_ids = []
-                        if int(_personal.id) not in [
-                            int(x)
-                            for x in chat_kb_ids
-                            if str(x).strip().lstrip("-").isdigit()
-                        ]:
-                            chat_kb_ids = list(chat_kb_ids) + [int(_personal.id)]
-                except Exception:
-                    logger.exception(
-                        "[RAG] не удалось подмешать personal library KB"
-                    )
             chat_docs: list = []
             if isinstance(chat_kb_ids, list) and chat_kb_ids:
                 _collect_kb_ids(chat_kb_ids)
@@ -1245,6 +1289,16 @@ def register_handlers(sio):
             legacy_kb_doc_ids = resolve_agent_legacy_kb_document_ids(
                 agent_profile if isinstance(agent_profile, dict) else {}
             )
+            # Fallback (GPB): БЗ не дали документов — берём kb_document_ids карточки
+            # при file_search_enabled.
+            if not agent_kb_doc_ids and not kb_ids_for_settings:
+                _direct_ids = profile_direct_kb_document_ids(
+                    agent_profile if isinstance(agent_profile, dict) else {}
+                )
+                if _direct_ids:
+                    agent_kb_doc_ids = list(_direct_ids)
+                    if not legacy_kb_doc_ids:
+                        legacy_kb_doc_ids = list(_direct_ids)
             # Tools/агент/проект могут дать kb_ids даже если expand пока пуст
             # (метаданные догонят на list) — всё равно включаем agent_kb scope.
             use_agent_scoped_kb = bool(agent_kb_doc_ids) or bool(kb_ids_for_settings)
@@ -1276,13 +1330,38 @@ def register_handlers(sio):
                         if isinstance(_cr, dict) and _cr.get("src"):
                             cef_rem = _cr
                 cef_audit_set(user=validated_user, conversation_id=conversation_id, socket_remote=cef_rem)
-            project_id = data.get("project_id") or None
+            # INT004: реальный вызов агента в чате (не только счётчик /use).
+            _agent_id_for_cef = data.get("agent_id")
+            if _agent_id_for_cef is not None:
+                with logged_suppress(logger):
+                    from backend.settings.cef_logger.cef_logger import log_cef_event
+
+                    try:
+                        _cef_aid = int(_agent_id_for_cef)
+                    except (TypeError, ValueError):
+                        _cef_aid = None
+                    if _cef_aid and _cef_aid > 0:
+                        _aname = (
+                            (agent_profile.get("name") if isinstance(agent_profile, dict) else None)
+                            or data.get("agent_name")
+                            or f"agent-{_cef_aid}"
+                        )
+                        log_cef_event(
+                            "INT004",
+                            current_user=validated_user,
+                            status_code=200,
+                            extra={
+                                "cs1": _aname,
+                                "cs1Label": "AgentName",
+                                "cs2": str(_cef_aid),
+                                "cs2Label": "AgentId",
+                            },
+                        )
+            # project_id уже определён выше (payload или из диалога) — второй
+            # запрос в MongoDB не нужен.
+            project_id = _project_id_early
             if project_id:
-                logger.debug(f"[chat_message] project_id из payload: {project_id}")
-            else:
-                project_id = await get_conversation_project_id(conversation_id)
-                if project_id:
-                    logger.debug(f"[chat_message] project_id из MongoDB: {project_id}")
+                logger.debug(f"[chat_message] project_id: {project_id}")
 
             # Настройки берём у САМИХ сущностей, не у собеседника: агента
             # могли расшарить, и искать надо теми параметрами, которыми залит
@@ -1536,7 +1615,11 @@ def register_handlers(sio):
             logger.exception("Ошибка операции")
             logger.error(f"Socket.IO chat error: {e}", exc_info=True)
             with logged_suppress(logger):
-                await sio.emit("chat_error", _stream_ids_payload({"error": str(e)}), room=sid)
+                await sio.emit(
+                    "chat_error",
+                    _stream_ids_payload({"error": public_error_detail(e)}),
+                    room=sid,
+                )
         finally:
             with logged_suppress(logger):
                 _reset_stream_ids(locals().get("stream_id_tokens"))
@@ -1602,6 +1685,7 @@ async def _handle_multi_llm(
         use_memory_library_rag=use_memory_library_rag,
         use_kb_rag=use_kb_rag,
     )
+    sources = _apply_library_memory_flag(sources, use_memory_library_rag, use_kb_rag)
     if await rag_reindex_blocks_active_sources(sources, rag_client, project_id=project_id):
         await _notify_reindex_wait(sio, sid)
         await _abort_multi_llm_reindex(
@@ -1609,6 +1693,8 @@ async def _handle_multi_llm(
         )
         return
     context_added = False
+    # Поиск по RAG упал (не «ничего не найдено»): гард не должен врать про отсутствие данных.
+    rag_search_failed = False
     rag_scopes: set = set()
     final_user_message = user_message
     # Имена документов по хранилищам — для описи «какие документы ты видишь».
@@ -1623,6 +1709,19 @@ async def _handle_multi_llm(
                 user_message, project_id=project_id, k=get_rag_chat_top_k("project"), strategy=rag_strategy
             )
             proj_hits = filter_rag_hits_by_score(proj_hits, project_min_sim)
+            # Файл назван в вопросе - дотягиваем его чанки отдельно, см. _handle_direct.
+            for _named_doc in documents_named_in_query(user_message, proj_id_name):
+                with logged_suppress(logger):
+                    proj_hits = merge_extra_hits(
+                        proj_hits,
+                        await rag_client.project_rag_search(
+                            user_message,
+                            project_id=project_id,
+                            k=get_rag_chat_top_k("project"),
+                            document_id=_named_doc,
+                            strategy=rag_strategy,
+                        ),
+                    )
             if proj_hits:
                 parts, _m = format_rag_fragments(
                     proj_hits,
@@ -1646,6 +1745,7 @@ async def _handle_multi_llm(
             return
         except Exception:
             logger.exception("multi-llm project RAG error")
+            rag_search_failed = True
     # KB — только документы выбранного агента; широкий поиск по всей KB убран
     # (тумблер библиотеки без агента ищет только memory-rag).
     if rag_client and sources.agent_kb:
@@ -1657,15 +1757,42 @@ async def _handle_multi_llm(
                 if legacy_kb_doc_ids is not None
                 else resolve_agent_legacy_kb_document_ids(agent_profile)
             )
-            hits = await kb_search_scoped_documents(
+            if knowledge_base_ids:
+                hits = await kb_search_scoped_documents(
+                    rag_client,
+                    user_message,
+                    knowledge_base_ids=knowledge_base_ids,
+                    legacy_doc_ids=_legacy_ids,
+                    k=get_rag_chat_top_k(_kb_rag_scope),
+                    strategy=rag_strategy,
+                )
+            else:
+                # Без entity-БЗ: поиск строго по document_id агента.
+                hits = await kb_search_agent_documents(
+                    rag_client,
+                    user_message,
+                    list(agent_kb_doc_ids or []) or list(_legacy_ids),
+                    k=get_rag_chat_top_k(_kb_rag_scope),
+                    strategy=rag_strategy,
+                )
+            hits = filter_rag_hits_by_score(list(hits or []), agent_min_sim)
+            # «что в файле X?» — семантика пустая, дотягиваем по имени (как у субагентов).
+            hits = await pull_named_kb_hits(
                 rag_client,
                 user_message,
+                list(hits or []),
+                kb_id_name,
+                only_ids=list(agent_kb_doc_ids or []) or list(kb_id_name.keys()),
                 knowledge_base_ids=knowledge_base_ids,
-                legacy_doc_ids=_legacy_ids,
+                # Без entity-БЗ именованный файл дотягиваем среди document_id агента.
+                legacy_doc_ids=(
+                    _legacy_ids
+                    if knowledge_base_ids
+                    else (list(agent_kb_doc_ids or []) or list(_legacy_ids))
+                ),
                 k=get_rag_chat_top_k(_kb_rag_scope),
                 strategy=rag_strategy,
             )
-            hits = filter_rag_hits_by_score(list(hits or []), agent_min_sim)
             if hits:
                 parts, _m = format_rag_fragments(
                     hits,
@@ -1689,12 +1816,23 @@ async def _handle_multi_llm(
             return
         except Exception:
             logger.exception("multi-llm kb_search error")
+            rag_search_failed = True
     if sources.memory and rag_client:
         try:
             mem_id_name = build_rag_id_to_filename(list(await rag_client.memory_rag_list_documents() or []))
             hits = await rag_client.memory_rag_search(user_message, strategy=rag_strategy)
             # Memory: порог только из env (RAG_MEMORY_SIMILARITY_THRESHOLD), не из UI.
             hits = filter_rag_hits_by_score(list(hits or []), get_memory_similarity_threshold())
+            for _named_doc in documents_named_in_query(user_message, mem_id_name):
+                with logged_suppress(logger):
+                    hits = merge_extra_hits(
+                        hits,
+                        await rag_client.memory_rag_search(
+                            user_message,
+                            document_id=_named_doc,
+                            strategy=rag_strategy,
+                        ),
+                    )
             prefix = "Документы из настроек (библиотека памяти)"
             if hits:
                 parts, _m = format_rag_fragments(
@@ -1719,6 +1857,7 @@ async def _handle_multi_llm(
             return
         except Exception:
             logger.exception("multi-llm memory_rag_search error")
+            rag_search_failed = True
     # Опись файлов — всегда, даже если семантический поиск пустой
     # (иначе «какие документы ты видишь?» → «не вижу»).
     _inv_kb_ids = list(agent_kb_doc_ids or [])
@@ -1865,6 +2004,7 @@ async def _handle_multi_llm(
         use_memory_library_rag=sources.memory,
         use_agent_scoped_kb=sources.agent_kb,
         agent_kb_doc_ids=agent_kb_doc_ids,
+        search_failed=rag_search_failed,
     )
     if canned:
         if multi_llm_models:
@@ -2057,9 +2197,11 @@ async def _handle_multi_llm(
                     logger.exception("Multi-LLM MCP error model=")
             model_path = model_name
 
-            def _model_stream_cb(chunk, acc):
+            def _model_stream_cb(chunk, acc, stream_role: str = "content"):
                 if _generation_stopped(sid):
                     return False
+                if stream_role in ("heartbeat", "reasoning"):
+                    return True
                 asyncio.run_coroutine_threadsafe(
                     sio.emit("multi_llm_chunk", _stream_ids_payload({"model": model_name, "chunk": chunk, "accumulated": acc}), room=sid),
                     loop,
@@ -2090,7 +2232,7 @@ async def _handle_multi_llm(
             )
         except Exception as e:
             logger.exception("Ошибка операции")
-            return await _emit_complete({"model": model_name, "response": f"Ошибка: {e}", "error": True})
+            return await _emit_complete({"model": model_name, "response": f"Ошибка: {public_error_detail(e)}", "error": True})
 
     results: list = await asyncio.gather(*[_gen_one(m) for m in multi_llm_models], return_exceptions=True)
     for i, result in enumerate(results):
@@ -2206,6 +2348,7 @@ async def _handle_direct(
     extra_save_meta: Optional[dict] = None,
     knowledge_base_ids=None,
     legacy_kb_doc_ids=None,
+    search_query: Optional[str] = None,
 ):
     chat_timer = StageTimer(
         "CHAT",
@@ -2214,6 +2357,9 @@ async def _handle_direct(
         strategy=rag_strategy,
     )
     rag_query = (rag_query if rag_query is not None else user_message) or ""
+    # Текст для поиска по документам. Шаг цепочки ищет по своему запросу
+    # (agents/chain/step_search.py), вопрос для промпта и навыков — rag_query.
+    search_query = (search_query or "").strip() or rag_query
     stream_prefix = stream_prefix or ""
     min_sim, rag_block = rag_guard_env()
     project_min_sim, _ = rag_guard_env("project")
@@ -2226,6 +2372,7 @@ async def _handle_direct(
         use_memory_library_rag=use_memory_library_rag,
         use_kb_rag=use_kb_rag,
     )
+    sources = _apply_library_memory_flag(sources, use_memory_library_rag, use_kb_rag)
     if await rag_reindex_blocks_active_sources(sources, rag_client, project_id=project_id):
         await _notify_reindex_wait(sio, sid)
         await _abort_chat_reindex(
@@ -2234,6 +2381,8 @@ async def _handle_direct(
         chat_timer.log(logger)
         return
     context_added = False
+    # Поиск по RAG упал (не «ничего не найдено»): гард не должен врать про отсутствие данных.
+    rag_search_failed = False
     rag_scopes: set = set()
     final_message = user_message
     images = list(inline_images) if inline_images else None
@@ -2247,15 +2396,40 @@ async def _handle_direct(
     if rag_client and sources.project:
         try:
             proj_hits = await rag_client.project_rag_search(
-                rag_query, project_id=project_id, k=get_rag_chat_top_k("project"), strategy=rag_strategy
+                search_query, project_id=project_id, k=get_rag_chat_top_k("project"), strategy=rag_strategy
             )
             proj_hits = filter_rag_hits_by_score(proj_hits, project_min_sim)
+            # Файл назван в вопросе - дотягиваем его чанки отдельно. Порог
+            # к ним не применяем: документ выбран по имени, а не по близости.
+            for _named_doc in documents_named_in_query(rag_query, proj_id_name):
+                with logged_suppress(logger):
+                    proj_hits = merge_extra_hits(
+                        proj_hits,
+                        await rag_client.project_rag_search(
+                            rag_query,
+                            project_id=project_id,
+                            k=get_rag_chat_top_k("project"),
+                            document_id=_named_doc,
+                            strategy=rag_strategy,
+                        ),
+                    )
             if proj_hits:
                 if _is_structure_query(rag_query):
                     seen = {(d, i) for _, _, d, i in proj_hits}
                     for doc_id in {d for _, _, d, _ in proj_hits if d is not None}:
                         with logged_suppress(logger):
-                            for c, sc, did, idx in await rag_client.get_document_start_chunks(doc_id, max_chunks=2):
+                            _start = getattr(
+                                rag_client,
+                                "project_rag_get_document_start_chunks",
+                                None,
+                            )
+                            if callable(_start):
+                                _chunks = await _start(project_id, doc_id, max_chunks=2)
+                            else:
+                                _chunks = await rag_client.get_document_start_chunks(
+                                    doc_id, max_chunks=2
+                                )
+                            for c, sc, did, idx in _chunks:
                                 if (did, idx) not in seen:
                                     proj_hits = [(c, sc, did, idx)] + proj_hits
                                     seen.add((did, idx))
@@ -2283,6 +2457,7 @@ async def _handle_direct(
             return
         except Exception:
             logger.exception("Direct project RAG error")
+            rag_search_failed = True
     # «Библиотека» не вызывает global /search — только KB + memory ниже.
     document_search_trace = None
     kb_hits, mem_hits = ([], [])
@@ -2309,7 +2484,7 @@ async def _handle_direct(
             except (TypeError, ValueError):
                 fn = None
             if not fn:
-                fn = f"doc_{doc_id}"
+                fn = f"doc*{doc_id}"
             files_used.add(fn)
             _proj_rows.append((hit, fn))
         _proj_pcts = hits_to_relevance_percents([h for h, _ in _proj_rows])
@@ -2365,18 +2540,32 @@ async def _handle_direct(
                 if legacy_kb_doc_ids is not None
                 else resolve_agent_legacy_kb_document_ids(agent_profile)
             )
+            _doc_ids = list(agent_kb_doc_ids or []) or list(_legacy_ids)
             try:
-                kb_hits = list(
-                    await kb_search_scoped_documents(
-                        rag_client,
-                        rag_query,
-                        knowledge_base_ids=knowledge_base_ids,
-                        legacy_doc_ids=_legacy_ids,
-                        k=get_rag_chat_top_k(_kb_rag_scope),
-                        strategy=rag_strategy,
+                if knowledge_base_ids:
+                    kb_hits = list(
+                        await kb_search_scoped_documents(
+                            rag_client,
+                            search_query,
+                            knowledge_base_ids=knowledge_base_ids,
+                            legacy_doc_ids=_legacy_ids,
+                            k=get_rag_chat_top_k(_kb_rag_scope),
+                            strategy=rag_strategy,
+                        )
+                        or []
                     )
-                    or []
-                )
+                else:
+                    # GPB-путь / юнит-тесты: поиск строго по document_id агента.
+                    kb_hits = list(
+                        await kb_search_agent_documents(
+                            rag_client,
+                            search_query,
+                            _doc_ids,
+                            k=get_rag_chat_top_k(_kb_rag_scope),
+                            strategy=rag_strategy,
+                        )
+                        or []
+                    )
             except RagReindexInProgress:
                 await _notify_reindex_wait(sio, sid)
                 await _abort_chat_reindex(
@@ -2385,11 +2574,36 @@ async def _handle_direct(
                 return
             except Exception:
                 logger.exception("KB search error")
+                rag_search_failed = True
             kb_hits = filter_rag_hits_by_score(kb_hits, agent_min_sim)
+            # Имя файла в вопросе ≠ содержимое чанков → отдельный pull (паритет с субагентами).
+            _named_scope = list(agent_kb_doc_ids or [])
+            if not _named_scope and kb_rows:
+                _named_scope = []
+                for r in kb_rows:
+                    raw = r.get("id") if isinstance(r, dict) else None
+                    if raw is None and isinstance(r, dict):
+                        raw = r.get("document_id")
+                    try:
+                        _named_scope.append(int(raw))
+                    except (TypeError, ValueError):
+                        continue
+            _kb_names = build_rag_id_to_filename(kb_rows)
+            kb_hits = await pull_named_kb_hits(
+                rag_client,
+                search_query,
+                list(kb_hits or []),
+                _kb_names,
+                only_ids=_named_scope or list(_kb_names.keys()),
+                knowledge_base_ids=knowledge_base_ids,
+                legacy_doc_ids=_legacy_ids,
+                k=get_rag_chat_top_k(_kb_rag_scope),
+                strategy=rag_strategy,
+            )
         if sources.memory:
             try:
                 mem_hits = list(
-                    await rag_client.memory_rag_search(rag_query, strategy=rag_strategy)
+                    await rag_client.memory_rag_search(search_query, strategy=rag_strategy)
                     or []
                 )
             except RagReindexInProgress:
@@ -2400,7 +2614,20 @@ async def _handle_direct(
                 return
             except Exception:
                 logger.exception("memory_rag search error")
+                rag_search_failed = True
             mem_hits = filter_rag_hits_by_score(mem_hits, get_memory_similarity_threshold())
+            for _named_doc in documents_named_in_query(
+                rag_query, build_rag_id_to_filename(mem_rows)
+            ):
+                with logged_suppress(logger):
+                    mem_hits = merge_extra_hits(
+                        mem_hits,
+                        await rag_client.memory_rag_search(
+                            rag_query,
+                            document_id=_named_doc,
+                            strategy=rag_strategy,
+                        ),
+                    )
         kb_id_name = build_rag_id_to_filename(kb_rows)
         mem_id_name = build_rag_id_to_filename(mem_rows)
         hits_out = document_search_trace["hits"] if document_search_trace else []
@@ -2420,7 +2647,7 @@ async def _handle_direct(
                 except (TypeError, ValueError):
                     fn = None
                 if not fn:
-                    fn = f"doc_{doc_id}"
+                    fn = f"doc*{doc_id}"
                 files_used.add(fn)
                 _pending_trace.append((hit, fn, store_name))
         _pcts = hits_to_relevance_percents([row[0] for row in _pending_trace])
@@ -2823,6 +3050,7 @@ async def _handle_direct(
         agent_kb_doc_ids=agent_kb_doc_ids,
         # Есть переписка - пусть отвечает модель: ответ мог прозвучать выше
         has_history=bool(history),
+        search_failed=rag_search_failed,
     )
     _agent_steps_limit = resolve_recursion_limit(
         agent_profile if isinstance(agent_profile, dict) else None
@@ -3066,9 +3294,11 @@ async def _handle_direct(
             ),
         )
     reasoning_trace_accumulated = ""
+    # Уже показанный пользователю текст: нужен, чтобы не потерять его при сбое модели
+    content_accumulated = ""
 
     def _direct_stream_cb(chunk, acc, stream_role="content"):
-        nonlocal reasoning_trace_accumulated
+        nonlocal reasoning_trace_accumulated, content_accumulated
         if stream_role == "heartbeat":
             return not _generation_stopped(sid)
         if stream_role == "reasoning":
@@ -3079,6 +3309,8 @@ async def _handle_direct(
             if suppress_ui_stream:
                 return True
             return sync_stream_cb(chunk, acc, stream_role)
+        if isinstance(acc, str) and acc:
+            content_accumulated = acc
         if suppress_ui_stream:
             return True
         visible_acc = f"{stream_prefix}{acc}" if stream_prefix else acc
@@ -3179,10 +3411,36 @@ async def _handle_direct(
             recursion_limit=_agent_steps_limit,
             detail="стриминг включён",
         )
-        with concurrent.futures.ThreadPoolExecutor() as ex:
-            response = await asyncio.get_event_loop().run_in_executor(
-                ex, _make_ctx_runner(lambda: _run_ask(True, _direct_stream_cb))
-            )
+        try:
+            with concurrent.futures.ThreadPoolExecutor() as ex:
+                response = await asyncio.get_event_loop().run_in_executor(
+                    ex, _make_ctx_runner(lambda: _run_ask(True, _direct_stream_cb))
+                )
+        except Exception:
+            # Модель упала посреди потока: сохраняем уже показанный partial,
+            # иначе после F5 он пропадёт. Исключение уходит выше (chat_error).
+            if content_accumulated.strip() and save_response:
+                try:
+                    vis = (
+                        f"{stream_prefix}{content_accumulated}"
+                        if stream_prefix
+                        else content_accumulated
+                    )
+                    meta = {"failed": True}
+                    if reasoning_trace_accumulated.strip():
+                        meta["reasoning_content"] = reasoning_trace_accumulated.strip()
+                    meta = _with_generation_duration(meta, generation_started_at)
+                    await save_assistant_response(
+                        vis,
+                        meta,
+                        conversation_id=conversation_id,
+                        user_id=(current_user or {}).get("user_id"),
+                        project_id=project_id,
+                        **_regen_save_kwargs(data),
+                    )
+                except Exception as e:
+                    logger.warning("Не удалось сохранить partial после сбоя: %s", e)
+            raise
         log_plain_llm(
             phase="done",
             chat_id=conversation_id,
@@ -3198,6 +3456,25 @@ async def _handle_direct(
             detail="стриминг включён",
         )
         if response is None or _generation_stopped(sid):
+            # Сохраняем то, что уже успели сгенерировать — иначе после F5 partial пропадает.
+            partial = response if isinstance(response, str) and response.strip() else ""
+            if partial and save_response:
+                try:
+                    vis = f"{stream_prefix}{partial}" if stream_prefix else partial
+                    meta = {"stopped": True}
+                    if reasoning_trace_accumulated.strip():
+                        meta["reasoning_content"] = reasoning_trace_accumulated.strip()
+                    meta = _with_generation_duration(meta, generation_started_at)
+                    await save_assistant_response(
+                        vis,
+                        meta,
+                        conversation_id=conversation_id,
+                        user_id=(current_user or {}).get("user_id"),
+                        project_id=project_id,
+                        **_regen_save_kwargs(data),
+                    )
+                except Exception as e:
+                    logger.warning("Не удалось сохранить partial после stop: %s", e)
             await sio.emit("generation_stopped", _stream_ids_payload({"message": "Генерация остановлена"}), room=sid)
             chat_timer.mark("llm", time.perf_counter() - _t_llm0)
             chat_timer.log(logger)
@@ -3245,6 +3522,22 @@ async def _handle_direct(
     if mcp_tool_events and isinstance(response, str):
         response = carry_subagent_artifacts(response, mcp_tool_events)
     if _generation_stopped(sid):
+        # Ответ уже получен (не потоковый режим) — сохраняем его, как partial в потоковой ветке.
+        partial = response if isinstance(response, str) and response.strip() else ""
+        if partial and save_response:
+            try:
+                vis = f"{stream_prefix}{partial}" if stream_prefix else partial
+                meta = _with_generation_duration({"stopped": True}, generation_started_at)
+                await save_assistant_response(
+                    vis,
+                    meta,
+                    conversation_id=conversation_id,
+                    user_id=(current_user or {}).get("user_id"),
+                    project_id=project_id,
+                    **_regen_save_kwargs(data),
+                )
+            except Exception as e:
+                logger.warning("Не удалось сохранить ответ после stop: %s", e)
         await sio.emit("generation_stopped", _stream_ids_payload({"message": "Генерация остановлена"}), room=sid)
         return None
     visible_out = complete_response if complete_response is not None else (

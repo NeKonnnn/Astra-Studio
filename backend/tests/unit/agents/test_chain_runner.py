@@ -217,10 +217,32 @@ class TestChain:
         assert [s["agent_name"] for s in done["chain_steps"]] == ["Агент", "Итог"]
         assert done["hide_sequential_outputs"] is False
 
-    async def test_shared_rag_of_head_goes_to_steps_that_accept_it(self, env):
+    async def test_shared_rag_of_head_goes_to_steps_that_accept_it(self, env, monkeypatch):
+        # Multi-KB: scope шага = развёрнутые knowledge_base_ids (legacy kb_document_ids отключены).
+        async def fake_resolve(_rag, profile):
+            ids = profile.get("knowledge_base_ids") or []
+            if not (profile.get("knowledge_bases_enabled") or ids):
+                return []
+            return sorted(int(x) for x in ids)
+
+        monkeypatch.setattr(
+            "backend.realtime.helpers.resolve_agent_kb_document_ids", fake_resolve
+        )
         chain = _chain()
-        chain[0].update(shared_chain_rag=True, kb_document_ids=[7, 8])
-        chain[1].update(use_parent_shared_rag=False, file_search_enabled=True, kb_document_ids=[99])
+        chain[0].update(
+            shared_chain_rag=True,
+            knowledge_bases_enabled=True,
+            knowledge_base_ids=[7, 8],
+            file_search_enabled=False,
+            kb_document_ids=[],
+        )
+        chain[1].update(
+            use_parent_shared_rag=False,
+            knowledge_bases_enabled=True,
+            knowledge_base_ids=[99],
+            file_search_enabled=False,
+            kb_document_ids=[],
+        )
         env["chain"] = chain
         env["replies"] = ["a", "b", "c"]
         await _run(FakeSio(), use_kb_rag=False)

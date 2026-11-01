@@ -1,13 +1,18 @@
-from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
-from motor.motor_asyncio import AsyncIOMotorCollection
-from bson import ObjectId
+from typing import Any, Dict, List, Optional
 
-from .models import Conversation, Message
-from .connection import MongoDBConnection
+from bson import ObjectId
+from motor.motor_asyncio import AsyncIOMotorCollection
+
+from backend.database.mongodb.connection import MongoDBConnection
+from backend.database.mongodb.models import Conversation, Message
 from backend.settings.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Поля, которые update_conversation не перезаписывает (передача диалога другому
+# владельцу/проекту — только через отдельные операции).
+_PROTECTED_UPDATE_FIELDS = frozenset({"user_id", "project_id"})
 
 
 class ConversationRepository:
@@ -30,29 +35,13 @@ class ConversationRepository:
     async def create_indexes(self):
         """Создание индексов для оптимизации поиска"""
         collection = self._get_collection()
-
-        # Индекс по conversation_id (уникальный)
         await collection.create_index("conversation_id", unique=True)
-
-        # Индекс по user_id для быстрого поиска диалогов пользователя
         await collection.create_index("user_id")
-
-        # Индекс по updated_at для сортировки
         await collection.create_index("updated_at")
-
-        # TTL индекс для автоматической очистки старых диалогов
         if await collection.find_one({"expires_at": {"$exists": True}}):
             await collection.create_index("expires_at", expireAfterSeconds=0)
-
-        # Текстовый индекс для поиска по содержимому сообщений
-        await collection.create_index([
-            ("title", "text"),
-            ("messages.content", "text")
-        ])
-
-        # Индекс для быстрой фильтрации по project_id
+        await collection.create_index([("title", "text"), ("messages.content", "text")])
         await collection.create_index("project_id")
-        
         logger.info("Индексы для коллекции conversations созданы")
 
     async def create_conversation(self, conversation: Conversation) -> Optional[str]:
@@ -69,13 +58,24 @@ class ConversationRepository:
             collection = self._get_collection()
             conversation_dict = conversation.model_dump()
             conversation_dict["_id"] = ObjectId()
-
             result = await collection.insert_one(conversation_dict)
-            logger.info(f"Создан диалог: {conversation.conversation_id}")
-            return str(result.inserted_id)
+            logger.debug(f"Создан диалог: {conversation.conversation_id}")
+            from backend.settings.cef_logger.storage_audit import log_mongo_success
 
+            log_mongo_success(
+                "MongoDB.insertOne(conversations)",
+                request_uuid=conversation.conversation_id,
+            )
+            return str(result.inserted_id)
         except Exception as e:
-            logger.error(f"Ошибка при создании диалога: {e}")
+            from backend.settings.cef_logger.storage_audit import log_mongo_failure
+
+            log_mongo_failure(
+                "MongoDB.insertOne(conversations)",
+                str(e),
+                request_uuid=conversation.conversation_id,
+            )
+            logger.exception("Ошибка при создании диалога")
             return None
 
     async def get_conversation(self, conversation_id: str) -> Optional[Conversation]:
@@ -91,14 +91,12 @@ class ConversationRepository:
         try:
             collection = self._get_collection()
             result = await collection.find_one({"conversation_id": conversation_id})
-
             if result:
-                result.pop("_id", None)  # Удаляем MongoDB _id
+                result.pop("_id", None)
                 return Conversation(**result)
             return None
-
-        except Exception as e:
-            logger.error(f"Ошибка при получении диалога: {e}")
+        except Exception:
+            logger.exception("Ошибка при получении диалога")
             return None
 
     async def add_message(self, conversation_id: str, message: Message) -> bool:
@@ -144,13 +142,12 @@ class ConversationRepository:
             logger.exception("Ошибка при добавлении сообщения")
             return False
 
-
     async def update_message(
         self,
         conversation_id: str,
         message_id: str,
         content: str,
-        old_content: str = None
+        old_content: str = None,
     ) -> bool:
         """
         Обновление сообщения в диалоге
@@ -166,50 +163,68 @@ class ConversationRepository:
         """
         try:
             collection = self._get_collection()
-
-            # Сначала пытаемся найти по message_id
             result = await collection.update_one(
-                {
-                    "conversation_id": conversation_id,
-                    "messages.message_id": message_id
-                },
+                {"conversation_id": conversation_id, "messages.message_id": message_id},
                 {
                     "$set": {
                         "messages.$.content": content,
-                        "updated_at": datetime.utcnow()
+                        "updated_at": datetime.utcnow(),
                     }
-                }
+                },
             )
-
             if result.modified_count > 0:
-                logger.debug(f"Обновлено сообщение {message_id} в диалоге: {conversation_id}")
-                return True
+                logger.debug(
+                    f"Обновлено сообщение {message_id} в диалоге: {conversation_id}"
+                )
+                from backend.settings.cef_logger.storage_audit import log_mongo_success
 
-            # Если не найдено по message_id и передано старое содержимое, ищем по нему
+                log_mongo_success(
+                    "MongoDB.updateOne(conversations.messages)",
+                    request_uuid=conversation_id,
+                )
+                return True
             if old_content:
-                logger.debug(f"Сообщение {message_id} не найдено, ищем по старому содержимому")
+                logger.debug(
+                    f"Сообщение {message_id} не найдено, ищем по старому содержимому"
+                )
                 result = await collection.update_one(
                     {
                         "conversation_id": conversation_id,
-                        "messages.content": old_content
+                        "messages.content": old_content,
                     },
                     {
                         "$set": {
                             "messages.$.content": content,
-                            "updated_at": datetime.utcnow()
+                            "updated_at": datetime.utcnow(),
                         }
-                    }
+                    },
                 )
-
                 if result.modified_count > 0:
-                    logger.debug(f"Обновлено сообщение по старому содержимому в диалоге: {conversation_id}")
+                    logger.debug(
+                        f"Обновлено сообщение по старому содержимому в диалоге: {conversation_id}"
+                    )
+                    from backend.settings.cef_logger.storage_audit import (
+                        log_mongo_success,
+                    )
+
+                    log_mongo_success(
+                        "MongoDB.updateOne(conversations.messages)",
+                        request_uuid=conversation_id,
+                    )
                     return True
-
-            logger.warning(f"Сообщение {message_id} не найдено в диалоге {conversation_id}")
+            logger.warning(
+                f"Сообщение {message_id} не найдено в диалоге {conversation_id}"
+            )
             return False
-
         except Exception as e:
-            logger.error(f"Ошибка при обновлении сообщения: {e}")
+            from backend.settings.cef_logger.storage_audit import log_mongo_failure
+
+            log_mongo_failure(
+                "MongoDB.updateOne(conversations.messages)",
+                str(e),
+                request_uuid=conversation_id,
+            )
+            logger.exception("Ошибка при обновлении сообщения")
             return False
 
     async def update_message_feedback(
@@ -226,56 +241,82 @@ class ConversationRepository:
         """
         try:
             collection = self._get_collection()
-            conversation = await self.get_conversation(conversation_id)
-            if not conversation or not conversation.messages:
-                return False
-
-            msg_index = None
-            for i, msg in enumerate(conversation.messages):
-                if getattr(msg, "message_id", None) == message_id:
-                    msg_index = i
-                    break
-            if msg_index is None:
-                logger.warning(f"Сообщение {message_id} не найдено в диалоге {conversation_id}")
-                return False
-
-            msg = conversation.messages[msg_index]
-            meta = dict(msg.metadata or {})
-
+            # Атомарная правка одного поля через arrayFilters по message_id: без цикла
+            # «прочитал всю metadata -> записал по индексу» (параллельная правка того же
+            # сообщения или сдвиг индексов не теряет данные и не пишет в чужое сообщение).
+            msg_filter: Dict[str, Any] = {"message_id": message_id}
             if multi_llm_slot_index is not None:
-                slots = list(meta.get("multi_llm_responses") or meta.get("multiLLMResponses") or [])
-                if not isinstance(slots, list) or multi_llm_slot_index < 0 or multi_llm_slot_index >= len(slots):
+                conversation = await self.get_conversation(conversation_id)
+                target = next(
+                    (
+                        m
+                        for m in (conversation.messages if conversation else [])
+                        if getattr(m, "message_id", None) == message_id
+                    ),
+                    None,
+                )
+                if target is None:
+                    logger.warning(
+                        f"Сообщение {message_id} не найдено в диалоге {conversation_id}"
+                    )
+                    return False
+                tmeta = target.metadata or {}
+                slots_key = (
+                    "multi_llm_responses"
+                    if tmeta.get("multi_llm_responses")
+                    else "multiLLMResponses"
+                )
+                slots = tmeta.get("multi_llm_responses") or tmeta.get("multiLLMResponses")
+                if (
+                    not isinstance(slots, list)
+                    or multi_llm_slot_index < 0
+                    or multi_llm_slot_index >= len(slots)
+                ):
                     logger.warning(
                         "Некорректный multi_llm_slot_index=%s для сообщения %s",
                         multi_llm_slot_index,
                         message_id,
                     )
                     return False
-                slot = dict(slots[multi_llm_slot_index] or {})
-                if feedback is None:
-                    slot.pop("feedback", None)
-                else:
-                    slot["feedback"] = feedback
-                slots[multi_llm_slot_index] = slot
-                meta["multi_llm_responses"] = slots
+                field = f"metadata.{slots_key}.{multi_llm_slot_index}.feedback"
+                # Слот должен существовать к моменту записи.
+                msg_filter[f"metadata.{slots_key}.{multi_llm_slot_index}"] = {
+                    "$exists": True
+                }
             else:
-                if feedback is None:
-                    meta.pop("feedback", None)
-                else:
-                    meta["feedback"] = feedback
+                field = "metadata.feedback"
 
+            update: Dict[str, Any] = {"$set": {"updated_at": datetime.utcnow()}}
+            if feedback is None:
+                update["$unset"] = {f"messages.$[m].{field}": ""}
+            else:
+                update["$set"][f"messages.$[m].{field}"] = feedback
             result = await collection.update_one(
-                {"conversation_id": conversation_id},
                 {
-                    "$set": {
-                        f"messages.{msg_index}.metadata": meta,
-                        "updated_at": datetime.utcnow(),
-                    }
+                    "conversation_id": conversation_id,
+                    "messages": {"$elemMatch": msg_filter},
                 },
+                update,
+                array_filters=[{"m.message_id": message_id}],
             )
-            return result.matched_count > 0
+            if result.matched_count > 0:
+                from backend.settings.cef_logger.storage_audit import log_mongo_success
+
+                log_mongo_success(
+                    "MongoDB.updateOne(conversations.messages.feedback)",
+                    request_uuid=conversation_id,
+                )
+                return True
+            return False
         except Exception as e:
-            logger.error(f"Ошибка при сохранении feedback сообщения: {e}")
+            from backend.settings.cef_logger.storage_audit import log_mongo_failure
+
+            log_mongo_failure(
+                "MongoDB.updateOne(conversations.messages.feedback)",
+                str(e),
+                request_uuid=conversation_id,
+            )
+            logger.exception("Ошибка при сохранении feedback сообщения")
             return False
 
     async def update_assistant_message(
@@ -306,10 +347,7 @@ class ConversationRepository:
             return False
 
     async def get_user_conversations(
-        self, 
-        user_id: str, 
-        limit: int = 50,
-        skip: int = 0
+        self, user_id: str, limit: int = 50, skip: int = 0
     ) -> List[Conversation]:
         """
         Получение диалогов пользователя
@@ -324,26 +362,24 @@ class ConversationRepository:
         """
         try:
             collection = self._get_collection()
-
-            cursor = collection.find({"user_id": user_id}).sort("updated_at", -1).skip(skip).limit(limit)
+            cursor = (
+                collection.find({"user_id": user_id})
+                .sort("updated_at", -1)
+                .skip(skip)
+                .limit(limit)
+            )
             results = await cursor.to_list(length=limit)
-
             conversations = []
             for result in results:
                 result.pop("_id", None)
                 conversations.append(Conversation(**result))
-
             return conversations
-
-        except Exception as e:
-            logger.error(f"Ошибка при получении диалогов пользователя: {e}")
+        except Exception:
+            logger.exception("Ошибка при получении диалогов пользователя")
             return []
 
     async def search_conversations(
-        self, 
-        query: str, 
-        user_id: Optional[str] = None,
-        limit: int = 50
+        self, query: str, user_id: Optional[str] = None, limit: int = 50
     ) -> List[Conversation]:
         """
         Поиск диалогов по тексту
@@ -358,23 +394,22 @@ class ConversationRepository:
         """
         try:
             collection = self._get_collection()
-
             search_filter: Dict[str, Any] = {"$text": {"$search": query}}
             if user_id:
                 search_filter["user_id"] = user_id
-
-            cursor = collection.find(search_filter).sort("score", {"$meta": "textScore"}).limit(limit)
+            cursor = (
+                collection.find(search_filter)
+                .sort("score", {"$meta": "textScore"})
+                .limit(limit)
+            )
             results = await cursor.to_list(length=limit)
-
             conversations = []
             for result in results:
                 result.pop("_id", None)
                 conversations.append(Conversation(**result))
-
             return conversations
-
-        except Exception as e:
-            logger.error(f"Ошибка при поиске диалогов: {e}")
+        except Exception:
+            logger.exception("Ошибка при поиске диалогов")
             return []
 
     async def update_conversation(
@@ -392,8 +427,18 @@ class ConversationRepository:
         """
         try:
             collection = self._get_collection()
-            # Не мутируем словарь вызывающего кода.
-            set_fields = {**updates, "updated_at": datetime.utcnow()}
+            # Владелец и проект меняются только отдельными операциями
+            # (set_conversation_project); словарь вызывающего кода не мутируем.
+            set_fields = {
+                k: v for k, v in updates.items() if k not in _PROTECTED_UPDATE_FIELDS
+            }
+            if len(set_fields) != len(updates):
+                logger.warning(
+                    "update_conversation(%s): поля %s не обновляются и пропущены",
+                    conversation_id,
+                    sorted(set(updates) & _PROTECTED_UPDATE_FIELDS),
+                )
+            set_fields["updated_at"] = datetime.utcnow()
             result = await collection.update_one(
                 {"conversation_id": conversation_id}, {"$set": set_fields}
             )
@@ -415,7 +460,6 @@ class ConversationRepository:
             )
             logger.exception("Ошибка при обновлении диалога")
             return False
-
 
     async def delete_conversation(self, conversation_id: str) -> bool:
         """
@@ -449,23 +493,33 @@ class ConversationRepository:
             logger.exception("Ошибка при удалении диалога")
             return False
 
-
     async def delete_user_conversations(self, user_id: str) -> int:
         """Удаление всех диалогов пользователя. Возвращает количество удалённых."""
         try:
             collection = self._get_collection()
             result = await collection.delete_many({"user_id": user_id})
-            logger.info(f"Удалено {result.deleted_count} диалогов пользователя {user_id}")
+            logger.info(
+                f"Удалено {result.deleted_count} диалогов пользователя {user_id}"
+            )
+            from backend.settings.cef_logger.storage_audit import log_mongo_success
+
+            log_mongo_success(
+                f"MongoDB.deleteMany(conversations) user_id={user_id}",
+                request_uuid=f"{user_id}:{result.deleted_count}",
+            )
             return result.deleted_count
         except Exception as e:
-            logger.error(f"Ошибка при удалении диалогов пользователя {user_id}: {e}")
+            from backend.settings.cef_logger.storage_audit import log_mongo_failure
+
+            log_mongo_failure(
+                f"MongoDB.deleteMany(conversations) user_id={user_id}",
+                str(e),
+                request_uuid=user_id,
+            )
+            logger.exception("Ошибка при удалении диалогов пользователя")
             return 0
 
-    async def set_conversation_ttl(
-        self, 
-        conversation_id: str, 
-        days: int
-    ) -> bool:
+    async def set_conversation_ttl(self, conversation_id: str, days: int) -> bool:
         """
         Установка TTL для диалога
 
@@ -478,18 +532,15 @@ class ConversationRepository:
         """
         try:
             expires_at = datetime.utcnow() + timedelta(days=days)
-            return await self.update_conversation(conversation_id, {"expires_at": expires_at})
-
-        except Exception as e:
-            logger.error(f"Ошибка при установке TTL: {e}")
+            return await self.update_conversation(
+                conversation_id, {"expires_at": expires_at}
+            )
+        except Exception:
+            logger.exception("Ошибка при установке TTL")
             return False
 
-    # ─── Методы для работы с памятью проектов ─────────────────────────────────
-
     async def get_conversations_by_project(
-        self,
-        project_id: str,
-        limit: int = 200,
+        self, project_id: str, limit: int = 200
     ) -> List[Conversation]:
         """Все диалоги конкретного проекта (project_id = given)."""
         try:
@@ -505,16 +556,18 @@ class ConversationRepository:
                 result.pop("_id", None)
                 conversations.append(Conversation(**result))
             return conversations
-        except Exception as e:
-            logger.error(f"Ошибка при получении диалогов проекта {project_id}: {e}")
+        except Exception:
+            logger.exception("Ошибка при получении диалогов проекта")
             return []
 
-    async def get_global_conversations(self, limit:int = 200) -> List[Conversation]:
+    async def get_global_conversations(self, limit: int = 200) -> List[Conversation]:
         """Все глобальные (не привязанные к проекту) диалоги."""
         try:
             collection = self._get_collection()
             cursor = (
-                collection.find({"$or": [{"project_id": None}, {"project_id": {"$exists": False}}]})
+                collection.find(
+                    {"$or": [{"project_id": None}, {"project_id": {"$exists": False}}]}
+                )
                 .sort("updated_at", -1)
                 .limit(limit)
             )
@@ -524,8 +577,8 @@ class ConversationRepository:
                 result.pop("_id", None)
                 conversations.append(Conversation(**result))
             return conversations
-        except Exception as e:
-            logger.error(f"Ошибка при получении глобальных диалогов: {e}")
+        except Exception:
+            logger.exception("Ошибка при получении глобальных диалогов")
             return []
 
     async def delete_conversations_by_project(self, project_id: str) -> int:
@@ -535,9 +588,22 @@ class ConversationRepository:
             result = await collection.delete_many({"project_id": project_id})
             deleted = result.deleted_count
             logger.info(f"Удалено {deleted} диалогов проекта {project_id}")
+            from backend.settings.cef_logger.storage_audit import log_mongo_success
+
+            log_mongo_success(
+                f"MongoDB.deleteMany(conversations) project_id={project_id}",
+                request_uuid=f"{project_id}:{deleted}",
+            )
             return deleted
         except Exception as e:
-            logger.error(f"Ошибка при удалении диалогов проекта {project_id}: {e}")
+            from backend.settings.cef_logger.storage_audit import log_mongo_failure
+
+            log_mongo_failure(
+                f"MongoDB.deleteMany(conversations) project_id={project_id}",
+                str(e),
+                request_uuid=project_id,
+            )
+            logger.exception("Ошибка при удалении диалогов проекта")
             return 0
 
     async def set_conversation_project(
@@ -570,7 +636,6 @@ class ConversationRepository:
             )
             logger.exception("Ошибка при обновлении project_id диалога")
             return False
-
 
     async def remove_last_message(
         self, conversation_id: str, role: Optional[str] = None
@@ -669,4 +734,3 @@ class ConversationRepository:
             )
             logger.exception("Ошибка при удалении последнего сообщения")
             return False
-

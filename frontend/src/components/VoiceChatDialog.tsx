@@ -96,6 +96,10 @@ export default function VoiceChatDialog({ open, onClose }: VoiceChatDialogProps)
   const currentStreamRef = useRef<MediaStream | null>(null);
   const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastAudioLevelRef = useRef<number>(0);
+  // BUG-FE-63: цикл замера уровня звука и автостоп по тишине живут в замыканиях, созданных
+  // до того, как isRecording стал true, поэтому читают актуальное значение из ref.
+  const isRecordingRef = useRef(false);
+  const stopRecordingRef = useRef<() => void>(() => undefined);
 
   // ================================
   // СИНХРОНИЗАЦИЯ ИНДЕКСА ГОЛОСА
@@ -147,6 +151,7 @@ export default function VoiceChatDialog({ open, onClose }: VoiceChatDialogProps)
 
   // Синхронизация с глобальным состоянием
   useEffect(() => {
+    isRecordingRef.current = isRecording;
     setRecording(isRecording);
   }, [isRecording]);
 
@@ -283,11 +288,12 @@ export default function VoiceChatDialog({ open, onClose }: VoiceChatDialogProps)
     showNotification('info', 'Все процессы остановлены');
   };
 
-  const checkSilence = () => {
-    if (audioLevel < silenceThreshold) {
+  const checkSilence = (level: number) => {
+    if (level < silenceThreshold) {
       if (!silenceTimerRef.current) {
         silenceTimerRef.current = setTimeout(() => {
-          stopRecording();
+          silenceTimerRef.current = null;
+          stopRecordingRef.current();
           showNotification('info', 'Автоматическая остановка: не обнаружена речь');
         }, silenceTimeout);
       }
@@ -330,14 +336,14 @@ export default function VoiceChatDialog({ open, onClose }: VoiceChatDialogProps)
   };
 
   const updateAudioLevel = () => {
-    if (analyserRef.current && isRecording) {
+    if (analyserRef.current && isRecordingRef.current) {
       const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
       analyserRef.current.getByteFrequencyData(dataArray);
       const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
       const normalizedLevel = average / 255;
       setAudioLevel(normalizedLevel);
       lastAudioLevelRef.current = normalizedLevel;
-      checkSilence();
+      checkSilence(normalizedLevel);
       animationFrameRef.current = requestAnimationFrame(updateAudioLevel);
     }
   };
@@ -498,6 +504,7 @@ export default function VoiceChatDialog({ open, onClose }: VoiceChatDialogProps)
         setIsRecording(false);
       };
       mediaRecorderRef.current.start(1000);
+      isRecordingRef.current = true;
       setIsRecording(true);
       updateAudioLevel();
       showNotification('info', 'Запись началась. Говорите...');
@@ -510,15 +517,17 @@ export default function VoiceChatDialog({ open, onClose }: VoiceChatDialogProps)
       } else {
         showNotification('error', 'Не удалось получить доступ к микрофону');
       }
+      isRecordingRef.current = false;
       setIsRecording(false);
     }
   };
 
   const stopRecording = (): void => {
     setShouldReconnect(false);
-    if (mediaRecorderRef.current && isRecording) {
+    if (mediaRecorderRef.current && isRecordingRef.current) {
       mediaRecorderRef.current.stop(); mediaRecorderRef.current = null;
     }
+    isRecordingRef.current = false;
     if (currentStreamRef.current) {
       currentStreamRef.current.getTracks().forEach(track => track.stop());
       currentStreamRef.current = null;
@@ -535,6 +544,8 @@ export default function VoiceChatDialog({ open, onClose }: VoiceChatDialogProps)
     setStreamForVisualization(null);
     showNotification('info', 'Прослушивание остановлено');
   };
+
+  stopRecordingRef.current = stopRecording;
 
   const handleManualSend = () => {
     if (recordedText.trim()) {

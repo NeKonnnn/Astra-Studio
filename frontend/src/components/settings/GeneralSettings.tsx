@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Box,
   Typography,
@@ -26,7 +26,7 @@ import {
   Restore as RestoreIcon,
 } from '@mui/icons-material';
 import { useAppActions } from '../../contexts/AppContext';
-import { getApiUrl } from '../../config/api';
+import { getApiUrl, getAuthFetchHeaders } from '../../config/api';
 import ClampedNumberField from '../ClampedNumberField';
 import {
   MODEL_SETTINGS_LABEL_WRAPPER_SX,
@@ -47,6 +47,9 @@ export default function GeneralSettings({ isDarkMode, onToggleTheme }: GeneralSe
     unlimited_memory: false,
   });
   
+  // Последнее подтверждённое сервером состояние — для отката при ошибке сохранения (BUG-FE-36).
+  const confirmedSettingsRef = useRef(memorySettings);
+
   const { showNotification } = useAppActions();
 
   useEffect(() => {
@@ -55,9 +58,12 @@ export default function GeneralSettings({ isDarkMode, onToggleTheme }: GeneralSe
 
   const loadMemorySettings = async () => {
     try {
-      const response = await fetch(getApiUrl('/api/memory/settings'));
+      const response = await fetch(getApiUrl('/api/memory/settings'), {
+        headers: getAuthFetchHeaders(),
+      });
       if (response.ok) {
         const data = await response.json();
+        confirmedSettingsRef.current = { ...confirmedSettingsRef.current, ...data };
         setMemorySettings(prev => ({ ...prev, ...data }));
       }
     } catch (error) {
@@ -69,19 +75,20 @@ export default function GeneralSettings({ isDarkMode, onToggleTheme }: GeneralSe
     try {
       const response = await fetch(getApiUrl('/api/memory/settings'), {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthFetchHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(newSettings),
       });
       
       if (response.ok) {
-        showNotification('success', 'Настройки контекста диалога сохранены');
+        confirmedSettingsRef.current = newSettings;
+        showNotification('success', 'Настройки памяти сохранены');
         return true;
       } else {
-        throw new Error('Ошибка сохранения настроек контекста диалога');
+        throw new Error('Ошибка сохранения настроек памяти');
       }
     } catch (error) {
-      console.error('Ошибка сохранения настроек контекста диалога:', error);
-      showNotification('error', 'Ошибка сохранения настроек контекста диалога');
+      console.error('Ошибка сохранения настроек памяти:', error);
+      showNotification('error', 'Ошибка сохранения настроек памяти');
       return false;
     }
   };
@@ -89,19 +96,29 @@ export default function GeneralSettings({ isDarkMode, onToggleTheme }: GeneralSe
   const handleMemorySettingChange = async (key: keyof typeof memorySettings, value: any) => {
     const newSettings = { ...memorySettings, [key]: value };
     setMemorySettings(newSettings);
-    await saveMemorySettings(newSettings);
+    const saved = await saveMemorySettings(newSettings);
+    if (!saved) {
+      // Откат только изменённого поля к последнему подтверждённому значению.
+      const confirmedValue = confirmedSettingsRef.current[key];
+      setMemorySettings(prev => ({ ...prev, [key]: confirmedValue }));
+    }
   };
 
-  const resetMemorySettings = () => {
+  const resetMemorySettings = async () => {
     const defaultSettings = {
       max_messages: 20,
       include_system_prompts: true,
       clear_on_restart: false,
       unlimited_memory: false,
     };
+    const previousSettings = memorySettings;
     setMemorySettings(defaultSettings);
-    saveMemorySettings(defaultSettings);
-    showNotification('info', 'Настройки контекста диалога сброшены к значениям по умолчанию');
+    const saved = await saveMemorySettings(defaultSettings);
+    if (saved) {
+      showNotification('info', 'Настройки памяти сброшены к значениям по умолчанию');
+    } else {
+      setMemorySettings(confirmedSettingsRef.current ?? previousSettings);
+    }
   };
 
 
@@ -183,9 +200,9 @@ export default function GeneralSettings({ isDarkMode, onToggleTheme }: GeneralSe
               <ListItemText
                 primary={
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                    Неограниченная история
+                    Неограниченная память
                     <Tooltip 
-                      title="Ассистент будет учитывать все сообщения в диалоге. На длинных чатах это сильнее нагружает контекст модели." 
+                      title="Неограниченная память: Ассистент будет запоминать все сообщения в диалоге. Это может значительно увеличить потребление памяти при длинных диалогах." 
                       arrow
                     >
                       <IconButton 
@@ -326,7 +343,7 @@ export default function GeneralSettings({ isDarkMode, onToggleTheme }: GeneralSe
 
             <Divider />
 
-            {/* Очищать историю при перезапуске */}
+            {/* Очищать память при перезапуске */}
             <ListItem
               sx={{
                 px: 0,
@@ -337,7 +354,7 @@ export default function GeneralSettings({ isDarkMode, onToggleTheme }: GeneralSe
               }}
             >
               <ListItemText
-                primary="Очищать историю при перезапуске"
+                primary="Очищать память при перезапуске"
                 primaryTypographyProps={{
                   variant: 'body1',
                   fontWeight: 500,

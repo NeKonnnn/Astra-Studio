@@ -9,9 +9,9 @@ pytestmark = pytest.mark.unit
 
 
 class TestEntityRerankingDefault:
-    def test_default_is_false_when_env_unset(self, monkeypatch):
+    def test_default_is_true_when_env_unset(self, monkeypatch):
         monkeypatch.delenv("RAG_ENTITY_RERANKING_ENABLED", raising=False)
-        assert env.get_entity_reranking_enabled() is False
+        assert env.get_entity_reranking_enabled() is True
 
     @pytest.mark.parametrize("raw", ["1", "true", "YES", "on"])
     def test_explicit_true(self, monkeypatch, raw):

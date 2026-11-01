@@ -29,6 +29,7 @@ _ENV_OVERRIDES = {
     "embed_batch_size": ("RAG_MODELS_EMBED_BATCH_SIZE", "int"),
 }
 
+
 def _apply_env(config_data: dict) -> dict:
     """env главнее config.yml: pydantic сам по себе даёт приоритет yml."""
     out = dict(config_data)
@@ -59,7 +60,11 @@ def _apply_urls_cors(config_data: dict) -> dict:
     cors = dict(out.get("cors") or {})
     ao = cors.get("allowed_origins")
     if not ao or ao == ["*"]:
-        merged = [str(urls[k]).strip() for k in _URLS_CORS_KEYS if urls.get(k) and str(urls[k]).strip()]
+        merged = [
+            str(urls[k]).strip()
+            for k in _URLS_CORS_KEYS
+            if urls.get(k) and str(urls[k]).strip()
+        ]
         if merged:
             cors["allowed_origins"] = merged
     out["cors"] = cors
@@ -116,7 +121,7 @@ class RagModelsConfig(BaseModel):
     embedding_dim: int = 384
     # Размер батча encode(); на CPU держите 8–16, на GPU можно 32–64
     embed_batch_size: int = int(os.environ.get("RAG_MODELS_EMBED_BATCH_SIZE", "16"))
-     # Дополнительные модели (кроме основной). embedding_model2 уже есть в config.yml.
+    # Дополнительные модели (кроме основной). embedding_model2 уже есть в config.yml.
     embedding_model2: Optional[str] = None
     reranker_model2: Optional[str] = None
     # Списком, если моделей больше двух

@@ -17,7 +17,7 @@ Memory RAG (Библиотека) — отдельные RAG_MEMORY_* (см. mem
   RAG_ENTITY_QUERY_FIX_TYPOS        — false
   RAG_ENTITY_MULTI_QUERY_ENABLED    — false
   RAG_ENTITY_HYDE_ENABLED           — false
-  RAG_ENTITY_RERANKING_ENABLED      — false (CPU MiniCPM часто > timeout)
+  RAG_ENTITY_RERANKING_ENABLED      — true (на слабом CPU: false, MiniCPM часто > timeout)
   RAG_ENTITY_RERANK_TOP_N           — 12
   RAG_ENTITY_SYSTEM_PROMPT            — (пусто)
 """
@@ -133,9 +133,9 @@ def get_entity_hyde_enabled() -> bool:
 
 
 def get_entity_reranking_enabled() -> bool:
-    # False по умолчанию: MiniCPM на CPU часто >2 мин и срывает
+    # True по умолчанию. Если MiniCPM на CPU часто >2 мин и срывает
     # SVC_RAG_SEARCH_READ_TIMEOUT — чат получает «документов нет» при живом корпусе.
-    return _env_bool("RAG_ENTITY_RERANKING_ENABLED", False)
+    return _env_bool("RAG_ENTITY_RERANKING_ENABLED", True)
 
 
 def get_entity_rerank_top_n() -> int:

@@ -274,21 +274,28 @@ class TestStreaming:
 
         text, _ = await self.run(provider())
 
-        assert "Ошибка потока" in text
+        from backend.llm_providers.routing import LLM_USER_FACING_OUTAGE_TEXT
 
-    async def test_503_not_loaded_has_a_specific_message(self):
+        assert text == LLM_USER_FACING_OUTAGE_TEXT
+        assert "for url" not in text
+
+    async def test_503_not_loaded_uses_user_facing_outage_text(self):
+        from backend.llm_providers.routing import LLM_USER_FACING_OUTAGE_TEXT
+
         ROUTER.post(CHAT).mock(return_value=httpx.Response(503, json={"detail": "model not loaded"}))
 
         text, _ = await self.run(provider())
 
-        assert "не загружена" in text
+        assert text == LLM_USER_FACING_OUTAGE_TEXT
 
-    async def test_503_generic(self):
+    async def test_503_generic_uses_user_facing_outage_text(self):
+        from backend.llm_providers.routing import LLM_USER_FACING_OUTAGE_TEXT
+
         ROUTER.post(CHAT).mock(return_value=httpx.Response(503, text="busy"))
 
         text, _ = await self.run(provider())
 
-        assert "недоступен (503)" in text
+        assert text == LLM_USER_FACING_OUTAGE_TEXT
 
     async def test_429_in_a_stream_is_retried_before_any_token(self):
         route = ROUTER.post(CHAT).mock(side_effect=[httpx.Response(429), sse(delta("ok", finish="stop"))])

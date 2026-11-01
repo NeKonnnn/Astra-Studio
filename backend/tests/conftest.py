@@ -44,6 +44,56 @@ os.environ.setdefault("JWT_ACCESS_TOKEN_EXPIRE_SECONDS", "900")
 os.environ.setdefault("JWT_REFRESH_TOKEN_EXPIRE_SECONDS", "86400")
 os.environ["AUTH_MAX_ACTIVE_SESSION"] = "3"
 
+# freezegun при старте обходит атрибуты всех модулей из sys.modules; у тяжёлых
+# библиотек с ленивыми модулями (torch, transformers, sympy...) это запускает
+# многосекундный импорт и ловит таймаут теста. Они время не используют.
+try:
+    import freezegun
+
+    freezegun.configure(
+        extend_ignore_list=[
+            "torch",
+            "torchaudio",
+            "torchvision",
+            "transformers",
+            "sympy",
+            "vllm",
+            "numpy",
+            "scipy",
+            "sklearn",
+            "onnxruntime",
+            "huggingface_hub",
+            "tokenizers",
+            "safetensors",
+        ]
+    )
+except ImportError:
+    pass
+
+# hypothesis при первом draw строки разбирает AST всех «локальных» модулей из
+# sys.modules (тысячи модулей backend после полного прогона) - это десятки секунд
+# и таймаут теста. Эвристика «константы из кода» тестам не нужна.
+try:
+    from hypothesis.internal.conjecture import providers as _hyp_providers
+
+    if hasattr(_hyp_providers, "is_local_module_file"):
+        _hyp_providers.is_local_module_file = lambda _file: False
+except ImportError:
+    pass
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_ignore_collect(collection_path, config):
+    """Сломанный junction backend/backend на Windows роняет pathlib.is_dir() при сборе."""
+    try:
+        path = Path(collection_path)
+        if path.name == "backend" and path.parent.name == "backend":
+            return True
+        path.stat()
+    except OSError:
+        return True
+    return None
+
 
 @pytest.fixture(autouse=True)
 def _no_real_services(monkeypatch, tmp_path):

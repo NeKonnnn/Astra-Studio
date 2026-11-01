@@ -484,3 +484,23 @@ class TestOverview:
 
     def test_empty(self):
         assert er.routing_overview() == {"models": [], "clients": [], "rerank_clients": [], "repos": [], "auto_models": {}}
+
+
+class TestProfileForDim:
+    async def test_returns_cached_match(self):
+        er.note_dim("PHOENIX", "embed/FRIDA", 1536)
+        FakeModelsClient.dims = {"embed/FRIDA": 1536}
+        FakeModelsClient.catalogs = {"PHOENIX": ["embed/FRIDA"]}
+
+        prof = await er.profile_for_dim(DefaultClient(), 1536, prefer_provider="phoenix")
+        assert prof is not None
+        assert int(prof.dim) == 1536
+        assert (prof.provider or "").upper() == "PHOENIX"
+
+    async def test_zero_dim_is_none(self):
+        assert await er.profile_for_dim(DefaultClient(), 0) is None
+
+    async def test_unknown_dim_returns_none_without_probe_hit(self):
+        FakeModelsClient.dims = {"embed/FRIDA": 1536}
+        FakeModelsClient.catalogs = {"PHOENIX": ["embed/FRIDA"]}
+        assert await er.profile_for_dim(DefaultClient(), 2048) is None

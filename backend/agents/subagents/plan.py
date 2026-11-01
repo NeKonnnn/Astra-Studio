@@ -248,7 +248,7 @@ def log_plan_report(ctx: Any) -> None:
             label = str(names.get(int(aid)) or "").split(" - ", 1)[0].strip()
         except ValueError:
             label = ""
-        extra.append(f"{label or 'agent*' + aid} [[ОТВЕТ {answer_no}]]")
+        extra.append(f"{label or 'agent_' + aid} [[ОТВЕТ {answer_no}]]")
     if extra:
         lines.append("   вне плана вызваны: " + ", ".join(extra))
     log.debug("%s", "\n".join(lines))

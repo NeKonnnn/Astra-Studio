@@ -28,7 +28,9 @@ _SKIP_PATH_SUFFIXES = (
 
 def _should_skip(path: str) -> bool:
     p = (path or "").rstrip("/")
-    return any(p.endswith(s.rstrip("/")) or p == s.rstrip("/") for s in _SKIP_PATH_SUFFIXES)
+    return any(
+        p.endswith(s.rstrip("/")) or p == s.rstrip("/") for s in _SKIP_PATH_SUFFIXES
+    )
 
 
 def _caller_extra(request: Request) -> dict:

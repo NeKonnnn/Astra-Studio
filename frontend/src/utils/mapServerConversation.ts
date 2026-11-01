@@ -73,11 +73,18 @@ export function mapInlineAttachmentRecords(
           `/api/documents/inline-file?bucket=${encodeURIComponent(minioBucket)}&object=${encodeURIComponent(minioObject)}`,
         );
       }
+      const tokenEstimate =
+        typeof a.tokenEstimate === 'number' && a.tokenEstimate > 0
+          ? Math.ceil(a.tokenEstimate)
+          : typeof a.token_estimate === 'number' && a.token_estimate > 0
+            ? Math.ceil(a.token_estimate)
+            : undefined;
       return {
         name: String(a.name || 'file'),
         contentType,
         ...(preview ? { preview } : {}),
         ...(typeof a.size === 'number' && a.size > 0 ? { size: a.size } : {}),
+        ...(tokenEstimate ? { tokenEstimate } : {}),
       };
     });
   return items.length > 0 ? items : undefined;

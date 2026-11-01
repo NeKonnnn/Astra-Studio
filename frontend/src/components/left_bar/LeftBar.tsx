@@ -11,7 +11,6 @@ import {
   IconButton,
   Box,
   Typography,
-  Avatar,
   Chip,
   Button,
   TextField,
@@ -40,6 +39,7 @@ import {
   ArchiveOutlined as ArchiveIcon,
   PushPinOutlined as PushPinIcon,
   HistoryOutlined as UpdatesIcon,
+  MenuBookOutlined as BookIcon,
   KeyboardOutlined as KeyboardIcon,
   HelpOutline as HelpOutlineIcon,
   Close as CloseIcon,
@@ -54,6 +54,7 @@ import { useAppContext, useAppActions, chatIsListedInAllChatsSection } from '../
 import { groupChatsBySidebarTime } from '../../utils/chatListTimeGroups';
 import { useSocket } from '../../contexts/SocketContext';
 import { useAuth } from '../../contexts/AuthContext';
+import UserAvatar from '../UserAvatar';
 import ArchiveModal from '../ArchiveModal';
 import NewProjectModal from '../NewProjectModal';
 import EditProjectModal from '../EditProjectModal';
@@ -597,7 +598,8 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
   // Функция для фильтрации чатов по поисковому запросу
   const filteredChats = React.useMemo(() => {
     // Исключаем чаты, которые уже находятся в папках или проектах (в зависимости от режима), и архивированные чаты
-    const chatsInFolders = useFoldersMode ? new Set(folders.flatMap(folder => folder.chatIds)) : new Set();
+    const pinnedFolderChatIds = folders.find(folder => folder.name === 'Закреплено')?.chatIds ?? [];
+    const chatsInFolders = useFoldersMode ? new Set(folders.flatMap(folder => folder.chatIds)) : new Set(pinnedFolderChatIds);
     const chatsInProjects = !useFoldersMode ? new Set(state.chats.filter(chat => chat.projectId).map(chat => chat.id)) : new Set();
     const availableChats = state.chats.filter(
       (chat) =>
@@ -616,7 +618,7 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
         msg.content.toLowerCase().includes(searchQuery.toLowerCase())
       )
     );
-  }, [state.chats, searchQuery, folders, projects]);
+  }, [state.chats, searchQuery, folders, projects, useFoldersMode]);
 
   const filteredChatsByTime = React.useMemo(
     () => groupChatsBySidebarTime(filteredChats),
@@ -1240,7 +1242,7 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
                   },
                 }}
               >
-                <Avatar
+                <UserAvatar
                   sx={{
                     width: 40,
                     height: 40,
@@ -1248,9 +1250,8 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
                     fontSize: 14,
                     fontWeight: 600,
                   }}
-                >
-                  {user ? user.username.charAt(0).toUpperCase() : 'М'}
-                </Avatar>
+                  fallbackInitials={user ? undefined : 'М'}
+                />
               </IconButton>
             </Tooltip>
           </Box>
@@ -1571,8 +1572,8 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
         }}
       >
         <Box sx={{ p: 1 }}>
-          {/* Отображение папок - только если включен режим папок */}
-          {useFoldersMode && (
+          {/* Блок «Закреплено»: виден в обоих режимах (BUG-FE-47), иначе «Пин» в режиме проектов не давал эффекта */}
+          {(
             <>
               {/* Отображение папки "Закреплено" первой, если она существует */}
               {folders.find(f => f.name === 'Закреплено') && (() => {
@@ -2052,20 +2053,27 @@ backgroundColor: state.currentChatId === chat.id ? 'var(--sidebar-selected-bg, r
               },
             }}
           >
-            <Avatar
+            <UserAvatar
               sx={{
                 width: 28,
                 height: 28,
                 bgcolor: 'primary.main',
                 fontSize: 14,
               }}
-            >
-              {user.username.charAt(0).toUpperCase()}
-            </Avatar>
+            />
             <Box sx={{ flexGrow: 1, minWidth: 0 }}>
               <Typography variant="body2" fontWeight="600" noWrap sx={{ fontSize: '0.875rem' }}>
                 {user.full_name || user.username}
               </Typography>
+              {user.status?.trim() ? (
+                <Typography
+                  variant="caption"
+                  noWrap
+                  sx={{ display: 'block', opacity: 0.65, fontSize: '0.7rem', lineHeight: 1.2 }}
+                >
+                  {user.status.trim()}
+                </Typography>
+              ) : null}
             </Box>
             <MoreVertIcon sx={{ opacity: 0.5, fontSize: '1.2rem' }} />
           </Box>
@@ -2203,6 +2211,16 @@ backgroundColor: state.currentChatId === chat.id ? 'var(--sidebar-selected-bg, r
                 >
                   <HelpOutlineIcon sx={{ fontSize: 22, color: submenuIconColor, flexShrink: 0 }} />
                   <Typography sx={{ flex: 1, fontSize: MENU_ACTION_TEXT_SIZE }}>Помощь</Typography>
+                </Box>
+                <Box
+                  onClick={() => {
+                    handleMenuClose();
+                    navigate('/docs/user-guide');
+                  }}
+                  sx={{ ...dropdownItemSx, display: 'flex', alignItems: 'center', gap: 1, color: menuItemColor }}
+                >
+                  <BookIcon sx={{ fontSize: 22, color: submenuIconColor, flexShrink: 0 }} />
+                  <Typography sx={{ flex: 1, fontSize: MENU_ACTION_TEXT_SIZE }}>Руководство пользователя</Typography>
                 </Box>
                 <Box
                   onClick={() => {

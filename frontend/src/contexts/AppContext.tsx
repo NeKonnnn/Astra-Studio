@@ -50,8 +50,8 @@ export interface Message {
   /** Трейс поиска по документам (общая библиотека / проект / агент) */
   documentSearch?: {
     query: string;
-    sourceFiles: string[];
-    hits: Array<{
+    sourceFiles?: string[];
+    hits?: Array<{
       file: string;
       anchor: string;
       relevance: number;
@@ -123,6 +123,8 @@ export interface Message {
     documentSearch?: Message['documentSearch'];
   }>;
   hideSequentialOutputs?: boolean;
+  /** Alias для hideSequentialOutputs (тесты / legacy GPB). */
+  chainHideSequential?: boolean;
 }
 
 export interface Chat {
@@ -266,7 +268,7 @@ type AppAction =
   | { type: 'DELETE_CHAT'; payload: string }
   | { type: 'DELETE_ALL_CHATS' }
   | { type: 'ADD_MESSAGE'; payload: { chatId: string; message: Message } }
-  | { type: 'UPDATE_MESSAGE'; payload: { chatId: string; messageId: string; content?: string; isStreaming?: boolean; multiLLMResponses?: Array<{ model: string; content: string; isStreaming?: boolean; error?: boolean; feedback?: MessageFeedback | null }>; alternativeResponses?: string[]; currentResponseIndex?: number; documentSearch?: Message['documentSearch']; reasoningContent?: string; mcpToolCalls?: Message['mcpToolCalls']; inlineAttachments?: Message['inlineAttachments']; isImageGenerating?: boolean; isVideoGenerating?: boolean; inlineAttachmentVariants?: Message['inlineAttachmentVariants']; feedback?: MessageFeedback | null } }
+  | { type: 'UPDATE_MESSAGE'; payload: { chatId: string; messageId: string; content?: string; isStreaming?: boolean; multiLLMResponses?: Array<{ model: string; content: string; isStreaming?: boolean; error?: boolean; feedback?: MessageFeedback | null }>; alternativeResponses?: string[]; currentResponseIndex?: number; documentSearch?: Message['documentSearch'] | null; reasoningContent?: string | null; mcpToolCalls?: Message['mcpToolCalls'] | null; inlineAttachments?: Message['inlineAttachments']; isImageGenerating?: boolean; isVideoGenerating?: boolean; inlineAttachmentVariants?: Message['inlineAttachmentVariants']; feedback?: MessageFeedback | null } }
   | { type: 'PATCH_MESSAGE_FIELDS'; payload: { chatId: string; messageId: string; fields: Partial<Pick<Message, 'followUpSuggestions' | 'followUpSuggestionsLoading' | 'generationStartedAtMs' | 'generationDurationSec' | 'chainCurrentAgent' | 'chainSteps' | 'hideSequentialOutputs'>> } }
   | { type: 'APPEND_CHUNK'; payload: { chatId: string; messageId: string; chunk: string; isStreaming?: boolean } }
   | { type: 'SET_LOADING'; payload: boolean }
@@ -606,6 +608,8 @@ function appReducer(state: AppState, action: AppAction): AppState {
         ...state,
         chats: state.chats.filter(chat => chat.id !== action.payload),
         currentChatId: state.currentChatId === action.payload ? null : state.currentChatId,
+        // Иначе «идёт генерация» удалённого чата держит кнопку «Остановить» в других чатах.
+        loadingChatIds: state.loadingChatIds.filter((id) => id !== action.payload),
       };
       
     case 'DELETE_ALL_CHATS':
@@ -614,6 +618,7 @@ function appReducer(state: AppState, action: AppAction): AppState {
         chats: [],
         currentChatId: null,
         folders: [], // Также удаляем все папки, так как они пустые
+        loadingChatIds: [],
       };
       
     case 'ADD_MESSAGE': {
@@ -674,9 +679,16 @@ function appReducer(state: AppState, action: AppAction): AppState {
                         ...(multiLLMResponses !== undefined ? { multiLLMResponses } : {}),
                         ...(alternativeResponses !== undefined ? { alternativeResponses } : {}),
                         ...(currentResponseIndex !== undefined ? { currentResponseIndex } : {}),
-                        ...(documentSearch !== undefined ? { documentSearch } : {}),
-                        ...(reasoningContent !== undefined ? { reasoningContent } : {}),
-                        ...(mcpToolCalls !== undefined ? { mcpToolCalls } : {}),
+                        // null = явный сброс (перегенерация не должна держать старый RAG/MCP/reasoning)
+                        ...(documentSearch !== undefined
+                          ? { documentSearch: documentSearch === null ? undefined : documentSearch }
+                          : {}),
+                        ...(reasoningContent !== undefined
+                          ? { reasoningContent: reasoningContent === null ? undefined : reasoningContent }
+                          : {}),
+                        ...(mcpToolCalls !== undefined
+                          ? { mcpToolCalls: mcpToolCalls === null ? undefined : mcpToolCalls }
+                          : {}),
                         ...(inlineAttachments !== undefined ? { inlineAttachments } : {}),
                         ...(isImageGenerating !== undefined ? { isImageGenerating } : {}),
                         ...(isVideoGenerating !== undefined ? { isVideoGenerating } : {}),
@@ -1383,6 +1395,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
 }
 
 // Хук для использования контекста
+/** Чат удалён: detail.chatId - id чата, null - удалены все чаты. */
+export const CHAT_DELETED_EVENT = 'astrachat:chatDeleted';
+
 export function useAppContext() {
   const context = useContext(AppContext);
   if (!context) {
@@ -1456,6 +1471,8 @@ export function useAppActions() {
     },
     
     deleteChat: (chatId: string) => {
+      // SocketContext останавливает генерацию этого чата и снимает его индикаторы.
+      window.dispatchEvent(new CustomEvent(CHAT_DELETED_EVENT, { detail: { chatId } }));
       dispatch({
         type: 'DELETE_CHAT',
         payload: chatId,
@@ -1472,6 +1489,7 @@ export function useAppActions() {
     },
     
     deleteAllChats: () => {
+      window.dispatchEvent(new CustomEvent(CHAT_DELETED_EVENT, { detail: { chatId: null } }));
       dispatch({
         type: 'DELETE_ALL_CHATS',
       });
@@ -1506,7 +1524,7 @@ export function useAppActions() {
       return messageId;
     },
     
-    updateMessage: (chatId: string, messageId: string, content?: string, isStreaming?: boolean, multiLLMResponses?: Array<{ model: string; content: string; isStreaming?: boolean; error?: boolean; feedback?: MessageFeedback | null }>, alternativeResponses?: string[], currentResponseIndex?: number, documentSearch?: Message['documentSearch'], reasoningContent?: string, mcpToolCalls?: Message['mcpToolCalls'], inlineAttachments?: Message['inlineAttachments'], isImageGenerating?: boolean, inlineAttachmentVariants?: Message['inlineAttachmentVariants'], feedback?: MessageFeedback | null, isVideoGenerating?: boolean) => {
+    updateMessage: (chatId: string, messageId: string, content?: string, isStreaming?: boolean, multiLLMResponses?: Array<{ model: string; content: string; isStreaming?: boolean; error?: boolean; feedback?: MessageFeedback | null }>, alternativeResponses?: string[], currentResponseIndex?: number, documentSearch?: Message['documentSearch'] | null, reasoningContent?: string | null, mcpToolCalls?: Message['mcpToolCalls'] | null, inlineAttachments?: Message['inlineAttachments'], isImageGenerating?: boolean, inlineAttachmentVariants?: Message['inlineAttachmentVariants'], feedback?: MessageFeedback | null, isVideoGenerating?: boolean) => {
       dispatch({ type: 'UPDATE_MESSAGE', payload: { chatId, messageId, content, isStreaming, multiLLMResponses, alternativeResponses, currentResponseIndex, documentSearch, reasoningContent, mcpToolCalls, inlineAttachments, isImageGenerating, isVideoGenerating, inlineAttachmentVariants, feedback } });
     },
 
@@ -1810,30 +1828,37 @@ export function useAppActions() {
     },
     
     deleteProject: (projectId: string) => {
-      dispatch({ type: 'DELETE_PROJECT', payload: projectId });
       // Бэкенд чистит RAG-документы проекта, файлы в MinIO/PVC и диалоги.
       // Без этого вызова документы остаются в БД навсегда и переиндексируются впустую.
       const effectiveToken = token || localStorage.getItem('auth_token');
-      if (effectiveToken) {
-        initSettings()
-          .then(() => {
-            authFetch(getApiUrl(API_ENDPOINTS.PROJECT_DELETE(projectId)), {
-              method: 'DELETE',
-              headers: { Authorization: `Bearer ${effectiveToken}` },
-            })
-              .then((response) => {
-                if (!response.ok) {
-                  console.error(
-                    `Не удалось удалить данные проекта ${projectId}: HTTP ${response.status}`,
-                  );
-                }
-              })
-              .catch((error) => {
-                console.error(`Ошибка удаления данных проекта ${projectId}:`, error);
-              });
-          })
-          .catch(() => {});
+      if (!effectiveToken) {
+        // Без токена серверный вызов невозможен - убираем только из интерфейса.
+        dispatch({ type: 'DELETE_PROJECT', payload: projectId });
+        return;
       }
+      // Из интерфейса проект убираем ТОЛЬКО после успешного ответа.
+      initSettings()
+        .then(() =>
+          authFetch(getApiUrl(API_ENDPOINTS.PROJECT_DELETE(projectId)), {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${effectiveToken}` },
+          }),
+        )
+        .then(async (response) => {
+          if (!response.ok) {
+            const detail = await response.json().then((d) => d?.detail).catch(() => null);
+            throw new Error(detail || `HTTP ${response.status}`);
+          }
+          dispatch({ type: 'DELETE_PROJECT', payload: projectId });
+        })
+        .catch((error) => {
+          console.error(`Ошибка удаления данных проекта ${projectId}:`, error);
+          const msg = error instanceof Error ? error.message : String(error);
+          dispatch({
+            type: 'ADD_NOTIFICATION',
+            payload: { type: 'error', message: `Не удалось удалить проект: ${msg}` },
+          });
+        });
     },
     
     getProjects: () => {

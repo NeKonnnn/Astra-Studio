@@ -16,6 +16,7 @@ from backend.database.postgresql.agent_models import (
     normalize_permission,
 )
 from backend.database.postgresql.connection import PostgreSQLConnection
+from backend.database.postgresql.skill_repository import escape_like
 from backend.database.postgresql.agent_models import Tag
 from backend.settings.logging import get_logger
 
@@ -34,6 +35,7 @@ def _config_as_dict(raw) -> dict:
             return {}
         return parsed if isinstance(parsed, dict) else {}
     return {}
+
 
 class AgentRepository:
     """Репозиторий для работы с агентами"""
@@ -115,25 +117,49 @@ class AgentRepository:
                         UNIQUE(agent_id, shared_with_user_id)
                     )
                     """)
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_agents_author ON agents(author_id)")
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_agents_created ON agents(created_at DESC)")
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_agents_public ON agents(is_public)")
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_tags_agent ON agent_tags(agent_id)")
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_tags_tag ON agent_tags(tag_id)")
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_ratings_agent ON agent_ratings(agent_id)")
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_ratings_user ON agent_ratings(user_id)")
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_bookmarks_user ON agent_bookmarks(user_id)")
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_bookmarks_agent ON agent_bookmarks(agent_id)")
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_agents_author ON agents(author_id)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_agents_created ON agents(created_at DESC)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_agents_public ON agents(is_public)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_agent_tags_agent ON agent_tags(agent_id)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_agent_tags_tag ON agent_tags(tag_id)"
+                )
+                # Теги, оставшиеся без агентов до этой версии, убираем сразу на старте
+                await self._delete_orphan_tags(conn)
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_agent_ratings_agent ON agent_ratings(agent_id)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_agent_ratings_user ON agent_ratings(user_id)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_agent_bookmarks_user ON agent_bookmarks(user_id)"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_agent_bookmarks_agent ON agent_bookmarks(agent_id)"
+                )
                 await conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_agent_shares_recipient ON agent_shares(shared_with_user_id)"
                 )
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_shares_agent ON agent_shares(agent_id)")
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_agent_shares_agent ON agent_shares(agent_id)"
+                )
                 logger.info("Таблицы для галереи агентов созданы")
         except Exception:
             logger.exception("Ошибка при создании таблиц агентов")
             raise
 
-    async def create_agent(self, agent_data: AgentCreate, author_id: str, author_name: str) -> Optional[int]:
+    async def create_agent(
+        self, agent_data: AgentCreate, author_id: str, author_name: str
+    ) -> Optional[int]:
         """
         Создание нового агента
 
@@ -171,7 +197,9 @@ class AgentRepository:
                     for tag_name in agent_data.new_tags:
                         tag_name = tag_name.strip()
                         if not tag_name or len(tag_name) < 2:
-                            logger.warning(f"Пропущен тег с некорректным именем (меньше 2 символов): '{tag_name}'")
+                            logger.warning(
+                                f"Пропущен тег с некорректным именем (меньше 2 символов): '{tag_name}'"
+                            )
                             continue
                         existing_tag = await conn.fetchrow(
                             """
@@ -191,7 +219,7 @@ class AgentRepository:
                                 tag_name,
                             )
                             all_tag_ids.append(new_tag["id"])
-                            logger.info(f"Создан новый тег: {tag_name}")
+                            logger.debug(f"Создан новый тег: {tag_name}")
                 for tag_id in set(all_tag_ids):
                     await conn.execute(
                         """
@@ -295,7 +323,9 @@ class AgentRepository:
                     )
                     is_shared_with_me = share_row is not None
                     if my_permission is None:
-                        if (agent_row["author_id"] or "").strip().lower() == normalized_user_id:
+                        if (
+                            agent_row["author_id"] or ""
+                        ).strip().lower() == normalized_user_id:
                             my_permission = AGENT_PERMISSION_OWNER
                         elif share_row is not None:
                             my_permission = normalize_permission(share_row["permission"])
@@ -370,9 +400,12 @@ class AgentRepository:
                     params = []
                     param_num = 1
                 if filters.search_query:
-                    search_pattern = f"%{filters.search_query}%"
+                    # %, _ и \ из пользовательского текста ищутся буквально
+                    search_pattern = f"%{escape_like(filters.search_query)}%"
                     where_conditions.append(
-                        f"(a.name ILIKE ${param_num} OR a.description ILIKE ${param_num} OR a.system_prompt ILIKE ${param_num})"
+                        f"(a.name ILIKE ${param_num} ESCAPE '\\' "
+                        f"OR a.description ILIKE ${param_num} ESCAPE '\\' "
+                        f"OR a.system_prompt ILIKE ${param_num} ESCAPE '\\')"
                     )
                     params.append(search_pattern)
                     param_num += 1
@@ -383,11 +416,18 @@ class AgentRepository:
                 tag_join = ""
                 if filters.tag_ids:
                     tag_join = "JOIN agent_tags at ON a.id = at.agent_id"
-                    placeholders = ", ".join([f"${i}" for i in range(param_num, param_num + len(filters.tag_ids))])
+                    placeholders = ", ".join(
+                        [
+                            f"${i}"
+                            for i in range(param_num, param_num + len(filters.tag_ids))
+                        ]
+                    )
                     where_conditions.append(f"at.tag_id IN ({placeholders})")
                     params.extend(filters.tag_ids)
                     param_num += len(filters.tag_ids)
-                where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
+                where_clause = (
+                    " AND ".join(where_conditions) if where_conditions else "1=1"
+                )
                 sort_map = {
                     "rating": "avg_rating",
                     "date": "a.created_at",
@@ -466,7 +506,9 @@ WHERE {where_clause}{rating_filter}
                     if is_admin:
                         my_permission = AGENT_PERMISSION_OWNER
                     if user_id:
-                        normalized_user_id = user_id.strip().lower() if user_id else user_id
+                        normalized_user_id = (
+                            user_id.strip().lower() if user_id else user_id
+                        )
                         rating_row = await conn.fetchrow(
                             """
                             SELECT rating FROM agent_ratings
@@ -496,14 +538,26 @@ WHERE {where_clause}{rating_filter}
                         )
                         is_shared_with_me = share_row is not None
                         if my_permission is None:
-                            if (row["author_id"] or "").strip().lower() == normalized_user_id:
+                            if (
+                                row["author_id"] or ""
+                            ).strip().lower() == normalized_user_id:
                                 my_permission = AGENT_PERMISSION_OWNER
                             elif share_row is not None:
-                                my_permission = normalize_permission(share_row["permission"])
+                                my_permission = normalize_permission(
+                                    share_row["permission"]
+                                )
                             elif row["is_public"]:
                                 my_permission = AGENT_PERMISSION_VIEWER
-                    config = row["config"] if isinstance(row["config"], dict) else json.loads(row["config"] or "{}")
-                    tools = row["tools"] if isinstance(row["tools"], list) else json.loads(row["tools"] or "[]")
+                    config = (
+                        row["config"]
+                        if isinstance(row["config"], dict)
+                        else json.loads(row["config"] or "{}")
+                    )
+                    tools = (
+                        row["tools"]
+                        if isinstance(row["tools"], list)
+                        else json.loads(row["tools"] or "[]")
+                    )
                     agent = AgentWithTags(
                         id=row["id"],
                         name=row["name"],
@@ -608,13 +662,17 @@ WHERE id = ${param_num}
 """.strip()  # noqa: S608
                     await conn.execute(query, *params)
                 if agent_data.tag_ids is not None or agent_data.new_tags is not None:
-                    await conn.execute("DELETE FROM agent_tags WHERE agent_id = $1", agent_id)
+                    await conn.execute(
+                        "DELETE FROM agent_tags WHERE agent_id = $1", agent_id
+                    )
                     all_tag_ids = list(agent_data.tag_ids) if agent_data.tag_ids else []
                     if agent_data.new_tags:
                         for tag_name in agent_data.new_tags:
                             tag_name = tag_name.strip()
                             if not tag_name or len(tag_name) < 2:
-                                logger.warning(f"Пропущен тег с некорректным именем: '{tag_name}'")
+                                logger.warning(
+                                    f"Пропущен тег с некорректным именем: '{tag_name}'"
+                                )
                                 continue
                             existing_tag = await conn.fetchrow(
                                 """
@@ -644,11 +702,48 @@ WHERE id = ${param_num}
                             agent_id,
                             tag_id,
                         )
+                    # Тег, который больше ни у кого не стоит, из справочника убираем.
+                    await self._delete_orphan_tags(conn)
+                # Снятие с публикации — убрать из «Агенты из галереи» у всех.
+                if (
+                    agent_data.is_public is not None
+                    and not bool(agent_data.is_public)
+                    and permission == AGENT_PERMISSION_OWNER
+                ):
+                    await self.clear_bookmarks_for_agent(agent_id)
                 logger.info(f"Обновлён агент: {agent_id}")
                 return True
         except Exception:
             logger.exception("Ошибка при обновлении агента")
             return False
+
+    async def _delete_orphan_tags(self, conn) -> int:
+        """Удалить теги, которых не осталось ни у одного агента.
+
+        Справочник (GET /api/agents/tags) читается из tags целиком, и тег,
+        снятый с последнего агента, продолжал предлагаться в карточках.
+        Таблица tags общая: если в базе ещё есть prompt_tags (галерея
+        промптов), её теги не трогаем. При ошибке ничего не удаляем.
+        """
+        try:
+            has_prompt_tags = await conn.fetchval("SELECT to_regclass('prompt_tags') IS NOT NULL")
+            extra = (
+                " AND NOT EXISTS (SELECT 1 FROM prompt_tags pt WHERE pt.tag_id = t.id)"
+                if has_prompt_tags
+                else ""
+            )
+            rows = await conn.fetch(
+                "DELETE FROM tags t WHERE NOT EXISTS "
+                "(SELECT 1 FROM agent_tags at WHERE at.tag_id = t.id)"
+                + extra
+                + " RETURNING t.name"  # noqa: S608 - extra выбирается из двух констант
+            )
+            if rows:
+                logger.info("Теги без агентов удалены: %s", ", ".join(str(r["name"]) for r in rows))
+            return len(rows)
+        except Exception:
+            logger.exception("Не удалось убрать теги без агентов")
+            return 0
 
     async def find_orphan_kb_document_ids(self, document_ids: List[int]) -> List[int]:
         """Из переданных id вернуть те, на которые НЕ ссылается ни один агент.
@@ -802,6 +897,7 @@ WHERE id = ${param_num}
                     )
                     return False
                 await conn.execute("DELETE FROM agents WHERE id = $1", agent_id)
+                await self._delete_orphan_tags(conn)
                 logger.info(f"Удалён агент: {agent_id}")
             # Настройки лежат в отдельной таблице без внешнего ключа (agents.id —
             # INTEGER, user_projects.id — VARCHAR, один FK на двоих не сделать),
@@ -855,7 +951,6 @@ WHERE id = ${param_num}
             logger.exception(
                 "Не удалось вычистить agent_ids после удаления %s", deleted_id
             )
-
 
     async def list_tags(self) -> List[dict]:
         """Справочник тегов для карточки агента: id, name, color."""
@@ -968,7 +1063,6 @@ WHERE id = ${param_num}
                 "Не удалось вычистить subagents после удаления %s", deleted_id
             )
 
-
     async def _delete_entity_settings(self, agent_id: int) -> None:
         """Убрать RAG-настройки удалённого агента. Сбой тут агента не воскрешает."""
         try:
@@ -979,7 +1073,8 @@ WHERE id = ${param_num}
                 await repo.delete("agent", str(agent_id))
         except Exception:
             logger.debug(
-                "Не удалось убрать настройки агента %s — подчистятся на старте", agent_id,
+                "Не удалось убрать настройки агента %s — подчистятся на старте",
+                agent_id,
                 exc_info=True,
             )
 
@@ -998,7 +1093,9 @@ WHERE id = ${param_num}
         try:
             user_id = user_id.strip().lower() if user_id else user_id
             async with await self.db_connection.acquire() as conn:
-                exists = await conn.fetchval("SELECT EXISTS(SELECT 1 FROM agents WHERE id = $1)", agent_id)
+                exists = await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM agents WHERE id = $1)", agent_id
+                )
                 if not exists:
                     logger.warning(f"Попытка оценить несуществующий агент: {agent_id}")
                     return False
@@ -1034,7 +1131,9 @@ WHERE id = ${param_num}
                         user_id,
                         rating,
                     )
-                    logger.info(f"Пользователь {user_id} впервые оценил агента {agent_id} на {rating}")
+                    logger.info(
+                        f"Пользователь {user_id} впервые оценил агента {agent_id} на {rating}"
+                    )
                 return True
         except Exception:
             logger.exception("Ошибка при оценке агента")
@@ -1060,7 +1159,9 @@ WHERE id = ${param_num}
                     """,
                     agent_id,
                 )
-                logger.info(f"Агент {agent_id}: просмотры {current_views} -> {current_views + 1}")
+                logger.debug(
+                    f"Агент {agent_id}: просмотры {current_views} -> {current_views + 1}"
+                )
                 return True
         except Exception:
             logger.exception("Ошибка при увеличении просмотров для агента")
@@ -1111,7 +1212,9 @@ WHERE id = ${param_num}
                     """,
                     agent_id,
                 )
-                rating_distribution = {row["rating"]: row["count"] for row in distribution_rows}
+                rating_distribution = {
+                    row["rating"]: row["count"] for row in distribution_rows
+                }
                 return AgentStats(
                     agent_id=agent_id,
                     views_count=row["views_count"],
@@ -1129,9 +1232,13 @@ WHERE id = ${param_num}
         try:
             user_id = user_id.strip().lower() if user_id else user_id
             async with await self.db_connection.acquire() as conn:
-                exists = await conn.fetchval("SELECT EXISTS(SELECT 1 FROM agents WHERE id = $1)", agent_id)
+                exists = await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM agents WHERE id = $1)", agent_id
+                )
                 if not exists:
-                    logger.warning(f"Попытка добавить в закладки несуществующий агент: {agent_id}")
+                    logger.warning(
+                        f"Попытка добавить в закладки несуществующий агент: {agent_id}"
+                    )
                     return False
                 await conn.execute(
                     """
@@ -1142,7 +1249,9 @@ WHERE id = ${param_num}
                     agent_id,
                     user_id,
                 )
-                logger.info(f"Пользователь {user_id} добавил агента {agent_id} в закладки")
+                logger.info(
+                    f"Пользователь {user_id} добавил агента {agent_id} в закладки"
+                )
                 return True
         except Exception:
             logger.exception("Ошибка при добавлении в закладки")
@@ -1161,23 +1270,46 @@ WHERE id = ${param_num}
                     agent_id,
                     user_id,
                 )
-                logger.info(f"Пользователь {user_id} удалил агента {agent_id} из закладок")
+                logger.info(
+                    f"Пользователь {user_id} удалил агента {agent_id} из закладок"
+                )
                 return True
         except Exception:
             logger.exception("Ошибка при удалении из закладок")
             return False
 
-    async def get_user_bookmarks(self, user_id: str, limit: int = 100, offset: int = 0) -> Tuple[List[int], int]:
-        """Получить список ID агентов в закладках пользователя"""
+    async def clear_bookmarks_for_agent(self, agent_id: int) -> int:
+        """Удалить все закладки агента (после снятия с публикации в галерее)."""
+        try:
+            async with await self.db_connection.acquire() as conn:
+                result = await conn.execute(
+                    "DELETE FROM agent_bookmarks WHERE agent_id = $1",
+                    agent_id,
+                )
+                # asyncpg: "DELETE N"
+                try:
+                    return int(str(result).split()[-1])
+                except (TypeError, ValueError, IndexError):
+                    return 0
+        except Exception:
+            logger.exception("Ошибка очистки закладок агента %s", agent_id)
+            return 0
+
+    async def get_user_bookmarks(
+        self, user_id: str, limit: int = 100, offset: int = 0
+    ) -> Tuple[List[int], int]:
+        """Закладки пользователя — только опубликованные в галерее (is_public)."""
         try:
             user_id = user_id.strip().lower() if user_id else user_id
             async with await self.db_connection.acquire() as conn:
                 rows = await conn.fetch(
                     """
-                    SELECT agent_id
-                    FROM agent_bookmarks
-                    WHERE LOWER(TRIM(user_id)) = LOWER(TRIM($1))
-                    ORDER BY created_at DESC
+                    SELECT b.agent_id
+                    FROM agent_bookmarks b
+                    INNER JOIN agents a ON a.id = b.agent_id
+                    WHERE LOWER(TRIM(b.user_id)) = LOWER(TRIM($1))
+                      AND a.is_public = true
+                    ORDER BY b.created_at DESC
                     LIMIT $2 OFFSET $3
                     """,
                     user_id,
@@ -1187,13 +1319,15 @@ WHERE id = ${param_num}
                 total = await conn.fetchval(
                     """
                     SELECT COUNT(*)
-                    FROM agent_bookmarks
-                    WHERE LOWER(TRIM(user_id)) = LOWER(TRIM($1))
+                    FROM agent_bookmarks b
+                    INNER JOIN agents a ON a.id = b.agent_id
+                    WHERE LOWER(TRIM(b.user_id)) = LOWER(TRIM($1))
+                      AND a.is_public = true
                     """,
                     user_id,
                 )
                 agent_ids = [row["agent_id"] for row in rows]
-                return (agent_ids, total)
+                return (agent_ids, int(total or 0))
         except Exception:
             logger.exception("Ошибка при получении закладок")
             return ([], 0)
@@ -1290,18 +1424,27 @@ WHERE id = ${param_num}
             return False
 
     async def share_agent(
-        self, agent_id: int, owner_id: str, usernames: List[str], permission: str = AGENT_PERMISSION_VIEWER
+        self,
+        agent_id: int,
+        owner_id: str,
+        usernames: List[str],
+        permission: str = AGENT_PERMISSION_VIEWER,
+        recipient_permissions: Optional[Dict[str, str]] = None,
     ) -> Tuple[List[str], List[str]]:
         """
         Расшарить агента с пользователями.
+
+        Args:
+            recipient_permissions: per-user permission (viewer/editor); overrides `permission`.
 
         Returns:
             (успешно добавленные user_id, пропущенные/ошибочные)
         """
         owner_id = owner_id.strip().lower() if owner_id else owner_id
-        permission = normalize_permission(permission)
-        if permission not in AGENT_SHARE_PERMISSIONS:
-            permission = AGENT_PERMISSION_VIEWER
+        default_permission = normalize_permission(permission)
+        if default_permission not in AGENT_SHARE_PERMISSIONS:
+            default_permission = AGENT_PERMISSION_VIEWER
+        per_user = recipient_permissions or {}
         added: List[str] = []
         skipped: List[str] = []
         try:
@@ -1315,7 +1458,9 @@ WHERE id = ${param_num}
                 if not author:
                     return ([], usernames)
                 if author != owner_id:
-                    logger.warning(f"Попытка шаринга чужого агента: user={owner_id}, agent={agent_id}")
+                    logger.warning(
+                        f"Попытка шаринга чужого агента: user={owner_id}, agent={agent_id}"
+                    )
                     return ([], usernames)
                 for raw in usernames:
                     recipient = (raw or "").strip().lower()
@@ -1325,6 +1470,11 @@ WHERE id = ${param_num}
                     if recipient == owner_id:
                         skipped.append(recipient)
                         continue
+                    perm = normalize_permission(
+                        per_user.get(recipient, default_permission)
+                    )
+                    if perm not in AGENT_SHARE_PERMISSIONS:
+                        perm = AGENT_PERMISSION_VIEWER
                     await conn.execute(
                         """
                         INSERT INTO agent_shares (agent_id, owner_id, shared_with_user_id, permission)
@@ -1335,7 +1485,7 @@ WHERE id = ${param_num}
                         agent_id,
                         owner_id,
                         recipient,
-                        permission,
+                        perm,
                     )
                     added.append(recipient)
                 logger.info(f"Агент {agent_id} расшарен с: {added}")
@@ -1344,10 +1494,14 @@ WHERE id = ${param_num}
             logger.exception("Ошибка шаринга агента")
             return ([], usernames)
 
-    async def unshare_agent(self, agent_id: int, actor_id: str, target_user_id: str) -> bool:
+    async def unshare_agent(
+        self, agent_id: int, actor_id: str, target_user_id: str
+    ) -> bool:
         """Снять шаринг. Может владелец или сам получатель (выйти)."""
         actor_id = actor_id.strip().lower() if actor_id else actor_id
-        target_user_id = target_user_id.strip().lower() if target_user_id else target_user_id
+        target_user_id = (
+            target_user_id.strip().lower() if target_user_id else target_user_id
+        )
         try:
             async with await self.db_connection.acquire() as conn:
                 author = await conn.fetchval(

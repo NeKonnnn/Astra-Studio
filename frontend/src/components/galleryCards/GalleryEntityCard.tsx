@@ -20,6 +20,7 @@ import {
   Visibility as ViewIcon,
 } from '@mui/icons-material';
 import type { GalleryCardItem } from './types';
+import { getGalleryCardGlassSx } from '../../constants/galleryCardGlass';
 
 export interface GalleryEntityCardProps {
   item: GalleryCardItem;
@@ -51,19 +52,7 @@ export default function GalleryEntityCard({
 }: GalleryEntityCardProps) {
   return (
     <Card
-      sx={{
-        height: '100%',
-        display: 'flex',
-        flexDirection: 'column',
-        backgroundColor: isDarkMode ? undefined : '#ffffff',
-        boxShadow: isDarkMode ? undefined : '0 2px 8px rgba(0,0,0,0.1)',
-        border: isDarkMode ? undefined : '1px solid rgba(0,0,0,0.08)',
-        cursor: 'pointer',
-        transition: 'box-shadow 0.15s ease',
-        '&:hover': {
-          boxShadow: isDarkMode ? '0 4px 16px rgba(0,0,0,0.45)' : '0 4px 16px rgba(0,0,0,0.14)',
-        },
-      }}
+      sx={getGalleryCardGlassSx(isDarkMode)}
       onClick={onOpen}
     >
       <CardContent sx={{ flex: 1 }}>

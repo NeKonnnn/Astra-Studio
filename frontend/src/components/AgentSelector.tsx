@@ -10,6 +10,7 @@ import {
 } from '@mui/icons-material';
 import AgentIcon from '../icons/AgentIcon';
 import { useAuth } from '../contexts/AuthContext';
+import { useFeatureAccess } from '../hooks/useFeatureAccess';
 import { useAppActions } from '../contexts/AppContext';
 import { authFetch, getApiUrl } from '../config/api';
 import {
@@ -148,6 +149,7 @@ export default function AgentSelector({
   onModelSelect,
 }: AgentSelectorProps) {
   const { token } = useAuth();
+  const { canUseAgents } = useFeatureAccess();
   const { showNotification } = useAppActions();
 
   const [models, setModels] = useState<ModelItem[]>(() => {
@@ -540,6 +542,8 @@ export default function AgentSelector({
         setSelectedModelPath(prevModelPath);
         if (prevModelPath) {
           localStorage.setItem(LAST_SELECTED_MODEL_PATH_STORAGE_KEY, prevModelPath);
+        } else {
+          localStorage.removeItem(LAST_SELECTED_MODEL_PATH_STORAGE_KEY);
         }
       }
       showNotification('error', `Ошибка загрузки модели: ${e?.message || e}`);
@@ -603,13 +607,15 @@ export default function AgentSelector({
     return hit?.label || selectedImagePresetId;
   }, [imagePresets, selectedImagePresetId]);
 
-  const triggerLabel = activeAgent
+  const triggerLabel = activeAgent && canUseAgents
     ? activeAgent.name
     : loadingModelPath
       ? getModelDisplayName(loadingModelPath)
       : isValidSelectedModelPath(selectedModelPath)
         ? getModelDisplayName(selectedModelPath)
-        : 'Агенты / Модели';
+        : canUseAgents
+          ? 'Агенты / Модели'
+          : 'Модели';
 
   // ─── Styles ──────────────────────────────────────────────────────────────────
 

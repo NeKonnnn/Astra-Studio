@@ -76,6 +76,10 @@ export default function HistoryPage() {
       const response = await fetch(getApiUrl(`${API_ENDPOINTS.HISTORY}?limit=1000`), {
         headers: getAuthFetchHeaders(),
       });
+      if (!response.ok) {
+        // BUG-FE-67: 401/500 не должны выглядеть как «История пуста» — уходим на локальную историю.
+        throw new Error(`HTTP ${response.status}`);
+      }
       const result = await response.json();
       
       if (result.history) {
@@ -136,7 +140,7 @@ export default function HistoryPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `gazikii_history_${new Date().toISOString().split('T')[0]}.txt`;
+    a.download = `astrachat_history_${new Date().toISOString().split('T')[0]}.txt`;
     a.click();
     URL.revokeObjectURL(url);
     

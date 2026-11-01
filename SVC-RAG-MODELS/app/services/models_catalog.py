@@ -223,6 +223,36 @@ def list_models(kind: Optional[ModelKind] = None) -> Dict[str, List[Dict[str, An
     return by_kind
 
 
+def openai_model_list(models: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """Те же модели в OpenAI-формате GET /v1/models - для поля data.
+
+    Бэкенд (провайдер CORSUR_RAG, селектор RAG-моделей) и SVC-RAG читают список
+    моделей как у любого OpenAI-шлюза - из data[].id. На проде шлюза bifrost нет,
+    провайдер смотрит прямо сюда, и без data селектор RAG-моделей был пуст.
+
+    id - имя папки (FRIDA): его принимают /v1/embeddings и /v1/rerank, и путь у
+    бэкенда получается corsur_rag/FRIDA - как по умолчанию. Только модели, которые
+    есть на диске (available): остальные вызвать нельзя. Порядок - как в
+    каталоге: сначала эмбеддеры, потом реранкеры.
+    """
+    out: List[Dict[str, Any]] = []
+    for kind in ("embedding", "reranker"):
+        for row in models.get(kind) or []:
+            if not row.get("available"):
+                continue
+            out.append(
+                {
+                    "id": row["name"],
+                    "object": "model",
+                    "owned_by": "svc-rag-models",
+                    "kind": kind,
+                    "path": row["path"],
+                    "display_name": row.get("display_name") or row["name"],
+                }
+            )
+    return out
+
+
 def parse_model_path(model_path: str) -> Tuple[str, str]:
     raw = (model_path or "").strip()
     if not raw:
@@ -241,15 +271,16 @@ def parse_model_path(model_path: str) -> Tuple[str, str]:
 def config_value_for_path(model_path: str) -> str:
     source, model_id = parse_model_path(model_path)
     if source == "phoenix":
-        raise ValueError("Phoenix-модели выбираются через backend, не через svc-rag-models")
+        raise ValueError(
+            "Phoenix-модели выбираются через backend, не через svc-rag-models"
+        )
     return _folder_name(model_id) or model_id
 
 
 # Снимок ConfigMap/env на старте процесса. UI-выбор не должен подменять
 # «кластерный дефолт» для других пользователей (settings.rag_models.* мутабельны).
 _BOOT_EMBEDDING_MODEL = (
-    settings.rag_models.embedding_model
-    or settings.rag_models.embedding_model_default
+    settings.rag_models.embedding_model or settings.rag_models.embedding_model_default
 )
 _BOOT_RERANKER_MODEL = (
     settings.rag_models.reranker_model or settings.rag_models.reranker_model_default

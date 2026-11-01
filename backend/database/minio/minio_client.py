@@ -4,34 +4,69 @@
 """
 
 import os
-import logging
 import tempfile
-from typing import Optional, BinaryIO
 from datetime import datetime, timedelta
 from io import BytesIO
-from backend.settings.logging import get_logger
+from typing import Optional
 
-# Импортируем настройки
-try:
-    from settings import get_settings
-    SETTINGS_AVAILABLE = True
-except ImportError:
-    SETTINGS_AVAILABLE = False
+from backend.settings import get_settings
 
 try:
     from minio import Minio
     from minio.error import S3Error
+
     MINIO_AVAILABLE = True
 except ImportError:
     MINIO_AVAILABLE = False
-    logging.warning("MinIO библиотека не установлена. Установите: pip install minio")
+
+from backend.settings.logging import get_logger
 
 logger = get_logger(__name__)
+
+SETTINGS_AVAILABLE = True
+
+if not MINIO_AVAILABLE:
+    logger.warning("MinIO библиотека не установлена. Установите: pip install minio")
+
+
+def _build_minio_http_client(
+    *, secure: bool, ssl_verify: bool, ca_cert_path: Optional[str]
+):
+    """HTTP-клиент urllib3 для MinIO с поддержкой корпоративного CA и отключения verify."""
+    if not secure:
+        return None
+
+    import urllib3
+
+    timeout = urllib3.util.Timeout(connect=10, read=30)
+    retries = urllib3.Retry(
+        total=5, backoff_factor=0.2, status_forcelist=[500, 502, 503, 504]
+    )
+    pool_kwargs = {"timeout": timeout, "maxsize": 10, "retries": retries}
+
+    if not ssl_verify:
+        logger.warning(
+            "MinIO: проверка SSL-сертификата отключена (MINIO_SSL_VERIFY=false)"
+        )
+        return urllib3.PoolManager(cert_reqs="CERT_NONE", **pool_kwargs)
+
+    if ca_cert_path and os.path.isfile(ca_cert_path):
+        logger.debug("MinIO: CA bundle: %s", ca_cert_path)
+        return urllib3.PoolManager(
+            cert_reqs="CERT_REQUIRED", ca_certs=ca_cert_path, **pool_kwargs
+        )
+
+    if ca_cert_path:
+        logger.warning(
+            "MinIO: CA bundle не найден (%s) — используется системное хранилище сертификатов",
+            ca_cert_path,
+        )
+    return None
 
 
 class MinIOClient:
     """Клиент для работы с MinIO"""
-    
+
     def __init__(
         self,
         endpoint: str = None,
@@ -39,11 +74,11 @@ class MinIOClient:
         access_key: str = None,
         secret_key: str = None,
         secure: bool = None,
-        bucket_name: str = None
+        bucket_name: str = None,
     ):
         """
         Инициализация MinIO клиента
-        
+
         Args:
             endpoint: Адрес MinIO сервера (например, 'minio:9000' или 'localhost:9000')
             access_key: Access key для MinIO
@@ -52,12 +87,11 @@ class MinIOClient:
             bucket_name: Имя bucket для хранения файлов
         """
         if not MINIO_AVAILABLE:
-            raise ImportError("MinIO библиотека не установлена. Установите: pip install minio")
-        
+            msg = "MinIO библиотека не установлена. Установите: pip install minio"
+            raise ImportError(msg)
         if not SETTINGS_AVAILABLE:
-            raise RuntimeError("Модуль settings недоступен. MinIO не может быть инициализирован.")
-        
-        # Получаем настройки из settings, если не переданы явно
+            msg = "Модуль settings недоступен. MinIO не может быть инициализирован."
+            raise RuntimeError(msg)
         settings = get_settings()
         minio_config = settings.minio
         self.endpoint = endpoint or minio_config.endpoint
@@ -66,59 +100,106 @@ class MinIOClient:
         self.secret_key = secret_key or minio_config.secret_key
         self.secure = secure if secure is not None else minio_config.use_ssl
         self.bucket_name = bucket_name or minio_config.bucket_name
-        
-        # Формируем полный endpoint
-        if ':' not in self.endpoint:
+        self.ssl_verify = getattr(minio_config, "ssl_verify", True)
+        self.ca_cert_path = getattr(minio_config, "ca_cert_path", None)
+        if ":" not in self.endpoint:
             self.endpoint = f"{self.endpoint}:{self.port}"
-        
-        logger.info(f"Инициализация MinIO клиента:")
-        logger.info(f"  Endpoint: {self.endpoint}")
-        logger.info(f"  Access Key: {self.access_key[:4]}***")
-        logger.info(f"  Bucket: {self.bucket_name}")
-        logger.info(f"  Secure (HTTPS): {self.secure}")
-        
+        logger.debug("Инициализация MinIO клиента:")
+        logger.debug("Endpoint: %s", self.endpoint)
+        logger.debug("Access Key: %s***", self.access_key[:4])
+        logger.debug("Bucket: %s", self.bucket_name)
+        docs_bucket = getattr(minio_config, "documents_bucket_name", None)
+        if docs_bucket and docs_bucket != self.bucket_name:
+            logger.debug("Documents bucket: %s", docs_bucket)
+        logger.debug("Secure (HTTPS): %s", self.secure)
+        if self.secure:
+            logger.debug("SSL verify: %s", self.ssl_verify)
+            if self.ca_cert_path:
+                logger.debug("CA cert path: %s", self.ca_cert_path)
         try:
-            # Создаем клиент MinIO
             logger.debug("Создание MinIO клиента...")
-            self.client = Minio(
-                self.endpoint,
-                access_key=self.access_key,
-                secret_key=self.secret_key,
-                secure=self.secure
+            http_client = _build_minio_http_client(
+                secure=self.secure,
+                ssl_verify=self.ssl_verify,
+                ca_cert_path=self.ca_cert_path,
             )
+            minio_kwargs = {
+                "access_key": self.access_key,
+                "secret_key": self.secret_key,
+                "secure": self.secure,
+            }
+            if http_client is not None:
+                minio_kwargs["http_client"] = http_client
+            if self.secure:
+                minio_kwargs["cert_check"] = self.ssl_verify
+            self.client = Minio(self.endpoint, **minio_kwargs)
             logger.debug("MinIO клиент создан, проверяю bucket...")
-            
-            # Создаем bucket, если его нет
             self._ensure_bucket_exists()
-            
             logger.info("MinIO клиент успешно инициализирован и готов к работе")
-        except Exception as e:
-            logger.error(f"Ошибка инициализации MinIO клиента: {e}")
-            logger.error(f"Проверьте:")
-            logger.error(f"1. Запущен ли MinIO сервер на {self.endpoint}")
-            logger.error(f"2. Правильность учетных данных (access_key/secret_key)")
-            logger.error(f"3. Доступность сети до MinIO сервера")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
+        except Exception as exc:
+            logger.error(
+                "Ошибка инициализации MinIO клиента (%s). Проверьте: "
+                "1) доступность сервера %s; "
+                "2) access_key/secret_key; "
+                "3) сеть; "
+                "4) SSL — смонтируйте CA bundle (TLS_CERT_PATH / MINIO_CA_CERT) "
+                "или для dev задайте MINIO_SSL_VERIFY=false",
+                exc,
+                self.endpoint,
+                exc_info=True,
+            )
             raise
-    
-    def _ensure_bucket_exists(self, bucket_name: str = None):
-        """Проверяет существование bucket и создает его, если нужно"""
+
+    def _ensure_bucket_exists(self, bucket_name: str = None) -> None:
+        """Проверяет bucket; создание — только если MINIO_AUTO_CREATE_BUCKETS=true."""
         bucket = bucket_name or self.bucket_name
+        auto_create = os.getenv(
+            "MINIO_AUTO_CREATE_BUCKETS", "false"
+        ).strip().lower() in ("1", "true", "yes")
         try:
-            if not self.client.bucket_exists(bucket):
-                self.client.make_bucket(bucket)
-                logger.info(f"Bucket '{bucket}' создан")
-            else:
-                logger.debug(f"Bucket '{bucket}' уже существует")
+            exists = self.client.bucket_exists(bucket)
         except S3Error as e:
-            logger.error(f"Ошибка при создании bucket: {e}")
+            if e.code in ("AccessDenied", "AccessDeniedException"):
+                logger.warning(
+                    "MinIO: нет прав на HEAD bucket '%s' (%s) — пропускаем проверку, пробуем upload",
+                    bucket,
+                    e.code,
+                )
+                return
+            logger.exception("Ошибка при проверке bucket '%s'", bucket)
             raise
-    
+
+        if exists:
+            logger.debug("Bucket '%s' уже существует", bucket)
+            return
+        if auto_create:
+            try:
+                self.client.make_bucket(bucket)
+                logger.info("Bucket '%s' создан", bucket)
+            except S3Error as e:
+                if e.code in (
+                    "AccessDenied",
+                    "AccessDeniedException",
+                    "BucketAlreadyOwnedByYou",
+                ):
+                    logger.warning(
+                        "MinIO: не удалось создать bucket '%s' (%s) — пробуем upload в существующий",
+                        bucket,
+                        e.code,
+                    )
+                    return
+                logger.exception("Ошибка при создании bucket '%s'", bucket)
+                raise
+        else:
+            logger.debug(
+                "Bucket '%s' не найден через HEAD, auto-create отключён — пробуем upload",
+                bucket,
+            )
+
     def ensure_bucket(self, bucket_name: str):
         """Проверяет и создает bucket с указанным именем"""
         self._ensure_bucket_exists(bucket_name)
-    
+
     def upload_file(
         self,
         file_data: bytes,
@@ -126,8 +207,8 @@ class MinIOClient:
         content_type: str = "application/octet-stream",
         bucket_name: str = None,
         *,
-        cef_display_name: Optional[str] = None,
         cef_audit: bool = True,
+        cef_display_name: str | None = None,
     ) -> str:
         """
         Загружает файл в MinIO
@@ -137,50 +218,52 @@ class MinIOClient:
             object_name: Имя объекта в MinIO (путь к файлу)
             content_type: MIME тип файла
             bucket_name: Имя bucket (если None, используется self.bucket_name)
-            cef_display_name: человекочитаемое имя файла для CEF (по умолчанию object_name)
-            cef_audit: писать CEF FS003/FS004 на запись
 
         Returns:
             object_name: Имя загруженного объекта
         """
         bucket = bucket_name or self.bucket_name
         try:
-            # Убеждаемся, что bucket существует
             self._ensure_bucket_exists(bucket)
-
             file_stream = BytesIO(file_data)
             file_size = len(file_data)
-
             self.client.put_object(
-                bucket,
-                object_name,
-                file_stream,
-                file_size,
-                content_type=content_type
+                bucket, object_name, file_stream, file_size, content_type=content_type
             )
-
-            logger.debug(f"Файл загружен в MinIO: {bucket}/{object_name} ({file_size} байт)")
+            logger.debug(
+                "Файл загружен в MinIO: %s/%s (%s байт)", bucket, object_name, file_size
+            )
             if cef_audit:
-                from backend.settings.cef_logger.storage_audit import log_minio_write_success
+                from backend.settings.cef_logger.storage_audit import (
+                    log_minio_write_success,
+                )
 
-                log_minio_write_success(object_name, bucket, display_name=cef_display_name)
+                log_minio_write_success(
+                    object_name, bucket, display_name=cef_display_name
+                )
             return object_name
         except S3Error as e:
             if cef_audit:
-                from backend.settings.cef_logger.storage_audit import log_minio_write_failure
+                from backend.settings.cef_logger.storage_audit import (
+                    log_minio_write_failure,
+                )
 
-                log_minio_write_failure(object_name, bucket, str(e), display_name=cef_display_name)
-            logger.error(f"Ошибка загрузки файла в MinIO: {e}")
+                log_minio_write_failure(
+                    object_name, bucket, str(e), display_name=cef_display_name
+                )
+            logger.exception("Ошибка загрузки файла в MinIO")
             raise
-    
-    def download_file(self, object_name: str, bucket_name: str = None) -> bytes:
+
+    def download_file(
+        self, object_name: str, bucket_name: str = None, *, cef_audit: bool = True
+    ) -> bytes:
         """
         Скачивает файл из MinIO
-        
+
         Args:
             object_name: Имя объекта в MinIO
             bucket_name: Имя bucket (если None, используется self.bucket_name)
-            
+
         Returns:
             bytes: Данные файла
         """
@@ -190,51 +273,62 @@ class MinIOClient:
             data = response.read()
             response.close()
             response.release_conn()
-            
-            logger.debug(f"Файл скачан из MinIO: {bucket}/{object_name} ({len(data)} байт)")
+            logger.debug(
+                "Файл скачан из MinIO: %s/%s (%s байт)", bucket, object_name, len(data)
+            )
+            if cef_audit:
+                from backend.settings.cef_logger.storage_audit import (
+                    log_minio_read_success,
+                )
+
+                log_minio_read_success(object_name, bucket)
             return data
         except S3Error as e:
-            logger.error(f"Ошибка скачивания файла из MinIO: {e}")
+            if cef_audit:
+                from backend.settings.cef_logger.storage_audit import (
+                    log_minio_read_failure,
+                )
+
+                log_minio_read_failure(object_name, bucket, str(e))
+            logger.exception("Ошибка скачивания файла из MinIO")
             raise
-    
+
     def get_file_path(self, object_name: str, bucket_name: str = None) -> str:
         """
         Получает локальный путь к файлу, скачивая его из MinIO во временную директорию
-        
+
         Args:
             object_name: Имя объекта в MinIO
             bucket_name: Имя bucket (если None, используется self.bucket_name)
-            
+
         Returns:
             str: Путь к временному файлу
         """
         try:
-            # Скачиваем файл
             file_data = self.download_file(object_name, bucket_name)
-            
-            # Сохраняем во временную директорию
             temp_dir = tempfile.gettempdir()
-            filename = os.path.basename(object_name) or f"temp_{datetime.now().timestamp()}"
+            filename = (
+                os.path.basename(object_name) or f"temp_{datetime.now().timestamp()}"
+            )
             temp_path = os.path.join(temp_dir, filename)
-            
-            with open(temp_path, 'wb') as f:
+            with open(temp_path, "wb") as f:
                 f.write(file_data)
-            
-            logger.debug(f"Файл сохранен во временную директорию: {temp_path}")
+            logger.debug("Файл сохранен во временную директорию: %s", temp_path)
             return temp_path
-        except Exception as e:
-            logger.error(f"Ошибка получения пути к файлу: {e}")
+        except Exception:
+            logger.exception("Ошибка получения пути к файлу")
             raise
-    
-    def delete_file(self, object_name: str, bucket_name: str = None, *, cef_audit: bool = True) -> bool:
+
+    def delete_file(
+        self, object_name: str, bucket_name: str = None, *, cef_audit: bool = True
+    ) -> bool:
         """
         Удаляет файл из MinIO
-        
+
         Args:
             object_name: Имя объекта в MinIO
             bucket_name: Имя bucket (если None, используется self.bucket_name)
-            cef_audit: писать CEF INT005/INT006 на remove
-            
+
         Returns:
             bool: True если файл удален, False если не найден
         """
@@ -243,7 +337,9 @@ class MinIOClient:
             self.client.remove_object(bucket, object_name)
             logger.debug("Файл удален из MinIO: %s/%s", bucket, object_name)
             if cef_audit:
-                from backend.settings.cef_logger.storage_audit import log_minio_remove_success
+                from backend.settings.cef_logger.storage_audit import (
+                    log_minio_remove_success,
+                )
 
                 log_minio_remove_success(object_name, bucket)
             return True
@@ -252,20 +348,22 @@ class MinIOClient:
                 logger.warning("Файл не найден в MinIO: %s/%s", bucket, object_name)
                 return False
             if cef_audit:
-                from backend.settings.cef_logger.storage_audit import log_minio_remove_failure
+                from backend.settings.cef_logger.storage_audit import (
+                    log_minio_remove_failure,
+                )
 
                 log_minio_remove_failure(object_name, bucket, str(e))
             logger.exception("Ошибка удаления файла из MinIO")
             raise
-    
+
     def file_exists(self, object_name: str, bucket_name: str = None) -> bool:
         """
         Проверяет существование файла в MinIO
-        
+
         Args:
             object_name: Имя объекта в MinIO
             bucket_name: Имя bucket (если None, используется self.bucket_name)
-            
+
         Returns:
             bool: True если файл существует
         """
@@ -274,41 +372,41 @@ class MinIOClient:
             self.client.stat_object(bucket, object_name)
             return True
         except S3Error as e:
-            if e.code == 'NoSuchKey':
+            if e.code == "NoSuchKey":
                 return False
-            logger.error(f"Ошибка проверки существования файла: {e}")
+            logger.exception("Ошибка проверки существования файла")
             raise
-    
-    def get_presigned_url(self, object_name: str, expires: timedelta = timedelta(hours=1)) -> str:
+
+    def get_presigned_url(
+        self, object_name: str, expires: timedelta = timedelta(hours=1)
+    ) -> str:
         """
         Получает presigned URL для доступа к файлу
-        
+
         Args:
             object_name: Имя объекта в MinIO
             expires: Время жизни URL
-            
+
         Returns:
             str: Presigned URL
         """
         try:
             url = self.client.presigned_get_object(
-                self.bucket_name,
-                object_name,
-                expires=expires
+                self.bucket_name, object_name, expires=expires
             )
             return url
-        except S3Error as e:
-            logger.error(f"Ошибка получения presigned URL: {e}")
+        except S3Error:
+            logger.exception("Ошибка получения presigned URL")
             raise
-    
+
     def generate_object_name(self, prefix: str = "", extension: str = "") -> str:
         """
         Генерирует уникальное имя объекта
-        
+
         Args:
             prefix: Префикс для имени (например, 'voice_', 'transcribe_')
             extension: Расширение файла (например, '.wav', '.mp3')
-            
+
         Returns:
             str: Уникальное имя объекта
         """
@@ -317,35 +415,32 @@ class MinIOClient:
         return object_name
 
 
-# Глобальный экземпляр клиента
 _minio_client: Optional[MinIOClient] = None
 
 
 def get_minio_client() -> Optional[MinIOClient]:
     """
     Получает глобальный экземпляр MinIO клиента (singleton)
-    
+
     Returns:
         MinIOClient или None, если MinIO недоступен
     """
     global _minio_client
-    
     if not MINIO_AVAILABLE:
         logger.warning("MinIO библиотека не установлена. Установите: pip install minio")
         return None
-    
     if _minio_client is None:
         try:
-            logger.info("Инициализация MinIO клиента...")
-            # MinIOClient сам загрузит настройки из settings или ENV
+            logger.debug("Инициализация MinIO клиента...")
             _minio_client = MinIOClient()
-            logger.info(f"MinIO клиент успешно инициализирован: {_minio_client.endpoint}")
-        except Exception as e:
-            logger.error(f"Не удалось инициализировать MinIO клиент: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            logger.warning("Будут использоваться локальные временные файлы")
+            logger.info(
+                "MinIO клиент успешно инициализирован: %s", _minio_client.endpoint
+            )
+        except Exception as exc:
+            logger.error(
+                "Не удалось инициализировать MinIO клиент (%s). Будут использоваться локальные временные файлы",
+                exc,
+                exc_info=True,
+            )
             return None
-    
     return _minio_client
-

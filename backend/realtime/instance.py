@@ -10,10 +10,14 @@ from socketio import AsyncServer, ASGIApp
 from starlette.applications import Starlette
 from backend.app_state import settings
 from backend.realtime.socket_limits import (
+    _DEFAULT_SOCKET_MAX_HTTP_BUFFER_BYTES,
     socket_max_http_buffer_size,
     socket_ping_interval_sec,
     socket_ping_timeout_sec,
 )
+
+# Обратная совместимость: прежнее приватное имя (используют тесты и старый код).
+_socket_max_http_buffer_size = socket_max_http_buffer_size
 
 # -- собираем список разрешённых origins из конфига
 urls = settings.urls

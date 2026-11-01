@@ -35,6 +35,9 @@ class FakeSio:
             raise KeyError(sid)
         return self.sessions[sid]
 
+    async def enter_room(self, sid, room):
+        pass
+
     async def disconnect(self, sid):
         self.disconnected.append(sid)
 

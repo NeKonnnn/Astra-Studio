@@ -34,7 +34,7 @@ import ModelSelector from '../ModelSelector';
 import ModelSettingsFields from '../ModelSettingsFields';
 import { useTheme } from '@mui/material';
 import { getApiUrl, getAuthFetchHeaders } from '../../config/api';
-import { MODEL_SETTINGS_SECTION_TITLE_SX, MODEL_SETTINGS_CARD_SX, MODEL_SETTINGS_RESET_BUTTON_SX, MODEL_SETTINGS_DEFAULT } from '../../constants/modelSettingsStyles';
+import { MODEL_SETTINGS_SECTION_TITLE_SX, MODEL_SETTINGS_CARD_SX, MODEL_SETTINGS_RESET_BUTTON_SX, MODEL_SETTINGS_DEFAULT, MODEL_SETTINGS_MAX_DEFAULT } from '../../constants/modelSettingsStyles';
 import { MODEL_SETTINGS_CHANGED_EVENT } from '../../utils/contextTokens';
 import ImageGenerationSettingsSection from './ImageGenerationSettingsSection';
 
@@ -48,37 +48,23 @@ export default function ModelsSettings() {
   };
   const [showModelSelectorInSettings, setShowModelSelectorInSettings] = useState(readIsSettingsMode);
   
-  const [modelSettings, setModelSettings] = useState({
-    context_size: 2048,
-    output_tokens: 512,
-    temperature: 0.7,
-    top_p: 0.95,
-    repeat_penalty: 1.05,
-    top_k: 40,
-    min_p: 0.05,
-    frequency_penalty: 0.0,
-    presence_penalty: 0.0,
-    use_gpu: false,
-    streaming: true,
-    streaming_speed: 20,
-  });
+  // Стартовое состояние; заводские значения приходят из llm_settings.json
+  // (GET /api/models/settings/recommended)
+  const [modelSettings, setModelSettings] = useState({ ...MODEL_SETTINGS_DEFAULT });
 
   const settingsLoadedRef = useRef(false);
-  const skipNextAutosaveRef = useRef(false);
+  const skipNextAutosaveRef = useRef(true);
+  // Последнее подтверждённое сервером состояние — для отката при ошибке сохранения (BUG-FE-36).
+  const confirmedModelSettingsRef = useRef<typeof modelSettings>({ ...MODEL_SETTINGS_DEFAULT });
 
   const [maxValues, setMaxValues] = useState({
-    context_size: 1000000,
-    output_tokens: 1000000,
+    ...MODEL_SETTINGS_MAX_DEFAULT,
     batch_size: 2048,
     n_threads: 24,
-    temperature: 2.0,
-    top_p: 1.0,
-    repeat_penalty: 2.0,
-    top_k: 200,
-    min_p: 1.0,
-    frequency_penalty: 2.0,
-    presence_penalty: 2.0
   });
+
+  // Заводские значения с сервера — по ним работает кнопка сброса
+  const [recommendedSettings, setRecommendedSettings] = useState({ ...MODEL_SETTINGS_DEFAULT });
 
   const [contextPrompts, setContextPrompts] = useState({
     globalPrompt: '',
@@ -88,11 +74,13 @@ export default function ModelsSettings() {
 
   const [modelsWithPrompts, setModelsWithPrompts] = useState<Array<{
     name: string;
+    display_name?: string;
     path: string;
     size: number;
     size_mb: number;
     context_prompt: string;
     has_custom_prompt: boolean;
+    provider_id?: string;
   }>>([]);
 
   const [availableModels, setAvailableModels] = useState<Array<{
@@ -151,21 +139,40 @@ export default function ModelsSettings() {
       if (modelResponse.ok) {
         const modelData = await modelResponse.json();
         skipNextAutosaveRef.current = true;
+        confirmedModelSettingsRef.current = { ...confirmedModelSettingsRef.current, ...modelData };
         setModelSettings(prev => ({ ...prev, ...modelData }));
         syncGlobalModelSettings({ ...MODEL_SETTINGS_DEFAULT, ...modelData, streaming_speed: modelData.streaming_speed ?? 20 });
         settingsLoadedRef.current = true;
+      } else {
+        // BUG-FE-34: загрузка не удалась — всё равно разрешаем автосохранение правок пользователя и сообщаем об ошибке.
+        settingsLoadedRef.current = true;
+        showNotification(
+          'error',
+          `Не удалось загрузить настройки модели (${modelResponse.status}). Показаны значения по умолчанию.`,
+        );
       }
       
-      // Загружаем максимальные значения
-      const maxResponse = await fetch(getApiUrl('/api/models/settings/recommended'));
+      // Заводские + максимальные (API: recommended, max_values)
+      const maxResponse = await fetch(getApiUrl('/api/models/settings/recommended'), {
+        headers: getAuthFetchHeaders(),
+      });
       if (maxResponse.ok) {
         const maxData = await maxResponse.json();
         if (maxData.max_values) {
-          setMaxValues(maxData.max_values);
+          setMaxValues(prev => ({ ...prev, ...maxData.max_values }));
+        }
+        const recommended = maxData.recommended ?? maxData.recommended_settings;
+        if (recommended) {
+          setRecommendedSettings(prev => ({ ...prev, ...recommended }));
         }
       }
     } catch (error) {
       console.error('Ошибка загрузки настроек:', error);
+      if (!settingsLoadedRef.current) {
+        // BUG-FE-34: правки пользователя не должны молча теряться.
+        settingsLoadedRef.current = true;
+        showNotification('error', 'Не удалось загрузить настройки модели. Показаны значения по умолчанию.');
+      }
     }
   };
 
@@ -178,6 +185,7 @@ export default function ModelsSettings() {
       });
       
       if (response.ok) {
+        confirmedModelSettingsRef.current = modelSettings;
         showNotification('success', 'Настройки модели сохранены');
         syncGlobalModelSettings(modelSettings);
         window.dispatchEvent(
@@ -191,17 +199,23 @@ export default function ModelsSettings() {
     } catch (error) {
       console.error('Ошибка сохранения настроек модели:', error);
       showNotification('error', 'Ошибка сохранения настроек модели');
+      // Откат формы к последнему подтверждённому состоянию (без повторного автосохранения).
+      skipNextAutosaveRef.current = true;
+      setModelSettings({ ...confirmedModelSettingsRef.current });
     }
   };
 
   const resetModelSettings = () => {
-    setModelSettings({ ...MODEL_SETTINGS_DEFAULT, streaming_speed: 20 });
+    // Заводские значения приходят с сервера (llm_settings.json); MODEL_SETTINGS_DEFAULT — запасной вариант.
+    setModelSettings({ ...MODEL_SETTINGS_DEFAULT, ...recommendedSettings });
     showNotification('success', 'Настройки модели восстановлены до значений по умолчанию');
   };
 
   const loadModels = async () => {
     try {
-      const response = await fetch(getApiUrl('/api/models'));
+      const response = await fetch(getApiUrl('/api/models'), {
+        headers: getAuthFetchHeaders(),
+      });
       if (response.ok) {
         const data = await response.json();
         setAvailableModels(data.models || []);
@@ -213,7 +227,9 @@ export default function ModelsSettings() {
 
   const loadCurrentModel = async () => {
     try {
-      const response = await fetch(getApiUrl('/api/models/current'));
+      const response = await fetch(getApiUrl('/api/models/current'), {
+        headers: getAuthFetchHeaders(),
+      });
       if (response.ok) {
         const data = await response.json();
         setCurrentModel(data);
@@ -223,6 +239,9 @@ export default function ModelsSettings() {
       console.warn('Не удалось загрузить текущую модель:', err);
     }
   };
+
+  const getModelLabel = (model: { display_name?: string; name: string; path: string }) =>
+    model.display_name || model.name || model.path;
 
   const loadContextPrompts = async () => {
     try {
@@ -315,7 +334,7 @@ export default function ModelsSettings() {
       
       const response = await fetch(getApiUrl('/api/models/load'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthFetchHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ model_path: modelPath }),
       });
       
@@ -458,6 +477,7 @@ export default function ModelsSettings() {
             value={modelSettings}
             onChange={setModelSettings}
             maxValues={maxValues}
+            defaults={recommendedSettings}
             accordion
             darkPanel={isDarkMode}
           />
@@ -571,8 +591,11 @@ export default function ModelsSettings() {
                       primary={
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                           <Typography variant="subtitle2" color="text.primary">
-                            {model.name}
+                            {getModelLabel(model)}
                           </Typography>
+                          {model.provider_id && (
+                            <Chip label={model.provider_id} size="small" variant="outlined" />
+                          )}
                           <Chip label="Кастомный" size="small" color="primary" />
                         </Box>
                       }
@@ -687,8 +710,11 @@ export default function ModelsSettings() {
                     primary={
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                         <Typography variant="subtitle2">
-                          {model.name}
+                          {getModelLabel(model)}
                         </Typography>
+                        {model.provider_id && (
+                          <Chip label={model.provider_id} size="small" variant="outlined" />
+                        )}
                         {model.has_custom_prompt && (
                           <Chip label="Есть инструкция" size="small" color="primary" />
                         )}
@@ -753,7 +779,7 @@ export default function ModelsSettings() {
                   onClick={() => setSelectedModelPath(model.path)}
                 >
                   <ListItemText
-                    primary={model.name}
+                    primary={getModelLabel(model)}
                     secondary={
                       <Box>
                         <Typography variant="caption" display="block">

@@ -24,6 +24,10 @@ import {
   OutlinedInput,
   InputAdornment,
   Popover,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
   alpha,
 } from '@mui/material';
 import type { SxProps, Theme } from '@mui/material';
@@ -58,8 +62,8 @@ import { authFetch, getApiUrl, API_ENDPOINTS, getAuthFetchHeaders } from '../../
 import { useAuth } from '../../contexts/AuthContext';
 import { useAppActions } from '../../contexts/AppContext';
 import { useRagReindexStatus } from '../../contexts/RagReindexStatusContext';
+import type { EntityRagDraft } from '../../utils/entityRagSettings';
 import { loadAgentModelOnly } from '../../utils/applyAgentServer';
-import { saveEntityRagSettings, type EntityRagDraft } from '../../utils/entityRagSettings';
 import {
   fetchRagEntityDefaults,
   resolveRagEmbeddingModelPath,
@@ -93,7 +97,7 @@ import { fetchPlugins } from '../../plugins/api';
 import type { PluginPublic } from '../../plugins/types';
 import { applyAgentMcpToChat, persistAgentMcpConfig } from '../../utils/applyAgentMcp';
 import { persistAgentArtifactsEnabled } from '../../utils/agentArtifactsEnabled';
-import RAGSettings from '../settings/RAGSettings';
+import { clearActiveAgent } from '../../utils/clearActiveAgent';
 import { useRagEntityReadyMessage } from '../../hooks/useRagEntityReadyMessage';
 import { fetchMergedUserAgents } from '../../utils/fetchMergedUserAgents';
 import {
@@ -268,7 +272,7 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
 
 export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConstructorPanelProps) {
   const { token, user } = useAuth();
-  const { canUseAgents } = useFeatureAccess();
+  const { canUseAgents, canCreateAgents, canPublishToLibrary } = useFeatureAccess();
   const ragUserId = String(user?.user_id || user?.username || '').trim().toLowerCase();
   const { showNotification } = useAppActions();
   const { notifyReindexStarted } = useRagReindexStatus();
@@ -429,6 +433,24 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
   const [shadcnEnabled, setShadcnEnabled] = useState(false);
   const [userPromptMode, setUserPromptMode] = useState(false);
 
+  const handleArtifactsEnabledChange = useCallback((checked: boolean) => {
+    setArtifactsEnabled(checked);
+    if (!checked) {
+      setShadcnEnabled(false);
+      setUserPromptMode(false);
+    }
+  }, []);
+
+  const handleShadcnEnabledChange = useCallback((checked: boolean) => {
+    setShadcnEnabled(checked);
+    if (checked) setUserPromptMode(false);
+  }, []);
+
+  const handleUserPromptModeChange = useCallback((checked: boolean) => {
+    setUserPromptMode(checked);
+    if (checked) setShadcnEnabled(false);
+  }, []);
+
   /**
    * Черновик настроек РАГ: панель их не пишет, они уезжают вместе с агентом.
    * null — не трогали, тогда у агента остаются его текущие настройки.
@@ -502,7 +524,6 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
   const [saveError, setSaveError] = useState('');
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [showModelParamsPanel, setShowModelParamsPanel] = useState(false);
-  const [showAgentRagSettingsPanel, setShowAgentRagSettingsPanel] = useState(false);
   const [modelParams, setModelParams] = useState<Partial<ModelParamsState>>({});
   const [agentModelSettings, setAgentModelSettings] = useState<ModelSettingsState>({ ...MODEL_SETTINGS_DEFAULT });
   const [modelSettingsTouched, setModelSettingsTouched] = useState(false);
@@ -511,8 +532,12 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
   const [agentPopoverAnchor, setAgentPopoverAnchor] = useState<HTMLElement | null>(null);
   const [categoryPopoverAnchor, setCategoryPopoverAnchor] = useState<HTMLElement | null>(null);
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [isPublishing, setIsPublishing] = useState(false);
   const [isCloning, setIsCloning] = useState(false);
+  const [isUsingAgent, setIsUsingAgent] = useState(false);
+  const [chatAgentActive, setChatAgentActive] = useState(false);
   /** Оранжевая табличка у блока документов агента (нет модели / нет чекбокса). */
   const [kbGuardMessage, setKbGuardMessage] = useState<string | null>(null);
 
@@ -531,7 +556,9 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
   const loadAgents = useCallback(async () => {
     setIsLoadingAgents(true);
     try {
-      const merged = await fetchMergedUserAgents(tokenRef.current);
+      const merged = await fetchMergedUserAgents(tokenRef.current, 100, {
+        isAdmin: Boolean(user?.is_admin),
+      });
       setAgents((prev) => {
         const byId = new Map<number, Agent>();
         for (const a of merged) byId.set(a.id, a as Agent);
@@ -548,7 +575,7 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
     } finally {
       setIsLoadingAgents(false);
     }
-  }, []);
+  }, [user?.is_admin]);
 
   /** Открыть агента из галереи / по id (подтянуть актуальные данные и роль). */
   const selectExternalAgent = useCallback(async (
@@ -872,8 +899,10 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
     setCodeInterpreter(!!cfg.code_interpreter);
     setWebSearch(!!cfg.web_search);
     setArtifactsEnabled(!!cfg.artifacts_enabled);
-    setShadcnEnabled(!!cfg.shadcn_enabled);
-    setUserPromptMode(!!cfg.user_prompt_mode);
+    const shadcn = !!cfg.shadcn_enabled;
+    const userPrompt = !!cfg.user_prompt_mode;
+    setShadcnEnabled(shadcn && !userPrompt);
+    setUserPromptMode(userPrompt && !shadcn);
     setFileSearchEnabled(!!cfg.file_search_enabled);
     setKbDocumentIds(
       Array.isArray(cfg.kb_document_ids)
@@ -1274,6 +1303,10 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
       setSaveError('Заполните обязательное поле: Имя');
       return;
     }
+    if (!agentTags.some((t) => t.name.trim())) {
+      setSaveError('Заполните обязательное поле: Теги');
+      return;
+    }
     const trimmedInstructions = instructions.trim();
     if (trimmedInstructions.length > 0 && trimmedInstructions.length < INSTRUCTIONS_MIN_LENGTH) {
       setSaveError('Длина инструкции не может быть меньше 10 символов');
@@ -1304,21 +1337,14 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
         artifacts_enabled: artifactsEnabled,
         shadcn_enabled: shadcnEnabled,
         user_prompt_mode: userPromptMode,
-        file_search_enabled: fileSearchEnabled,
-        kb_document_ids: kbDocumentIds,
         skill_ids: skillIds,
         skills_enabled: skillsEnabled,
         mcp_enabled: mcpEnabled,
         mcp_server_ids: mcpServerIds,
         plugins_enabled: pluginsEnabled,
         plugin_ids: pluginIds,
-        // Legacy file_search: при наличии документов включаем и entity БЗ
-        // (поиск в чате — per-KB). Сами файлы остаются в kb_document_ids
-        // до фоновой миграции metadata.knowledge_base_id.
         knowledge_bases_enabled:
-          knowledgeBasesEnabled
-          || knowledgeBaseIds.length > 0
-          || (fileSearchEnabled && kbDocumentIds.length > 0),
+          knowledgeBasesEnabled || knowledgeBaseIds.length > 0,
         knowledge_base_ids: knowledgeBaseIds,
         support_name: supportName,
         support_email: supportEmail,
@@ -1470,32 +1496,6 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
         }
       }
 
-      // Настройки РАГ уезжают ПОСЛЕ агента и одним запросом: до этого момента id
-      // нового агента ещё не существует. Здесь же backend решает, менялось ли то,
-      // что лежит в индексе, и ставит перечанковку.
-      if (token && savedId && savedId !== 'new') {
-        const ragApplied = await saveEntityRagSettings({
-          scope: 'agent',
-          entityId: savedId,
-          entityName: name.trim(),
-          // Именно то, что человек написал. Заглушка нужна только карточке
-          // агента (там промпт обязателен), а в настройках РАГ она становилась
-          // системным промптом сущности
-          instructions: instructions.trim(),
-          draft: ragDraft,
-        });
-        if (ragApplied.ok) {
-          setRagDraft(null);
-          if (ragApplied.reindexed) {
-            notifyReindexStarted();
-          }
-        } else {
-          showNotification(
-            'warning',
-            `Агент сохранён; настройки РАГ не применены: ${ragApplied.message}`,
-          );
-        }
-      }
     } catch (e: any) {
       setSaveError(e.message);
     } finally {
@@ -1506,13 +1506,19 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
   // ─── Publish / unpublish to gallery ──────────────────────────────────────────
 
   const handleTogglePublish = async () => {
+    if (!canPublishToLibrary) return;
     if (selectedAgentId === 'new' || typeof selectedAgentId !== 'number') return;
     const agent = agents.find((a) => a.id === selectedAgentId);
     if (!agent) return;
     const nextPublic = !agent.is_public;
+    const agentId = selectedAgentId;
     setIsPublishing(true);
+    // Optimistic UI: loadAgents может сохранить stale-карточку (агент из галереи).
+    setAgents((prev) =>
+      prev.map((a) => (a.id === agentId ? { ...a, is_public: nextPublic } : a)),
+    );
     try {
-      const resp = await authFetch(getApiUrl(`/api/agents/${selectedAgentId}`), {
+      const resp = await authFetch(getApiUrl(`/api/agents/${agentId}`), {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -1521,8 +1527,29 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
         body: JSON.stringify({ is_public: nextPublic }),
       });
       if (!resp.ok) {
+        setAgents((prev) =>
+          prev.map((a) => (a.id === agentId ? { ...a, is_public: !nextPublic } : a)),
+        );
         const err = await resp.json().catch(() => ({ detail: resp.statusText }));
         throw new Error(formatApiDetail(err.detail, resp.statusText));
+      }
+      // Актуальная карточка с сервера — чтобы is_public не откатился из list merge.
+      try {
+        const getResp = await authFetch(getApiUrl(`/api/agents/${agentId}`), {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (getResp.ok) {
+          const full = (await getResp.json()) as Agent;
+          setAgents((prev) => {
+            const byId = new Map<number, Agent>();
+            for (const a of prev) byId.set(a.id, a);
+            const prevCard = byId.get(full.id);
+            byId.set(full.id, prevCard ? { ...prevCard, ...full } : full);
+            return Array.from(byId.values());
+          });
+        }
+      } catch {
+        /* optimistic уже выставлен */
       }
       await loadAgents();
       showNotification(
@@ -1571,42 +1598,198 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
 
   // ─── Delete agent ────────────────────────────────────────────────────────────
 
-  const handleDelete = async () => {
-    if (selectedAgentId === 'new') return;
-    if (!window.confirm(`Удалить агента «${name}»?`)) return;
+  const linkedAgentsCount = useMemo(() => {
+    const chain = chainAgentIds.filter((id) => Number.isFinite(id) && id > 0);
+    const subs = (subagentsConfig.agent_ids || []).filter(
+      (id) => Number.isFinite(id) && id > 0,
+    );
+    return new Set([...chain, ...subs]).size;
+  }, [chainAgentIds, subagentsConfig.agent_ids]);
+
+  const performDelete = async (cascadeLinked: boolean) => {
+    if (selectedAgentId === 'new' || typeof selectedAgentId !== 'number') return;
+    const deletedId = selectedAgentId;
+    setIsDeleting(true);
     try {
-      const url = getApiUrl(`/api/agents/${selectedAgentId}`);
+      const qs = cascadeLinked ? '?cascade_linked=true' : '';
+      const url = getApiUrl(`/api/agents/${deletedId}${qs}`);
       const resp = await authFetch(url, {
         method: 'DELETE',
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       // Сброс формы — только после успеха.
       if (!resp.ok) {
-        const detail = await resp.json().then(d => d?.detail).catch(() => null);
-        throw new Error(detail || `HTTP ${resp.status}`);
+        const detail = await resp.json().then((d) => d?.detail).catch(() => null);
+        throw new Error(formatApiDetail(detail, resp.statusText) || `HTTP ${resp.status}`);
       }
+      const result = await resp.json().catch(() => ({}));
+      setDeleteDialogOpen(false);
       setSelectedAgentId('new');
       resetForm();
       await loadAgents();
+
+      // Погасить синюю иконку агента в поле ввода, если удалённый был активен.
+      try {
+        const activeRaw = localStorage.getItem('active_agent_id');
+        const activeId = activeRaw != null ? Number(activeRaw) : NaN;
+        if (Number.isFinite(activeId) && activeId === deletedId) {
+          clearActiveAgent();
+        } else if (cascadeLinked && Number.isFinite(activeId) && token) {
+          const check = await authFetch(getApiUrl(`/api/agents/${activeId}`), {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (check.status === 404) clearActiveAgent();
+        }
+      } catch {
+        /* */
+      }
+
+      const deletedLinked = Number(result?.deleted_linked) || 0;
+      showNotification(
+        'success',
+        deletedLinked > 0
+          ? `Агент удалён вместе с ${deletedLinked} связанными агентами`
+          : 'Агент удалён',
+      );
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       showNotification('error', `Не удалось удалить агента: ${msg}`);
+    } finally {
+      setIsDeleting(false);
     }
   };
 
-  // ─── "Use agent" — sets system prompt as context ─────────────────────────────
-
-  const handleUseAgent = () => {
+  const handleDelete = () => {
     if (selectedAgentId === 'new') return;
-    const agent = agents.find(a => a.id === selectedAgentId);
-    if (!agent) return;
-    // Store selected agent in localStorage so chat can pick it up
-    localStorage.setItem('active_agent_id', String(agent.id));
-    localStorage.setItem('active_agent_prompt', agent.system_prompt);
-    localStorage.setItem('active_agent_name', agent.name);
-    persistAgentMcpConfig(agent.config || {});
-    persistAgentArtifactsEnabled((agent.config || {}) as Record<string, unknown>);
-    window.dispatchEvent(new CustomEvent('agentSelected', { detail: agent }));
+    if (linkedAgentsCount > 0) {
+      setDeleteDialogOpen(true);
+      return;
+    }
+    if (!window.confirm(`Удалить агента «${name}»?`)) return;
+    void performDelete(false);
+  };
+
+  // Синхронизация кнопки «Использовать в чате» с active_agent_id
+  useEffect(() => {
+    const sync = () => {
+      try {
+        const raw = localStorage.getItem('active_agent_id');
+        const activeId = raw != null ? Number(raw) : NaN;
+        setChatAgentActive(
+          typeof selectedAgentId === 'number' &&
+            Number.isFinite(activeId) &&
+            activeId === selectedAgentId,
+        );
+      } catch {
+        setChatAgentActive(false);
+      }
+    };
+    sync();
+    window.addEventListener('agentSelected', sync);
+    window.addEventListener('storage', sync);
+    return () => {
+      window.removeEventListener('agentSelected', sync);
+      window.removeEventListener('storage', sync);
+    };
+  }, [selectedAgentId]);
+
+  // ─── "Use agent" — активирует агента в чате (как в GPB_ASTRA) ─────────────────
+
+  const handleUseAgent = async () => {
+    if (selectedAgentId === 'new' || typeof selectedAgentId !== 'number') return;
+
+    if (chatAgentActive) {
+      clearActiveAgent();
+      showNotification('info', 'Агент снят с чата');
+      return;
+    }
+
+    const agent = agents.find((a) => a.id === selectedAgentId);
+    const agentName = (name || agent?.name || 'Агент').trim();
+    const prompt =
+      (instructions || agent?.system_prompt || '').trim() || 'Системные инструкции не заданы.';
+    const baseCfg = (agent?.config || {}) as Record<string, unknown>;
+    const cfg: Record<string, unknown> = {
+      ...baseCfg,
+      ...(model.trim()
+        ? { model: model.trim(), model_path: model.trim() }
+        : {}),
+      mcp_enabled: mcpEnabled,
+      mcp_server_ids: mcpServerIds,
+      artifacts_enabled: artifactsEnabled,
+      shadcn_enabled: shadcnEnabled,
+      user_prompt_mode: userPromptMode,
+    };
+    const modelPath = String(cfg.model_path || cfg.model || '')
+      .trim()
+      .replace(/^1lm-svc:\/\//i, 'llm-svc://')
+      .replace(/\s+/g, '');
+
+    const detail = {
+      ...(agent || {}),
+      id: selectedAgentId,
+      name: agentName,
+      system_prompt: prompt,
+      config: cfg,
+    };
+
+    const persistLocal = () => {
+      localStorage.setItem('active_agent_id', String(selectedAgentId));
+      localStorage.setItem('active_agent_name', agentName);
+      localStorage.setItem('active_agent_prompt', prompt);
+      persistAgentMcpConfig(cfg);
+      persistAgentArtifactsEnabled(cfg);
+      window.dispatchEvent(new CustomEvent('agentSelected', { detail }));
+    };
+
+    setIsUsingAgent(true);
+    try {
+      if (!token) {
+        persistLocal();
+        showNotification(
+          'info',
+          'Войдите в аккаунт, чтобы на сервер применились модель и настройки агента',
+        );
+        return;
+      }
+      showNotification(
+        'info',
+        modelPath
+          ? `Загрузка модели агента «${agentName}»…`
+          : `Применение настроек агента «${agentName}»…`,
+      );
+      const applied = await loadAgentModelOnly(token, modelPath || null);
+      persistLocal();
+      if (!applied.ok) {
+        showNotification(
+          'warning',
+          `Агент «${agentName}» выбран, но модель не загрузилась: ${applied.message}`,
+        );
+        return;
+      }
+      if ('pending' in applied && applied.pending) {
+        showNotification(
+          'info',
+          `Агент «${agentName}» выбран. Модель подтянется при первом сообщении.`,
+        );
+        return;
+      }
+      showNotification(
+        'success',
+        modelPath
+          ? `Агент «${agentName}»: модель загружена, промпт и настройки применятся в чате`
+          : `Агент «${agentName}» активирован — промпт и настройки из карточки агента`,
+      );
+    } catch (e: unknown) {
+      persistLocal();
+      const msg = e instanceof Error ? e.message : String(e);
+      showNotification(
+        'warning',
+        `Агент «${agentName}» выбран, но модель не загрузилась: ${msg}`,
+      );
+    } finally {
+      setIsUsingAgent(false);
+    }
   };
 
   const selectedKbDocuments = useMemo(() => {
@@ -1677,9 +1860,21 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
   const selectedAgent = selectedAgentId !== 'new' ? agents.find(a => a.id === selectedAgentId) : null;
   const selectedRole: 'owner' | 'editor' | 'viewer' =
     selectedAgentId === 'new' ? 'owner' : (selectedAgent?.my_permission ?? 'viewer');
-  const readOnly = selectedRole === 'viewer';
-  const canEdit = selectedRole === 'owner' || selectedRole === 'editor';
-  const isOwner = selectedRole === 'owner';
+  const isAdmin = Boolean(user?.is_admin);
+  const canEdit = isAdmin || selectedRole === 'owner' || selectedRole === 'editor';
+  const readOnly = !canEdit;
+  const isOwner = isAdmin || selectedRole === 'owner';
+  const isAuthor =
+    isAdmin ||
+    Boolean(
+      user?.user_id &&
+        selectedAgent?.author_id &&
+        String(user.user_id).toLowerCase() === String(selectedAgent.author_id).toLowerCase(),
+    );
+  // Шаринг/удаление — автор (или admin); публикация — владелец с правом публикации.
+  const canShare = canEdit && isAuthor;
+  const canDelete = canEdit && isAuthor;
+  const canPublish = canEdit && isOwner && canPublishToLibrary;
 
   return (
     <Box
@@ -1717,25 +1912,6 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
             setModelParams(params ?? {});
             setShowModelParamsPanel(false);
           }}
-        />
-      ) : showAgentRagSettingsPanel ? (
-        <RAGSettings
-          variant="panel"
-          lockedScope="agent"
-          entityId={typeof selectedAgentId === 'number' ? selectedAgentId : null}
-          entityName={selectedAgent?.name}
-          entityInstructionsPrompt={instructions}
-          draft
-          draftValue={ragDraft}
-          onDraftChange={readOnly ? undefined : setRagDraft}
-          readOnly={readOnly}
-          isDarkMode={darkFields}
-          panelTitle={
-            selectedAgent?.name
-              ? `Настройки РАГ: ${selectedAgent.name}`
-              : 'Настройки РАГ для агента'
-          }
-          onClose={() => setShowAgentRagSettingsPanel(false)}
         />
       ) : (
         <>
@@ -1805,17 +1981,19 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
             }}
           >
             {/* «+ Новый агент» */}
-            <Box
-              onClick={() => { setSelectedAgentId('new'); setAgentPopoverAnchor(null); setAgentSearchQuery(''); }}
-              sx={{
-                ...dropdownItemSx,
-                ...getDropdownItemStateSx(darkFields, selectedAgentId === 'new'),
-                fontStyle: 'italic',
-                opacity: selectedAgentId === 'new' ? 1 : 0.7,
-              }}
-            >
-              + Новый агент
-            </Box>
+            {canCreateAgents && (
+              <Box
+                onClick={() => { setSelectedAgentId('new'); setAgentPopoverAnchor(null); setAgentSearchQuery(''); }}
+                sx={{
+                  ...dropdownItemSx,
+                  ...getDropdownItemStateSx(darkFields, selectedAgentId === 'new'),
+                  fontStyle: 'italic',
+                  opacity: selectedAgentId === 'new' ? 1 : 0.7,
+                }}
+              >
+                + Новый агент
+              </Box>
+            )}
 
             {/* Существующие агенты */}
             {(agents || [])
@@ -2150,9 +2328,9 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
           <SectionHeader>Артефакты</SectionHeader>
           <Box sx={{ mt: 1, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
             {[
-              { label: 'Включить артефакты', help: 'Промпт артефактов + HTML/Mermaid/SVG/presentation viewer. Также viewer включается presentation-skill’ом. Уже показанные сообщения сохраняют viewer.', val: artifactsEnabled, set: setArtifactsEnabled, disabled: readOnly },
-              { label: 'Включить компоненты shadcn/ui', help: 'Доп. инструкции: модель может использовать shadcn/ui в React-артефактах (нужны включённые артефакты)', val: shadcnEnabled, set: setShadcnEnabled, disabled: readOnly || !artifactsEnabled },
-              { label: 'Режим пользовательского промта', help: 'ВНИМАНИЕ: отключает стандартный промпт артефактов. Для теста оставьте ВЫКЛ. Включайте только если формат :::artifact описан вручную в инструкциях агента.', val: userPromptMode, set: setUserPromptMode, disabled: readOnly || !artifactsEnabled },
+              { label: 'Включить артефакты', help: 'Промпт артефактов + HTML/Mermaid/SVG/presentation viewer. Также viewer включается presentation-skill’ом. Уже показанные сообщения сохраняют viewer.', val: artifactsEnabled, set: handleArtifactsEnabledChange, disabled: readOnly },
+              { label: 'Включить компоненты shadcn/ui', help: 'Доп. инструкции: модель может использовать shadcn/ui в React-артефактах (нужны включённые артефакты)', val: shadcnEnabled, set: handleShadcnEnabledChange, disabled: readOnly || !artifactsEnabled || userPromptMode },
+              { label: 'Режим пользовательского промта', help: 'ВНИМАНИЕ: отключает стандартный промпт артефактов. Для теста оставьте ВЫКЛ. Включайте только если формат :::artifact описан вручную в инструкциях агента.', val: userPromptMode, set: handleUserPromptModeChange, disabled: readOnly || !artifactsEnabled || shadcnEnabled },
             ].map(({ label, help, val, set, disabled }) => (
               <Box key={label} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
@@ -2772,289 +2950,6 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
           />
         </Box>
 
-        {/* ── File Search (KB) ─────────────────────────────────────────────── */}
-        <Box sx={{ minWidth: 0 }}>
-          <SectionHeader>Документы агента</SectionHeader>
-
-          <Box sx={{ mt: 1, minWidth: 0 }}>
-            <FormControlLabel
-              control={
-                <Checkbox
-                  checked={fileSearchEnabled}
-                  disabled={readOnly}
-                  onChange={e => {
-                    const on = e.target.checked;
-                    setFileSearchEnabled(on);
-                    if (on) setKbGuardMessage(null);
-                  }}
-                  size="small"
-                  sx={{
-                    color: panelChrome.fgSubtle,
-                    '&.Mui-checked': { color: '#2196f3' },
-                    p: 0.5,
-                  }}
-                />
-              }
-              label={
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                  <Typography variant="caption" sx={{ color: panelChrome.fgMuted, fontSize: '0.78rem' }}>
-                    Искать по файлам агента (устарело — используйте «Базы знаний»)
-                  </Typography>
-                  <Tooltip
-                    title="Устаревший режим: новые корпуса подключайте через «Базы знаний» выше. Старые файлы агента по-прежнему ищутся в чате; предпочтительнее перенести их в БЗ."
-                    arrow
-                  >
-                    <HelpIcon sx={{ fontSize: 12, color: panelChrome.fgSubtle, opacity: 0.7 }} />
-                  </Tooltip>
-                </Box>
-              }
-              sx={{ ml: 0, '& .MuiFormControlLabel-label': { ml: 0.5 } }}
-            />
-
-            {/* KB files list — сетка по 2 карточки в ряд, цвет по типу файла */}
-            {isLoadingKb ? (
-              <Box sx={{ display: 'flex', justifyContent: 'center', py: 1 }}>
-                <CircularProgress size={16} sx={{ color: panelChrome.fgSubtle }} />
-              </Box>
-            ) : fileSearchEnabled && kbTotalFiles > 0 ? (
-              <Box sx={{ mt: 0.5, mb: 1, minWidth: 0, width: '100%' }}>
-                <RagFilesSearchField
-                  value={kbFileSearchQuery}
-                  onChange={setKbFileSearchQuery}
-                  totalCount={kbTotalFiles}
-                  variant="sidebar"
-                  size="small"
-                />
-                {hasActiveKbFileSearch && (
-                  <Typography
-                    variant="caption"
-                    sx={{ color: kbFileMutedColor, fontSize: '0.65rem', display: 'block', mb: 0.5 }}
-                  >
-                    {kbFilteredTotal} из {kbTotalFiles}
-                  </Typography>
-                )}
-                {kbFilteredTotal === 0 ? (
-                  <Typography
-                    variant="caption"
-                    sx={{ color: kbFileMutedColor, fontSize: '0.72rem', display: 'block', py: 0.5 }}
-                  >
-                    Ничего не найдено
-                  </Typography>
-                ) : (
-                  <Box
-                    sx={{
-                      display: 'grid',
-                      gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-                      gap: 0.75,
-                      minWidth: 0,
-                      width: '100%',
-                    }}
-                  >
-                    {filteredPendingKbUploads.map((pending) => (
-                      <Box key={pending.clientId} sx={kbFileCardSx}>
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 0, pr: 2 }}>
-                          <RagUploadingFileThumb filename={pending.filename} size={32} />
-                          <Box sx={{ minWidth: 0, flex: 1 }}>
-                            <Typography
-                              variant="caption"
-                              noWrap
-                              component="span"
-                              sx={{ color: kbFileNameColor, fontSize: '0.68rem', display: 'block', fontWeight: 500, lineHeight: 1.3 }}
-                              title={pending.filename}
-                            >
-                              {pending.filename}
-                            </Typography>
-                            <Typography variant="caption" sx={{ color: kbFileTypeColor, fontSize: '0.62rem', lineHeight: 1.2 }}>
-                              {getFileTypeLabel(pending.filename)}
-                            </Typography>
-                          </Box>
-                        </Box>
-                      </Box>
-                    ))}
-                    {filteredSelectedKbDocuments.map(doc => (
-                      <Box key={doc.id} sx={kbFileCardSx}>
-                        {/* Крестик удаления */}
-                        {!readOnly && (
-                        <IconButton
-                          size="small"
-                          onClick={() => handleKbDelete(doc.id)}
-                          sx={{
-                            position: 'absolute',
-                            top: 3,
-                            right: 3,
-                            p: 0.2,
-                            color: kbFileMutedColor,
-                            '&:hover': { color: '#ef5350', bgcolor: 'rgba(239,83,80,0.12)' },
-                          }}
-                        >
-                          <CloseIcon sx={{ fontSize: 11 }} />
-                        </IconButton>
-                        )}
-
-                        {/* Иконка + имя в строку */}
-                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 0, pr: 2 }}>
-                          {/* Цветной квадратик с иконкой */}
-                          <Box
-                            sx={{
-                              width: 32,
-                              height: 32,
-                              borderRadius: 1,
-                              bgcolor: getFileIconBg(doc.filename),
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              flexShrink: 0,
-                            }}
-                          >
-                            {getFileIcon(doc.filename)}
-                          </Box>
-
-                          {/* Имя + тип */}
-                          <Box sx={{ minWidth: 0, flex: 1 }}>
-                            <Tooltip
-                              title={doc.filename}
-                              placement="top"
-                              slotProps={{
-                                tooltip: {
-                                  sx: {
-                                    bgcolor: darkFields ? 'rgba(42, 45, 58, 0.98)' : 'rgba(255,255,255,0.98)',
-                                    color: darkFields ? '#fff' : 'rgba(0,0,0,0.87)',
-                                    borderRadius: 3,
-                                    border: darkFields
-                                      ? '1px solid rgba(255,255,255,0.12)'
-                                      : '1px solid rgba(0,0,0,0.12)',
-                                    fontSize: '0.75rem',
-                                    fontWeight: 500,
-                                    py: 0.75,
-                                    px: 1.25,
-                                    boxShadow: darkFields
-                                      ? '0 4px 12px rgba(0,0,0,0.3)'
-                                      : '0 4px 12px rgba(0,0,0,0.12)',
-                                  },
-                                },
-                              }}
-                            >
-                              <Typography
-                                variant="caption"
-                                noWrap
-                                component="span"
-                                sx={{ color: kbFileNameColor, fontSize: '0.68rem', display: 'block', fontWeight: 500, lineHeight: 1.3 }}
-                              >
-                                {doc.filename}
-                              </Typography>
-                            </Tooltip>
-                            <Typography variant="caption" sx={{ color: kbFileTypeColor, fontSize: '0.62rem', lineHeight: 1.2 }}>
-                              {getFileTypeLabel(doc.filename)}
-                            </Typography>
-                          </Box>
-                        </Box>
-                      </Box>
-                    ))}
-                  </Box>
-                )}
-              </Box>
-            ) : null}
-
-            {ragReadyMessage && (
-              <Alert
-                severity="success"
-                onClose={clearRagReadyMessage}
-                sx={{
-                  mt: 0.75,
-                  mb: 0.5,
-                  py: 0.25,
-                  px: 1,
-                  fontSize: '0.72rem',
-                  bgcolor: 'rgba(76, 175, 80, 0.12)',
-                  color: '#81c784',
-                  border: '1px solid rgba(76, 175, 80, 0.35)',
-                  '& .MuiAlert-icon': { color: '#4caf50', fontSize: '1.1rem', py: 0.5 },
-                  '& .MuiAlert-message': { py: 0.6 },
-                  '& .MuiAlert-action': { pt: 0.25 },
-                }}
-              >
-                {ragReadyMessage}
-              </Alert>
-            )}
-
-            {kbGuardMessage && (
-              <Alert
-                severity="warning"
-                onClose={() => setKbGuardMessage(null)}
-                sx={{
-                  mt: 0.75,
-                  mb: 0.5,
-                  py: 0.25,
-                  px: 1,
-                  fontSize: '0.72rem',
-                  bgcolor: 'rgba(255, 152, 0, 0.12)',
-                  color: '#ffb74d',
-                  border: '1px solid rgba(255, 152, 0, 0.35)',
-                  '& .MuiAlert-icon': { color: '#ff9800', fontSize: '1.1rem', py: 0.5 },
-                  '& .MuiAlert-message': { py: 0.6 },
-                  '& .MuiAlert-action': { pt: 0.25 },
-                }}
-              >
-                {kbGuardMessage}
-              </Alert>
-            )}
-
-            {/* Upload button */}
-            <input
-              ref={kbFileInputRef}
-              type="file"
-              multiple
-              accept=".pdf,.docx,.doc,.docm,.xlsx,.xls,.xlsm,.txt,.csv,.md,.log,.rtf"
-              style={{ display: 'none' }}
-              onChange={e => {
-                const list = e.target.files;
-                if (!list?.length) return;
-                // Снимок ДО очистки input: FileList живой и обнуляется вместе с value.
-                const snapshot = Array.from(list);
-                e.target.value = '';
-                void handleKbUpload(snapshot);
-              }}
-            />
-            <Button
-              size="small"
-              startIcon={<SettingsIcon sx={{ fontSize: '0.85rem !important' }} />}
-              fullWidth
-              disabled={!fileSearchEnabled}
-              onClick={() => {
-                setKbGuardMessage(null);
-                setShowAgentRagSettingsPanel(true);
-              }}
-              sx={{
-                mt: 0.5,
-                fontSize: '0.72rem',
-                textTransform: 'none',
-                py: 0.75,
-                justifyContent: 'flex-start',
-                ...secondaryBtnSx,
-              }}
-            >
-              Настройки РАГ для агента
-            </Button>
-            <Button
-              size="small"
-              startIcon={isUploadingKb ? <CircularProgress size={13} sx={{ color: 'inherit' }} /> : <UploadIcon sx={{ fontSize: '0.85rem !important' }} />}
-              fullWidth
-              disabled={isUploadingKb || readOnly || !fileSearchEnabled}
-              onClick={() => kbFileInputRef.current?.click()}
-              sx={{
-                mt: 0.5,
-                fontSize: '0.72rem',
-                textTransform: 'none',
-                py: 0.75,
-                justifyContent: 'flex-start',
-                ...secondaryDashedBtnSx,
-              }}
-            >
-              {isUploadingKb ? 'Загрузка...' : 'Добавить файлы'}
-            </Button>
-          </Box>
-        </Box>
-
         {/* ── Tools and Actions (скрыто — см. COMMENTS.md) ─────────────────── */}
         {/*
         <Box>
@@ -3128,210 +3023,249 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
           </Box>
         </Box>
 
-        {/* Spacer */}
-        <Box sx={{ pb: 1 }} />
-      </Box>
-
-      {/* ── Footer buttons ──────────────────────────────────────────────────── */}
-      <Box sx={{ px: 2, py: 1.5, display: 'flex', flexDirection: 'column', gap: 1 }}>
-
-        {/* Errors / Success */}
-        {saveError && (
-          <Typography variant="caption" sx={{ color: '#ef5350', fontSize: '0.72rem', textAlign: 'center' }}>
-            {saveError}
-          </Typography>
-        )}
-        {saveSuccess && (
-          <Box sx={{ textAlign: 'center' }}>
-            <Typography variant="caption" sx={{ color: '#66bb6a', fontSize: '0.72rem', display: 'block' }}>
-              Агент успешно сохранён
+        {/* Actions — в скролле формы, не sticky-футер (как в GPB_ASTRA) */}
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, pt: 0.5, pb: 1 }}>
+          {saveError && (
+            <Typography variant="caption" sx={{ color: '#ef5350', fontSize: '0.72rem', textAlign: 'center' }}>
+              {saveError}
             </Typography>
-            <Typography variant="caption" sx={{ color: 'rgba(255,255,255,0.5)', fontSize: '0.65rem', display: 'block', mt: 0.25 }}>
-              Данные сохранены в базу приложения (PostgreSQL, таблица agents). Агент отображается в блоке «Агенты» выше — выберите его для редактирования или нажмите «Использовать в чате».
-            </Typography>
-          </Box>
-        )}
-
-        {/* Advanced + Version (скрыто — см. COMMENTS.md) */}
-        {/*
-        <Box sx={{ display: 'flex', gap: 1 }}>
-          <Button
-            size="small"
-            startIcon={<SettingsIcon sx={{ fontSize: '0.85rem !important' }} />}
-            fullWidth
-            sx={{
-              fontSize: '0.72rem',
-              textTransform: 'none',
-              color: 'rgba(255,255,255,0.5)',
-              border: '1px solid rgba(255,255,255,0.12)',
-              py: 0.6,
-              '&:hover': { bgcolor: 'rgba(255,255,255,0.06)' },
-            }}
-          >
-            Расширенные
-          </Button>
-          <Button
-            size="small"
-            startIcon={<VersionIcon sx={{ fontSize: '0.85rem !important' }} />}
-            fullWidth
-            sx={{
-              fontSize: '0.72rem',
-              textTransform: 'none',
-              color: 'rgba(255,255,255,0.5)',
-              border: '1px solid rgba(255,255,255,0.12)',
-              py: 0.6,
-              '&:hover': { bgcolor: 'rgba(255,255,255,0.06)' },
-            }}
-          >
-            Версия
-          </Button>
-        </Box>
-        */}
-
-        {/* Clone + Share + Publish + Delete + Save — как в GPB_ASTRA */}
-        <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-          {selectedAgentId !== 'new' && (
-            <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', width: '100%' }}>
-              {canUseAgents && (
-                <Box component="span" sx={{ flex: '1 1 140px', minWidth: 0, display: 'flex' }}>
-                  <Button
-                    size="small"
-                    fullWidth
-                    disabled={isCloning}
-                    startIcon={
-                      isCloning ? (
-                        <CircularProgress size={12} sx={{ color: 'inherit' }} />
-                      ) : (
-                        <CloneIcon />
-                      )
-                    }
-                    onClick={() => void handleClone()}
-                    sx={footerNeutralActionBtnSx}
-                  >
-                    Клонировать
-                  </Button>
-                </Box>
-              )}
-              {isOwner && (
-                <Box component="span" sx={{ flex: '1 1 140px', minWidth: 0, display: 'flex' }}>
-                  <Button
-                    size="small"
-                    fullWidth
-                    startIcon={<ShareIcon />}
-                    onClick={() => setShareDialogOpen(true)}
-                    sx={footerNeutralActionBtnSx}
-                  >
-                    Поделиться агентом
-                  </Button>
-                </Box>
-              )}
-              {isOwner && (
-                <Box component="span" sx={{ flex: '1 1 140px', minWidth: 0, display: 'flex' }}>
-                  <Button
-                    size="small"
-                    fullWidth
-                    disabled={isPublishing}
-                    startIcon={
-                      isPublishing ? (
-                        <CircularProgress size={12} sx={{ color: 'inherit' }} />
-                      ) : selectedAgent?.is_public ? (
-                        <PublicOffIcon />
-                      ) : (
-                        <PublicIcon />
-                      )
-                    }
-                    onClick={() => void handleTogglePublish()}
-                    sx={{
-                      ...footerActionBtnSx,
-                      flex: '1 1 auto',
-                      width: '100%',
-                      color: selectedAgent?.is_public ? '#2e7d32' : panelChrome.fgMuted,
-                      border: `1px solid ${selectedAgent?.is_public ? 'rgba(46,125,50,0.45)' : panelChrome.buttonBorder.replace('1px solid ', '')}`,
-                      bgcolor: selectedAgent?.is_public ? 'rgba(46,125,50,0.1)' : 'transparent',
-                      '&:hover': {
-                        bgcolor: selectedAgent?.is_public
-                          ? 'rgba(46,125,50,0.16)'
-                          : panelChrome.hoverBg,
-                        color: selectedAgent?.is_public ? '#2e7d32' : panelChrome.fgMuted,
-                      },
-                      '&:disabled': { color: panelChrome.fgSubtle },
-                    }}
-                  >
-                    {selectedAgent?.is_public ? 'Снять с публикации' : 'Опубликовать в галерее'}
-                  </Button>
-                </Box>
-              )}
-              {isOwner && (
-                <Box component="span" sx={{ flex: '1 1 140px', minWidth: 0, display: 'flex' }}>
-                  <Button
-                    size="small"
-                    fullWidth
-                    startIcon={<DeleteIcon />}
-                    onClick={handleDelete}
-                    sx={footerDeleteActionBtnSx}
-                  >
-                    Удалить агента
-                  </Button>
-                </Box>
-              )}
+          )}
+          {saveSuccess && (
+            <Box sx={{ textAlign: 'center' }}>
+              <Typography variant="caption" sx={{ color: '#66bb6a', fontSize: '0.72rem', display: 'block' }}>
+                Агент успешно сохранён
+              </Typography>
+              <Typography variant="caption" sx={{ color: panelChrome.fgSubtle, fontSize: '0.65rem', display: 'block', mt: 0.25 }}>
+                Агент отображается в блоке «Агенты» выше — выберите его для редактирования или нажмите «Использовать в чате».
+              </Typography>
             </Box>
           )}
-          {canEdit ? (
-            <Button
-              fullWidth
-              variant="contained"
-              startIcon={isSaving ? <CircularProgress size={14} sx={{ color: 'white' }} /> : <SaveIcon />}
-              onClick={handleSave}
-              disabled={isSaving}
-              sx={{
-                bgcolor: '#2e7d32',
-                textTransform: 'none',
-                fontWeight: 600,
-                fontSize: '0.82rem',
-                py: 0.9,
-                justifyContent: 'flex-start',
-                textAlign: 'left',
-                '& .MuiButton-startIcon': {
-                  marginRight: '8px',
-                  marginLeft: 0,
-                  color: 'inherit',
-                },
-                '&:hover': { bgcolor: '#388e3c' },
-                '&:disabled': { bgcolor: 'rgba(46,125,50,0.4)', color: 'rgba(255,255,255,0.5)' },
-              }}
-            >
-              {isSaving ? 'Сохраняю...' : 'Сохранить'}
-            </Button>
-          ) : (
-            <Button
-              fullWidth
-              variant="outlined"
-              startIcon={<AgentIcon />}
-              onClick={handleUseAgent}
-              sx={{
-                textTransform: 'none',
-                fontWeight: 600,
-                fontSize: '0.82rem',
-                py: 0.9,
-                justifyContent: 'flex-start',
-                textAlign: 'left',
-                color: panelChrome.fg,
-                borderColor: panelChrome.buttonBorderHover,
-                '& .MuiButton-startIcon': {
-                  marginRight: '8px',
-                  marginLeft: 0,
-                  color: 'inherit',
-                },
-                '&:hover': { borderColor: panelChrome.fg, bgcolor: panelChrome.hoverBg },
-              }}
-            >
-              Использовать в чате
-            </Button>
-          )}
+
+          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+            {selectedAgentId !== 'new' && (
+              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', width: '100%' }}>
+                {canUseAgents && (
+                  <Box component="span" sx={{ flex: '1 1 140px', minWidth: 0, display: 'flex' }}>
+                    <Button
+                      size="small"
+                      fullWidth
+                      disabled={isCloning}
+                      startIcon={
+                        isCloning ? (
+                          <CircularProgress size={12} sx={{ color: 'inherit' }} />
+                        ) : (
+                          <CloneIcon />
+                        )
+                      }
+                      onClick={() => void handleClone()}
+                      sx={footerNeutralActionBtnSx}
+                    >
+                      Клонировать
+                    </Button>
+                  </Box>
+                )}
+                {canShare && (
+                  <Box component="span" sx={{ flex: '1 1 140px', minWidth: 0, display: 'flex' }}>
+                    <Button
+                      size="small"
+                      fullWidth
+                      startIcon={<ShareIcon />}
+                      onClick={() => setShareDialogOpen(true)}
+                      sx={footerNeutralActionBtnSx}
+                    >
+                      Поделиться агентом
+                    </Button>
+                  </Box>
+                )}
+                {canPublish && (
+                  <Box component="span" sx={{ flex: '1 1 140px', minWidth: 0, display: 'flex' }}>
+                    <Button
+                      size="small"
+                      fullWidth
+                      disabled={isPublishing}
+                      startIcon={
+                        isPublishing ? (
+                          <CircularProgress size={12} sx={{ color: 'inherit' }} />
+                        ) : selectedAgent?.is_public ? (
+                          <PublicOffIcon />
+                        ) : (
+                          <PublicIcon />
+                        )
+                      }
+                      onClick={() => void handleTogglePublish()}
+                      sx={{
+                        ...footerActionBtnSx,
+                        flex: '1 1 auto',
+                        width: '100%',
+                        color: selectedAgent?.is_public ? '#2e7d32' : panelChrome.fgMuted,
+                        border: `1px solid ${selectedAgent?.is_public ? 'rgba(46,125,50,0.45)' : panelChrome.buttonBorder.replace('1px solid ', '')}`,
+                        bgcolor: selectedAgent?.is_public ? 'rgba(46,125,50,0.1)' : 'transparent',
+                        '&:hover': {
+                          bgcolor: selectedAgent?.is_public
+                            ? 'rgba(46,125,50,0.16)'
+                            : panelChrome.hoverBg,
+                          color: selectedAgent?.is_public ? '#2e7d32' : panelChrome.fgMuted,
+                        },
+                        '&:disabled': { color: panelChrome.fgSubtle },
+                      }}
+                    >
+                      {selectedAgent?.is_public ? 'Снять с публикации' : 'Опубликовать в галерее'}
+                    </Button>
+                  </Box>
+                )}
+                {canDelete && (
+                  <Box component="span" sx={{ flex: '1 1 140px', minWidth: 0, display: 'flex' }}>
+                    <Button
+                      size="small"
+                      fullWidth
+                      startIcon={<DeleteIcon />}
+                      onClick={handleDelete}
+                      sx={footerDeleteActionBtnSx}
+                    >
+                      Удалить агента
+                    </Button>
+                  </Box>
+                )}
+              </Box>
+            )}
+            {selectedAgentId !== 'new' && (
+              <Button
+                size="small"
+                fullWidth
+                startIcon={
+                  isUsingAgent ? (
+                    <CircularProgress size={12} sx={{ color: 'inherit' }} />
+                  ) : (
+                    <AgentIcon />
+                  )
+                }
+                onClick={() => void handleUseAgent()}
+                disabled={isUsingAgent}
+                sx={{
+                  ...footerActionBtnSx,
+                  flex: '1 1 auto',
+                  width: '100%',
+                  color: chatAgentActive ? '#2e7d32' : panelChrome.fgMuted,
+                  border: `1px solid ${
+                    chatAgentActive
+                      ? 'rgba(46,125,50,0.45)'
+                      : panelChrome.buttonBorder.replace('1px solid ', '')
+                  }`,
+                  bgcolor: chatAgentActive ? 'rgba(46,125,50,0.1)' : 'transparent',
+                  '&:hover': {
+                    bgcolor: chatAgentActive ? 'rgba(46,125,50,0.16)' : panelChrome.hoverBg,
+                    color: chatAgentActive ? '#2e7d32' : panelChrome.fgMuted,
+                  },
+                  '&:disabled': { color: panelChrome.fgSubtle },
+                }}
+              >
+                {chatAgentActive ? 'Снять с чата' : 'Использовать в чате'}
+              </Button>
+            )}
+            {canEdit ? (
+              <Button
+                fullWidth
+                variant="contained"
+                startIcon={isSaving ? <CircularProgress size={14} sx={{ color: 'white' }} /> : <SaveIcon />}
+                onClick={handleSave}
+                disabled={isSaving}
+                sx={{
+                  bgcolor: '#2e7d32',
+                  textTransform: 'none',
+                  fontWeight: 600,
+                  fontSize: '0.82rem',
+                  py: 0.9,
+                  justifyContent: 'flex-start',
+                  textAlign: 'left',
+                  '& .MuiButton-startIcon': {
+                    marginRight: '8px',
+                    marginLeft: 0,
+                    color: 'inherit',
+                  },
+                  '&:hover': { bgcolor: '#388e3c' },
+                  '&:disabled': { bgcolor: 'rgba(46,125,50,0.4)', color: 'rgba(255,255,255,0.5)' },
+                }}
+              >
+                {isSaving ? 'Сохраняю...' : 'Сохранить'}
+              </Button>
+            ) : null}
+          </Box>
         </Box>
       </Box>
         </>
       )}
+
+      <Dialog
+        open={deleteDialogOpen}
+        onClose={() => (!isDeleting ? setDeleteDialogOpen(false) : undefined)}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{
+          sx: {
+            backgroundColor: isDarkMode ? '#1e1e1e' : '#ffffff',
+            color: isDarkMode ? 'white' : '#333',
+            borderRadius: 2,
+          },
+        }}
+      >
+        <DialogTitle sx={{ color: isDarkMode ? 'white' : '#333', fontWeight: 'bold' }}>
+          Удалить агента
+        </DialogTitle>
+        <DialogContent>
+          <Typography sx={{ color: isDarkMode ? 'rgba(255,255,255,0.9)' : 'rgba(0,0,0,0.8)', mt: 1 }}>
+            Удалить агента со всеми субагентами или только главного агента?
+            {linkedAgentsCount > 0
+              ? ` Сейчас в цепочке/субагентах: ${linkedAgentsCount}.`
+              : ''}
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ p: 2, gap: 1, flexWrap: 'wrap' }}>
+          <Button
+            disabled={isDeleting}
+            onClick={() => setDeleteDialogOpen(false)}
+            sx={{
+              backgroundColor: isDarkMode ? 'black' : 'rgba(0,0,0,0.08)',
+              color: isDarkMode ? 'white' : '#333',
+              '&:hover': {
+                backgroundColor: isDarkMode ? 'rgba(0,0,0,0.8)' : 'rgba(0,0,0,0.12)',
+              },
+              textTransform: 'none',
+              px: 3,
+            }}
+          >
+            Отмена
+          </Button>
+          <Button
+            disabled={isDeleting}
+            onClick={() => void performDelete(false)}
+            sx={{
+              backgroundColor: '#d32f2f',
+              color: 'white',
+              '&:hover': { backgroundColor: '#b71c1c' },
+              textTransform: 'none',
+              px: 3,
+            }}
+          >
+            Главного агента без субагентов
+          </Button>
+          <Button
+            disabled={isDeleting}
+            onClick={() => void performDelete(true)}
+            startIcon={
+              isDeleting ? <CircularProgress size={14} sx={{ color: 'inherit' }} /> : undefined
+            }
+            sx={{
+              backgroundColor: '#d32f2f',
+              color: 'white',
+              '&:hover': { backgroundColor: '#b71c1c' },
+              textTransform: 'none',
+              px: 3,
+            }}
+          >
+            Главного агента с субагентами
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {selectedAgentId !== 'new' && (
         <ShareAgentDialog

@@ -8,9 +8,9 @@ import {
   artifactMetaLooksLikePresentation,
   coalescePresentationHtmlInMessage,
   extractUnfencedPresentationHtml,
-  hasGpbSlideClass,
-  isGpbPresentationHtml,
-  isGpbPresentationStreaming,
+  hasDeckSlideClass,
+  isDeckPresentationHtml,
+  isDeckPresentationStreaming,
   isHtmlFenceBlock,
   isHtmlFenceLanguage,
   shouldOpenPresentationViewer,
@@ -508,8 +508,8 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
     if (
       text.includes(':::artifact{') ||
       /```(?:html|htm|xhtml|mermaid|mmd|svg)\b/i.test(text) ||
-      hasGpbSlideClass(text) ||
-      isGpbPresentationHtml(text) ||
+      hasDeckSlideClass(text) ||
+      isDeckPresentationHtml(text) ||
       (presentationExpected && /```/i.test(text)) ||
       (presentationExpected && /<!DOCTYPE\s+html\b|<html\b/i.test(text))
     ) {
@@ -597,7 +597,7 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
     const withoutPresentations = withoutFences.replace(
       /(?:<!DOCTYPE\s+html\b[\s\S]*<\/html>)|(?:<html\b[\s\S]*<\/html>)/gi,
       (block) => {
-        if (!isGpbPresentationHtml(block) && !hasGpbSlideClass(block)) return block;
+        if (!isDeckPresentationHtml(block) && !hasDeckSlideClass(block)) return block;
         const token = `\n__ASTRA_PRES_${presentations.length}__\n`;
         presentations.push(block);
         return token;
@@ -1429,7 +1429,7 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
   // Функция для парсинга Markdown
   const parseMarkdown = (text: string) => {
     // Auto-continue часто дописывает второй ```html — склеиваем в один viewer.
-    const shouldCoalesce = presentationExpected || hasGpbSlideClass(text);
+    const shouldCoalesce = presentationExpected || hasDeckSlideClass(text);
     // Сначала вырезаем :::artifact — внутри них свои fence ```, обычный split ломается.
     // BUG-FE-55: при наличии :::artifact склеиваем слайды только в текстовых сегментах вне артефактов,
     // иначе обёртка артефакта переписывается в один html-блок и остаётся пустой и незакрытой.
@@ -1445,10 +1445,10 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
         );
     // Презентация сверху, остальные артефакты (Mermaid/HTML/…) под ней.
     const segments = hoistPresentationArtifacts(rawSegments, (content) =>
-      isGpbPresentationHtml(content) ||
+      isDeckPresentationHtml(content) ||
       (Boolean(isStreaming) &&
         presentationExpected &&
-        isGpbPresentationStreaming(content || '')),
+        isDeckPresentationStreaming(content || '')),
     );
 
     return segments.map((segment, segIndex) => {
@@ -1468,10 +1468,10 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
         const presentationPending = Boolean(isStreaming && !art.closed);
         const stickyKey = `artifact:${art.id || art.identifier || segIndex}`;
         let isPresentationArtifact =
-          isGpbPresentationHtml(art.content) ||
+          isDeckPresentationHtml(art.content) ||
           (isStreaming &&
             presentationExpected &&
-            (isGpbPresentationStreaming(art.content || '') ||
+            (isDeckPresentationStreaming(art.content || '') ||
               artifactMetaLooksLikePresentation({
                 title: art.title,
                 identifier: art.identifier,
@@ -1507,9 +1507,13 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
               return renderCodeBlock(part, segIndex * 10000 + index);
             }
 
-            if (part.startsWith('```') && !part.endsWith('```') && isStreaming) {
-              // Парсинг — с синтетическим ```; streamFenceOpen=true, иначе closed=true → iframe на стриме → #185.
-              return renderCodeBlock(part + '\n```', segIndex * 10000 + index, { streamFenceOpen: true });
+            // Незакрытый fence на ЖИВОМ стриме → streamFenceOpen (иначе closed=true → iframe на стриме → #185).
+            // После complete/F5 незакрытый ``` (обрыв по max_tokens) НЕ держим в live-режиме —
+            // иначе спиннер «слайд N…» крутится вечно; показываем как обычный закрытый блок кода.
+            if (part.startsWith('```') && !part.endsWith('```')) {
+              return renderCodeBlock(part + '\n```', segIndex * 10000 + index, {
+                streamFenceOpen: Boolean(isStreaming),
+              });
             }
 
             if (isAsciiTable(part)) {
@@ -1527,8 +1531,11 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
             }
 
             // Unfenced GPB HTML (без ```html) → presentation viewer, не ChatInlineHtml с иконками.
-            if (artifactsAllowed) {
-              const extracted = extractUnfencedPresentationHtml(part);
+            if (artifactsAllowed || presentationExpected || viewerAllowed) {
+              const extracted = extractUnfencedPresentationHtml(part, {
+                presentationExpected,
+                isStreaming: Boolean(isStreaming),
+              });
               const stickyKey = `raw-html:${messageId || 'msg'}:${segIndex}:${index}`;
               let isPres = Boolean(
                 extracted.html &&
@@ -1538,6 +1545,10 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
                     language: 'html',
                   }),
               );
+              // Skill + стрим: unfenced <!DOCTYPE>/<style> сразу в viewer.
+              if (!isPres && extracted.html && isStreaming && presentationExpected) {
+                isPres = true;
+              }
               isPres = markPresentationSticky(stickyKey, isPres);
               if (isPres && extracted.html) {
                 return (
@@ -1704,7 +1715,7 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
         isPresentationHtml = true;
       }
       // Обрезанная презентация после complete (нет закрывающего ```) — всё равно viewer.
-      if (!isPresentationHtml && !isStreaming && presentationExpected && isGpbPresentationStreaming(code)) {
+      if (!isPresentationHtml && !isStreaming && presentationExpected && isDeckPresentationStreaming(code)) {
         isPresentationHtml = true;
       }
       // Skill презентации + стрим + html-fence: форсируем viewer до появления .slide,

@@ -80,16 +80,15 @@ class TestLoadAttachment:
             with pytest.raises(FileNotFoundError):
                 pt._load_attachment_bytes(name, "__pod_tmp__")
 
-    def test_sibling_directory_with_a_shared_prefix_is_not_confused_with_the_root_known_issue(self, tmp_path, monkeypatch):
-        """Известная проблема: проверка ``str(candidate).startswith(str(root))`` пропускает соседний каталог
-        ``attach-evil`` для корня ``attach`` (нужно сравнивать по границе компонента пути)."""
+    def test_sibling_directory_with_a_shared_prefix_is_not_confused_with_the_root(self, tmp_path, monkeypatch):
         root = tmp_path / "attach"
         root.mkdir()
         evil = tmp_path / "attach-evil"
         evil.mkdir()
         (evil / "x.xlsx").write_bytes(b"stolen")
         monkeypatch.setenv("INLINE_ATTACH_DIR", str(root))
-        assert pt._load_attachment_bytes("../attach-evil/x.xlsx", "__pod_tmp__") == b"stolen"
+        with pytest.raises(FileNotFoundError):
+            pt._load_attachment_bytes("../attach-evil/x.xlsx", "__pod_tmp__")
 
     def test_pod_tmp_requires_the_directory_setting(self, monkeypatch):
         monkeypatch.delenv("INLINE_ATTACH_DIR", raising=False)

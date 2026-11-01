@@ -56,9 +56,7 @@ const loadConfig = async (): Promise<SettingsConfig> => {
 
       const llmStatusPollSeconds = Number.parseInt(String(configData.app?.llm_status_poll_seconds ?? ''), 10);
       if (!Number.isFinite(llmStatusPollSeconds) || llmStatusPollSeconds <= 0) {
-        throw new Error(
-          'В config.yml app.llm_status_poll_seconds должен быть положительным целым числом (секунды).',
-        );
+        throw new Error('В config.yml app.llm_status_poll_seconds должен быть положительным целым числом (секунды).');
       }
       const llmStatusPollTrace =
         String(configData.app?.llm_status_poll_trace ?? '')

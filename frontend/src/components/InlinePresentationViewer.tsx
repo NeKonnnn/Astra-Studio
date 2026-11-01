@@ -8,6 +8,7 @@ import {
 import {
   getStablePresentationSnapshot,
   openPresentationViewer,
+  presentationLog,
 } from '../utils/presentationViewer';
 import { useInViewport } from '../hooks/useInViewport';
 import ThinkingShimmerText from './chat/ThinkingShimmerText';
@@ -17,8 +18,30 @@ const SLIDE_W_MM = 297;
 const SLIDE_H_MM = 167;
 const SLIDE_ASPECT = SLIDE_W_MM / SLIDE_H_MM;
 
+/** Атрибуты-обработчики событий (onerror/onload/…): удаляются из HTML модели (BUG-FE-51). */
+const EVENT_HANDLER_ATTR_SRC = String.raw`([\s/"'])on[a-z0-9_-]*\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)`;
+
+/** URL-атрибуты со схемой javascript: (допускаются управляющие символы/переносы внутри схемы). */
+const JS_URL_ATTR_SRC =
+  String.raw`(\b(?:href|src|xlink:href|action|formaction)\s*=\s*)(["']?)[\s\u0000-\u001f]*` +
+  'javascript'.split('').join(String.raw`[\t\r\n]*`) +
+  String.raw`[\t\r\n]*:[^"'\s>]*`;
+
+function stripUnsafeMarkup(html: string): string {
+  const eventHandlers = new RegExp(EVENT_HANDLER_ATTR_SRC, 'gi');
+  const jsUrls = new RegExp(JS_URL_ATTR_SRC, 'gi');
+  let current = html;
+  // Повторяем до стабилизации: защита от вложенных обходов вида `ononerror=`.
+  for (let i = 0; i < 5; i += 1) {
+    const next = current.replace(eventHandlers, '$1').replace(jsUrls, '$1$2#');
+    if (next === current) break;
+    current = next;
+  }
+  return current;
+}
+
 function stripEmbeddedScripts(html: string): string {
-  return html.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+  return stripUnsafeMarkup(html.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ''));
 }
 
 function escapeForScriptPlain(html: string): string {
@@ -171,8 +194,23 @@ export function buildInlinePresentationViewerSrcDoc(rawHtml: string): string {
       el.textContent = '';
     }
 
+    var EVENT_HANDLER_RE_SRC = ${JSON.stringify(EVENT_HANDLER_ATTR_SRC)};
+    var JS_URL_RE_SRC = ${JSON.stringify(JS_URL_ATTR_SRC)};
+
+    function stripUnsafeMarkup(h) {
+      var eventHandlers = new RegExp(EVENT_HANDLER_RE_SRC, 'gi');
+      var jsUrls = new RegExp(JS_URL_RE_SRC, 'gi');
+      var cur = h;
+      for (var i = 0; i < 5; i++) {
+        var next = cur.replace(eventHandlers, '$1').replace(jsUrls, '$1$2#');
+        if (next === cur) break;
+        cur = next;
+      }
+      return cur;
+    }
+
     function stripEmbeddedScripts(h) {
-      return h.replace(/<script[^>]*>[\\s\\S]*?<\\/script>/gi, '');
+      return stripUnsafeMarkup(h.replace(/<script[^>]*>[\\s\\S]*?<\\/script>/gi, ''));
     }
 
     // Fence-sanitize снаружи (sanitizePresentationHtmlSource).
@@ -216,15 +254,33 @@ export function buildInlinePresentationViewerSrcDoc(rawHtml: string): string {
         if (gen !== applyGen) return;
         try {
           var doc = frame.contentDocument;
+          if (!doc) {
+            showError('Ошибка загрузки HTML презентации');
+            return;
+          }
           // Все контейнеры с токеном class=slide (включая slide title-slide).
           slides = Array.from(doc.querySelectorAll('.slide'));
           if (!slides.length) {
             slides = Array.from(doc.querySelectorAll('[class~="slide"]'));
           }
           if (!slides.length) {
+            try {
+              console.warn(
+                '[presentation][iframe] .slide не найдены. htmlLen=' + html.length +
+                ' hasSlideWord=' + (html.indexOf('slide') >= 0) +
+                ' sample=' + html.slice(0, 300)
+              );
+              window.parent.postMessage(
+                { type: 'astra-pptx-no-slides', htmlLen: html.length },
+                '*'
+              );
+            } catch (logErr) {}
             showError('В HTML не найдены слайды с классом .slide');
             return;
           }
+          try {
+            console.info('[presentation][iframe] отрисовано слайдов: ' + slides.length);
+          } catch (logErr2) {}
           document.querySelectorAll('style[data-astra-slide-css]').forEach(function (s) { s.remove(); });
           doc.querySelectorAll('style').forEach(function (s) {
             var ns = document.createElement('style');
@@ -478,9 +534,18 @@ export default function InlinePresentationViewer({
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
       if (e.source !== iframeRef.current?.contentWindow) return;
-      const data = e.data as { type?: string; count?: number } | null;
-      if (!data || data.type !== 'astra-pptx-applied') return;
+      const data = e.data as { type?: string; count?: number; htmlLen?: number } | null;
+      if (!data) return;
+      if (data.type === 'astra-pptx-no-slides') {
+        presentationLog('iframe сообщил: .slide НЕ найдены', {
+          htmlLen: data.htmlLen,
+          isStreaming,
+        });
+        return;
+      }
+      if (data.type !== 'astra-pptx-applied') return;
       const n = typeof data.count === 'number' ? data.count : 0;
+      presentationLog('iframe отрисовал слайды', { count: n, isStreaming });
       setReadyCount((prev: number) => (n > prev ? n : !isStreaming ? n : prev));
     };
     window.addEventListener('message', onMessage);
@@ -497,6 +562,17 @@ export default function InlinePresentationViewer({
   }, [keepIframe]);
 
   const showMissingSlides = !pending && !committedHtml;
+
+  useEffect(() => {
+    if (showMissingSlides) {
+      presentationLog('viewer: показываю «нет слайдов» (committedHtml пуст)', {
+        isStreaming,
+        startedCount,
+        readyCount,
+        htmlLen: (html || '').length,
+      });
+    }
+  }, [showMissingSlides, isStreaming, startedCount, readyCount, html]);
 
   const statusLabel = (() => {
     if (showMissingSlides) return 'Презентация · нет слайдов';
@@ -553,6 +629,8 @@ export default function InlinePresentationViewer({
             iframeReadyRef.current = true;
             if (committedHtml) pushHtmlToIframe(committedHtml);
           }}
+          // allow-same-origin нужен: иначе origin=null → CORS на шрифты/ресурсы
+          // и frame.contentDocument === null. XSS сдерживается stripEmbeddedScripts.
           sandbox="allow-scripts allow-same-origin allow-downloads"
           style={{
             position: 'absolute',
@@ -580,11 +658,13 @@ export default function InlinePresentationViewer({
           }}
         >
           <Typography variant="body2" sx={{ color: '#991b1b', fontSize: 13, textAlign: 'center' }}>
-            В HTML нет элементов с классом <code>.slide</code>
+            Не удалось собрать слайды презентации
           </Typography>
           <Typography variant="caption" sx={{ color: 'text.secondary', textAlign: 'center', maxWidth: 420 }}>
-            Каждый слайд должен быть обёрнут в <code>{'<div class="slide">'}</code> — не путать с{' '}
-            <code>slide-title</code> / <code>content-zone</code>.
+            Либо генерация оборвалась до первого готового слайда (лимит токенов —
+            попробуйте перегенерировать), либо слайды не обёрнуты в{' '}
+            <code>{'<div class="slide">'}</code> (не путать с <code>slide-title</code> /{' '}
+            <code>content-zone</code>).
           </Typography>
         </Box>
       ) : null}

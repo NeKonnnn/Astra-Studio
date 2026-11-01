@@ -330,7 +330,7 @@ class McpPlatformService:
             try:
                 all_tools.extend(await self.list_tools_for_server(srv.id, context))
             except Exception:
-                log.exception("list_tools failed server=")
+                log.exception("list_tools failed server=%s", srv.id)
         return all_tools
 
     async def call_tool_debug(

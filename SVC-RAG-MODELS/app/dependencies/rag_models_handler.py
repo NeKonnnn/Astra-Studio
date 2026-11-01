@@ -42,8 +42,10 @@ def _rss_mb() -> Optional[int]:
         return None
     return None
 
+
 def _loaded_keys() -> List[str]:
     return [f"{k}:{n}" for (k, n) in _MODEL_CACHE]
+
 
 def _log_models(action: str, kind: str, folder: str, dim: Any = None) -> None:
     # print, а не logger: гарантированно виден в docker-логах даже при кривом logging-конфиге
@@ -51,6 +53,7 @@ def _log_models(action: str, kind: str, folder: str, dim: Any = None) -> None:
         f"[MODELS] {action} {kind}={folder} dim={dim} rss={_rss_mb()}MB loaded={_loaded_keys()}",
         flush=True,
     )
+
 
 def _folder_of(name_or_path: Optional[str]) -> str:
     """'local/FRIDA' | 'FRIDA' | '/abs/path/FRIDA' -> 'FRIDA'."""
@@ -66,11 +69,13 @@ def _folder_of(name_or_path: Optional[str]) -> str:
         return os.path.basename(raw)
     return raw.split("/")[-1]
 
+
 def _default_folder(kind: str) -> str:
     rm = settings.rag_models
     if kind == "embedding":
         return _folder_of(rm.embedding_model or rm.embedding_model_default)
     return _folder_of(rm.reranker_model or rm.reranker_model_default)
+
 
 def configured_folders(kind: str) -> List[str]:
     """Разрешённые модели: config.yml + ENV RAG_*_MODEL2..20 + дефолт. Первая — кластерная."""
@@ -142,10 +147,7 @@ def _register_giga_remote_code(model_path: str) -> None:
             model_path,
             trust_remote_code=True,
         )
-        for cfg, mdl in (
-            (latent_cfg, latent_model),
-            (gigar_cfg, gigar_model)
-        ):
+        for cfg, mdl in ((latent_cfg, latent_model), (gigar_cfg, gigar_model)):
             try:
                 AutoModel.register(cfg, mdl, exist_ok=True)
             except TypeError:
@@ -281,6 +283,7 @@ def _prepare_env_once() -> str:
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
     return models_dir
 
+
 def _resolve_device() -> str:
     device = settings.rag_models.device
     if device == "auto":
@@ -292,6 +295,7 @@ def _resolve_device() -> str:
             device = "cpu"
     return device
 
+
 def _max_loaded(kind: str) -> int:
     rm = settings.rag_models
     cap = rm.max_loaded_embedding if kind == "embedding" else rm.max_loaded_reranker
@@ -299,6 +303,7 @@ def _max_loaded(kind: str) -> int:
         return max(1, int(cap))
     except (TypeError, ValueError):
         return 1
+
 
 def _evict_lru(kind: str) -> None:
     """Вытеснить самые старые модели этого типа сверх лимита."""
@@ -311,6 +316,7 @@ def _evict_lru(kind: str) -> None:
         _MODEL_CACHE.pop(oldest, None)
         _log_models("evict", oldest[0], oldest[1])
         _free_model_memory()
+
 
 def _load_one(kind: str, folder: str, models_dir: str, device: str) -> Dict[str, Any]:
     """Синхронная загрузка одной модели. Вызывается под замком ключа."""
@@ -363,6 +369,7 @@ def _load_one(kind: str, folder: str, models_dir: str, device: str) -> Dict[str,
     logger.info("Реранкер '%s' загружен", folder)
     return {"model": obj, "dim": None, "path": path}
 
+
 async def _get_model_entry(kind: str, name: Optional[str]) -> Dict[str, Any]:
     """Достать модель из кэша или загрузить. Ленивая загрузка + замок на ключ + LRU."""
     global _last_rag_models_error
@@ -374,12 +381,14 @@ async def _get_model_entry(kind: str, name: Optional[str]) -> Dict[str, Any]:
     if not folder:
         raise RuntimeError(f"Не задана модель типа {kind}")
 
-    allowed = {f.lower() for f in configured_folders(kind)}
+    allowed = {f.lower(): f for f in configured_folders(kind)}
     if folder.lower() not in allowed:
         raise ValueError(
             f"Модель '{folder}' не разрешена для {kind}. "
             f"Доступные: {sorted(allowed)}. Добавьте её в config.yml или ENV RAG_*_MODEL2..20."
         )
+    # Каноническое имя из конфига: 'FRIDA' и 'frida' - одна запись кэша
+    folder = allowed[folder.lower()]
 
     key = (kind, folder)
     entry = _MODEL_CACHE.get(key)
@@ -404,7 +413,9 @@ async def _get_model_entry(kind: str, name: Optional[str]) -> Dict[str, Any]:
             entry = await asyncio.to_thread(_load_one, kind, folder, models_dir, device)
         except Exception as e:
             _last_rag_models_error = f"{kind}/{folder}: {e}"
-            logger.error("Не удалось загрузить %s '%s': %s", kind, folder, e, exc_info=True)
+            logger.error(
+                "Не удалось загрузить %s '%s': %s", kind, folder, e, exc_info=True
+            )
             _free_model_memory()
             raise
         entry["device"] = device
@@ -413,19 +424,25 @@ async def _get_model_entry(kind: str, name: Optional[str]) -> Dict[str, Any]:
         _log_models("loaded", kind, folder, entry.get("dim"))
         _evict_lru(kind)
         # Кластерный дефолт держим в settings для health/legacy-эндпоинтов
-        if kind == "embedding" and folder.lower() == _default_folder("embedding").lower():
+        if (
+            kind == "embedding"
+            and folder.lower() == _default_folder("embedding").lower()
+        ):
             if entry.get("dim"):
                 settings.rag_models.embedding_dim = int(entry["dim"])
         _last_rag_models_error = None
         return entry
 
+
 async def get_embedding_model(name: Optional[str] = None) -> Dict[str, Any]:
     """{'model', 'dim', 'path', 'device'} для эмбеддера (по имени или кластерный дефолт)."""
     return await _get_model_entry("embedding", name)
 
+
 async def get_reranker_model(name: Optional[str] = None) -> Dict[str, Any]:
     """{'model', 'dim', 'path', 'device'} для реранкера (по имени или кластерный дефолт)."""
     return await _get_model_entry("reranker", name)
+
 
 async def get_rag_models_handler() -> Optional[dict]:
     """СОВМЕСТИМОСТЬ со старым кодом: дефолтный эмбеддер + дефолтный реранкер.
@@ -445,10 +462,10 @@ async def get_rag_models_handler() -> Optional[dict]:
             "device": emb.get("device") or _resolve_device(),
             "embedding_dim": emb.get("dim"),
         }
-        
+
     except Exception as e:
         _last_rag_models_error = str(e)
-        logger.error(f"Не удалось загрузить RAG-модели: %s", e, exc_info=True)
+        logger.error("Не удалось загрузить RAG-модели: %s", e, exc_info=True)
         return None
 
 
@@ -461,7 +478,8 @@ def loaded_models_info() -> Dict[str, Any]:
     """Что сейчас в памяти + RSS — для диагностики и /models/current."""
     return {
         "loaded": [
-            {"kind": k, "name": n, "dim": v.get("dim")} for (k, n), v in _MODEL_CACHE.items()
+            {"kind": k, "name": n, "dim": v.get("dim")}
+            for (k, n), v in _MODEL_CACHE.items()
         ],
         "rss_mb": _rss_mb(),
         "max_loaded_embedding": _max_loaded("embedding"),

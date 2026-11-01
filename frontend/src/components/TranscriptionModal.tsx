@@ -19,8 +19,9 @@ import {
   Paper,
   Tooltip,
 } from '@mui/material';
-import { getApiUrl, API_ENDPOINTS } from '../config/api';
+import { authFetch, getApiUrl, API_ENDPOINTS } from '../config/api';
 import { incrementTabNotification } from '../utils/tabNotifications';
+import { applySpeakerMapping, extractSpeakers } from '../utils/speakerNames';
 import {
   Close as CloseIcon,
   Upload as UploadIcon,
@@ -218,7 +219,7 @@ export default function TranscriptionModal({
       formData.append('file', uploadedFile);
       formData.append('request_id', currentTranscriptionId);
 
-      const response = await fetch(getApiUrl(API_ENDPOINTS.TRANSCRIBE_UPLOAD), {
+      const response = await authFetch(getApiUrl(API_ENDPOINTS.TRANSCRIBE_UPLOAD), {
         method: 'POST',
         body: formData,
       });
@@ -300,7 +301,7 @@ export default function TranscriptionModal({
       const formData = new FormData();
       formData.append('file', file);
       formData.append('request_id', currentTranscriptionId);
-      const response = await fetch(getApiUrl(API_ENDPOINTS.TRANSCRIBE_UPLOAD), {
+      const response = await authFetch(getApiUrl(API_ENDPOINTS.TRANSCRIBE_UPLOAD), {
         method: 'POST',
         body: formData,
       });
@@ -364,7 +365,7 @@ export default function TranscriptionModal({
     }
     
     try {
-      const response = await fetch(getApiUrl(API_ENDPOINTS.TRANSCRIBE_YOUTUBE), {
+      const response = await authFetch(getApiUrl(API_ENDPOINTS.TRANSCRIBE_YOUTUBE), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -441,44 +442,7 @@ export default function TranscriptionModal({
     }
   };
 
-  // Извлекаем уникальных спикеров из результата транскрибации
-  const extractSpeakers = (text: string): string[] => {
-    if (!text) return [];
-    
-    // Паттерны для различных форматов спикеров
-    // Формат обычно: "00:23 SPEAKER_00: текст" или "00:23 Speaker_A: текст"
-    const patterns = [
-      /SPEAKER_SPEAKER_\d+/gi,  // SPEAKER_SPEAKER_00, SPEAKER_SPEAKER_01, etc.
-      /SPEAKER_\d+/gi,          // SPEAKER_00, SPEAKER_01, etc.
-      /Speaker_[A-Z0-9]+/gi,     // Speaker_A, Speaker_B, Speaker_1, etc.
-      /Спикер_\d+/gi,            // Спикер_1, Спикер_2, etc.
-    ];
-    
-    const allMatches: string[] = [];
-    patterns.forEach(pattern => {
-      const matches = text.match(pattern);
-      if (matches) {
-        allMatches.push(...matches);
-      }
-    });
-    
-    // Убираем дубликаты и сортируем
-    const uniqueSpeakers = Array.from(new Set(allMatches));
-    return uniqueSpeakers.sort();
-  };
-
-  // Применяем маппинг имен спикеров к тексту
-  const applySpeakerMapping = (text: string, mapping: Record<string, string>): string => {
-    let result = text;
-    Object.entries(mapping).forEach(([original, newName]) => {
-      if (newName.trim()) {
-        // Заменяем все вхождения оригинального имени на новое
-        const regex = new RegExp(original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
-        result = result.replace(regex, newName);
-      }
-    });
-    return result;
-  };
+  // extractSpeakers / applySpeakerMapping — см. utils/speakerNames (поиск спикеров по границам токена).
 
   const handleApplySpeakerNames = () => {
     // Используем оригинальный текст, если он есть, иначе текущий результат
@@ -549,7 +513,7 @@ export default function TranscriptionModal({
     }
 
     try {
-      const response = await fetch(getApiUrl('/api/transcribe/stop'), {
+      const response = await authFetch(getApiUrl('/api/transcribe/stop'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

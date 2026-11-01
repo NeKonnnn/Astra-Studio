@@ -36,6 +36,7 @@ import {
 import type { SxProps, Theme } from '@mui/material/styles';
 import { useAuth } from '../../contexts/AuthContext';
 import { useAppActions, useAppContext } from '../../contexts/AppContext';
+import { useFeatureAccess } from '../../hooks/useFeatureAccess';
 import { getApiUrl, API_ENDPOINTS } from '../../config/api';
 import {
   getDropdownChevronSx,
@@ -48,6 +49,7 @@ import {
   SIDEBAR_HIDE_SCROLLBAR_SX,
   AGENT_CONSTRUCTOR_FIELD_PADDING_X_PX,
   AGENT_CONSTRUCTOR_FIELD_PADDING_Y_PX,
+  AGENT_CONSTRUCTOR_MULTILINE_HIDE_SCROLLBAR_SX,
 } from '../../constants/menuStyles';
 import {
   getSidebarPanelBackground,
@@ -55,6 +57,7 @@ import {
 } from '../../constants/sidebarPanelColor';
 import {
   getActiveSkillIds,
+  removeSkillSlugFromAllChats,
   renameSkillSlugInAllChats,
   SKILL_SELECTION_CHANGED_EVENT,
   toggleActiveSkill,
@@ -157,6 +160,7 @@ export default function SkillsSidebarPanel({
   const theme = useTheme();
   const isDarkMode = theme.palette.mode === 'dark';
   const { token, user } = useAuth();
+  const { canCreateAgents, canPublishToLibrary } = useFeatureAccess();
   const { state: appState } = useAppContext();
   const currentChatId = appState.currentChatId;
   const { showNotification } = useAppActions();
@@ -201,6 +205,7 @@ export default function SkillsSidebarPanel({
           },
           '& .MuiOutlinedInput-root.MuiInputBase-multiline .MuiOutlinedInput-input': {
             padding: `${AGENT_CONSTRUCTOR_FIELD_PADDING_Y_PX}px ${AGENT_CONSTRUCTOR_FIELD_PADDING_X_PX}px !important`,
+            ...AGENT_CONSTRUCTOR_MULTILINE_HIDE_SCROLLBAR_SX,
           },
         },
       ] as SxProps<Theme>,
@@ -303,13 +308,28 @@ export default function SkillsSidebarPanel({
     setLoading(true);
     try {
       const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
-      const resp = await fetch(`${getApiUrl(API_ENDPOINTS.SKILLS)}/list?limit=100`, { headers });
-      if (!resp.ok) {
-        setSkills([]);
-        return;
+      // Листаем все страницы — без потолка по числу карточек.
+      const pageSize = 200;
+      const all: SkillRow[] = [];
+      let page = 1;
+      let pages = 1;
+      while (page <= pages) {
+        const resp = await fetch(
+          `${getApiUrl(API_ENDPOINTS.SKILLS)}/list?limit=${pageSize}&page=${page}`,
+          { headers },
+        );
+        if (!resp.ok) {
+          if (page === 1) setSkills([]);
+          break;
+        }
+        const data = await resp.json();
+        const batch = (data.items || []) as SkillRow[];
+        all.push(...batch);
+        pages = Math.max(1, Number(data.pages) || 1);
+        if (batch.length === 0) break;
+        page += 1;
       }
-      const data = await resp.json();
-      setSkills((data.items || []) as SkillRow[]);
+      setSkills(all);
     } catch {
       setSkills([]);
     } finally {
@@ -446,16 +466,19 @@ export default function SkillsSidebarPanel({
   const selectedRole: 'owner' | 'editor' | 'viewer' =
     selectedSkillId === 'new'
       ? 'owner'
-      : myPermission === 'editor' || myPermission === 'viewer'
+      : myPermission === 'owner' || myPermission === 'editor' || myPermission === 'viewer'
         ? myPermission
         : authorId === userId || Boolean(user?.is_admin)
           ? 'owner'
           : writeAccess
             ? 'editor'
             : 'viewer';
-  const isOwner = selectedRole === 'owner';
-  const canEdit = selectedRole === 'owner' || selectedRole === 'editor';
+  const isAdmin = Boolean(user?.is_admin);
+  const isOwner = selectedRole === 'owner' || isAdmin;
+  const canEdit = selectedRole === 'owner' || selectedRole === 'editor' || isAdmin;
   const readOnly = !canEdit;
+  const canShare = isOwner;
+  const canPublish = isOwner && canPublishToLibrary;
   // Источник истины — форма (после load/save/publish), без OR со stale list-item
   const isPublic = Boolean(form.is_public);
 
@@ -490,14 +513,14 @@ export default function SkillsSidebarPanel({
       const slug = /^[a-z0-9][a-z0-9._-]*$/i.test(rawSlug)
         ? rawSlug.toLowerCase()
         : slugifySkillName(form.name);
-      const payload = {
+      const isEdit = selectedSkillId !== 'new';
+      const payload: Record<string, unknown> = {
         slug,
         name: form.name.trim(),
         display_title: (form.display_title.trim() || form.name.trim()).slice(0, 128),
         description: form.description.trim() || null,
         content: form.content,
         is_active: form.is_active,
-        is_public: form.is_public,
         user_invocable: form.user_invocable,
         disable_model_invocation: form.disable_model_invocation,
         always_apply: form.always_apply,
@@ -513,7 +536,12 @@ export default function SkillsSidebarPanel({
             .filter(Boolean),
         },
       };
-      const isEdit = selectedSkillId !== 'new';
+      // Публикация в галерею — только при праве публикации; иначе is_public не трогаем.
+      if (canPublishToLibrary) {
+        payload.is_public = form.is_public;
+      } else if (!isEdit) {
+        payload.is_public = false;
+      }
       const url = isEdit
         ? `${getApiUrl(API_ENDPOINTS.SKILLS)}/${selectedSkillId}`
         : `${getApiUrl(API_ENDPOINTS.SKILLS)}/create`;
@@ -581,6 +609,7 @@ export default function SkillsSidebarPanel({
   };
 
   const handleTogglePublish = async () => {
+    if (!canPublishToLibrary) return;
     if (selectedSkillId === 'new' || typeof selectedSkillId !== 'number' || !isOwner) return;
     const nextPublic = !form.is_public;
     setIsPublishing(true);
@@ -635,6 +664,7 @@ export default function SkillsSidebarPanel({
   const handleDelete = async () => {
     if (selectedSkillId === 'new' || !isOwner) return;
     const title = form.name || selectedSkill?.name || 'skill';
+    const slugToClear = (form.slug || selectedSkill?.slug || '').trim();
     if (!window.confirm(`Удалить skill «${title}»?`)) return;
     try {
       const resp = await fetch(`${getApiUrl(API_ENDPOINTS.SKILLS)}/${selectedSkillId}`, {
@@ -642,6 +672,8 @@ export default function SkillsSidebarPanel({
         headers: authHeaders(),
       });
       if (!resp.ok) throw new Error('Не удалось удалить');
+      // Погасить синюю иконку skill в поле ввода во всех чатах.
+      if (slugToClear) removeSkillSlugFromAllChats(slugToClear);
       showNotification('success', 'Skill удалён');
       resetToNew();
       await loadSkills();
@@ -806,17 +838,19 @@ export default function SkillsSidebarPanel({
           </Box>
 
           <Box sx={{ maxHeight: 260, overflowY: 'auto', py: 0.5, ...SIDEBAR_HIDE_SCROLLBAR_SX }}>
-            <Box
-              onClick={() => selectSkill('new')}
-              sx={{
-                ...dropdownItemSx,
-                ...getDropdownItemStateSx(darkFields, selectedSkillId === 'new'),
-                fontStyle: 'italic',
-                opacity: selectedSkillId === 'new' ? 1 : 0.7,
-              }}
-            >
-              + Новый skill
-            </Box>
+            {canCreateAgents && (
+              <Box
+                onClick={() => selectSkill('new')}
+                sx={{
+                  ...dropdownItemSx,
+                  ...getDropdownItemStateSx(darkFields, selectedSkillId === 'new'),
+                  fontStyle: 'italic',
+                  opacity: selectedSkillId === 'new' ? 1 : 0.7,
+                }}
+              >
+                + Новый skill
+              </Box>
+            )}
 
             {loading ? (
               <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
@@ -1051,19 +1085,21 @@ export default function SkillsSidebarPanel({
             />
 
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25 }}>
-              <FormControlLabel
-                control={
-                  <Checkbox
-                    size="small"
-                    checked={form.is_public}
-                    disabled={readOnly}
-                    onChange={(e) => setForm((f) => ({ ...f, is_public: e.target.checked }))}
-                    sx={checkboxSx}
-                  />
-                }
-                label="Публичный (чтение для всех)"
-                sx={checkLabelSx}
-              />
+              {canPublish && (
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      size="small"
+                      checked={form.is_public}
+                      disabled={readOnly}
+                      onChange={(e) => setForm((f) => ({ ...f, is_public: e.target.checked }))}
+                      sx={checkboxSx}
+                    />
+                  }
+                  label="Публичный (чтение для всех)"
+                  sx={checkLabelSx}
+                />
+              )}
               <FormControlLabel
                 control={
                   <Checkbox
@@ -1150,192 +1186,187 @@ export default function SkillsSidebarPanel({
             )}
           </>
         )}
-      </Box>
 
-      <Box
-        sx={{
-          flexShrink: 0,
-          px: 2,
-          pb: 2,
-          pt: 0.5,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 1,
-        }}
-      >
-        {saveError && (
-          <Typography
-            variant="caption"
-            sx={{ color: '#ef5350', fontSize: '0.72rem', textAlign: 'center' }}
-          >
-            {saveError}
-          </Typography>
-        )}
-        {saveSuccess && (
-          <Box sx={{ textAlign: 'center' }}>
+        {/* Actions — в скролле формы, не sticky-футер (как у агентов) */}
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, pt: 0.5, pb: 1 }}>
+          {saveError && (
             <Typography
               variant="caption"
-              sx={{ color: '#66bb6a', fontSize: '0.72rem', display: 'block' }}
+              sx={{ color: '#ef5350', fontSize: '0.72rem', textAlign: 'center' }}
             >
-              Skill успешно сохранён
+              {saveError}
             </Typography>
-            <Typography
-              variant="caption"
-              sx={{
-                color: panelChrome.fgSubtle,
-                fontSize: '0.65rem',
-                display: 'block',
-                mt: 0.25,
-              }}
-            >
-              Данные сохранены в базу приложения (PostgreSQL, таблица skills). Skill отображается в
-              списке выше — выберите его для редактирования или отметьте «Использовать в чате».
-            </Typography>
-          </Box>
-        )}
-
-        <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', width: '100%' }}>
-          {canEdit ? (
-            <Box component="span" sx={{ flex: '1 1 140px', minWidth: 0, display: 'flex' }}>
-              <Button
-                size="small"
-                fullWidth
-                startIcon={<ImportIcon />}
-                disabled={busyImportExport}
-                onClick={() => importRef.current?.click()}
-                sx={footerNeutralActionBtnSx}
+          )}
+          {saveSuccess && (
+            <Box sx={{ textAlign: 'center' }}>
+              <Typography
+                variant="caption"
+                sx={{ color: '#66bb6a', fontSize: '0.72rem', display: 'block' }}
               >
-                Импорт
-              </Button>
-            </Box>
-          ) : null}
-          <Box component="span" sx={{ flex: '1 1 140px', minWidth: 0, display: 'flex' }}>
-            <Button
-              size="small"
-              fullWidth
-              startIcon={
-                busyImportExport ? (
-                  <CircularProgress size={12} sx={{ color: 'inherit' }} />
-                ) : (
-                  <ExportIcon />
-                )
-              }
-              endIcon={<ExpandMoreIcon sx={{ fontSize: 16 }} />}
-              disabled={busyImportExport || !canExportCurrent}
-              onClick={(e) => setExportMenuAnchor(e.currentTarget)}
-              sx={footerNeutralActionBtnSx}
-            >
-              Экспорт
-            </Button>
-          </Box>
-        </Box>
-        <Menu
-          anchorEl={exportMenuAnchor}
-          open={Boolean(exportMenuAnchor)}
-          onClose={() => setExportMenuAnchor(null)}
-          anchorOrigin={{ vertical: 'top', horizontal: 'left' }}
-          transformOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-        >
-          <MenuItem onClick={() => handleExport('json')}>JSON (.json)</MenuItem>
-          <MenuItem onClick={() => handleExport('md')}>Markdown (.md)</MenuItem>
-        </Menu>
-
-        {selectedSkillId !== 'new' && isOwner && (
-          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', width: '100%' }}>
-            <Box component="span" sx={{ flex: '1 1 140px', minWidth: 0, display: 'flex' }}>
-              <Button
-                size="small"
-                fullWidth
-                startIcon={<ShareIcon />}
-                onClick={() => setShareDialogOpen(true)}
-                sx={footerNeutralActionBtnSx}
-              >
-                Поделиться скиллом
-              </Button>
-            </Box>
-            <Box component="span" sx={{ flex: '1 1 140px', minWidth: 0, display: 'flex' }}>
-              <Button
-                size="small"
-                fullWidth
-                disabled={isPublishing}
-                startIcon={
-                  isPublishing ? (
-                    <CircularProgress size={12} sx={{ color: 'inherit' }} />
-                  ) : isPublic ? (
-                    <PublicOffIcon />
-                  ) : (
-                    <PublicIcon />
-                  )
-                }
-                onClick={() => void handleTogglePublish()}
+                Skill успешно сохранён
+              </Typography>
+              <Typography
+                variant="caption"
                 sx={{
-                  ...footerActionBtnSx,
-                  flex: '1 1 auto',
-                  width: '100%',
-                  color: isPublic ? '#2e7d32' : panelChrome.fgMuted,
-                  border: `1px solid ${isPublic ? 'rgba(46,125,50,0.45)' : panelChrome.buttonBorder.replace('1px solid ', '')}`,
-                  bgcolor: isPublic ? 'rgba(46,125,50,0.1)' : 'transparent',
-                  '&:hover': {
-                    bgcolor: isPublic ? 'rgba(46,125,50,0.16)' : panelChrome.hoverBg,
-                    color: isPublic ? '#2e7d32' : panelChrome.fgMuted,
-                  },
-                  '&:disabled': { color: panelChrome.fgSubtle },
+                  color: panelChrome.fgSubtle,
+                  fontSize: '0.65rem',
+                  display: 'block',
+                  mt: 0.25,
                 }}
               >
-                {isPublic ? 'Снять с публикации' : 'Опубликовать в галерее'}
-              </Button>
+                Skill отображается в списке выше — выберите его для редактирования или отметьте
+                «Использовать в чате».
+              </Typography>
             </Box>
+          )}
+
+          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', width: '100%' }}>
+            {canEdit ? (
+              <Box component="span" sx={{ flex: '1 1 140px', minWidth: 0, display: 'flex' }}>
+                <Button
+                  size="small"
+                  fullWidth
+                  startIcon={<ImportIcon />}
+                  disabled={busyImportExport}
+                  onClick={() => importRef.current?.click()}
+                  sx={footerNeutralActionBtnSx}
+                >
+                  Импорт
+                </Button>
+              </Box>
+            ) : null}
             <Box component="span" sx={{ flex: '1 1 140px', minWidth: 0, display: 'flex' }}>
               <Button
                 size="small"
                 fullWidth
-                startIcon={<DeleteIcon />}
-                onClick={() => void handleDelete()}
-                sx={footerDeleteActionBtnSx}
+                startIcon={
+                  busyImportExport ? (
+                    <CircularProgress size={12} sx={{ color: 'inherit' }} />
+                  ) : (
+                    <ExportIcon />
+                  )
+                }
+                endIcon={<ExpandMoreIcon sx={{ fontSize: 16 }} />}
+                disabled={busyImportExport || !canExportCurrent}
+                onClick={(e) => setExportMenuAnchor(e.currentTarget)}
+                sx={footerNeutralActionBtnSx}
               >
-                Удалить skill
+                Экспорт
               </Button>
             </Box>
           </Box>
-        )}
 
-        {canEdit ? (
-          <Button
-            fullWidth
-            variant="contained"
-            startIcon={
-              isSaving ? (
-                <CircularProgress size={14} sx={{ color: 'white' }} />
-              ) : (
-                <SaveIcon />
-              )
-            }
-            onClick={() => void handleSave()}
-            disabled={isSaving || loadingDetail}
-            sx={{
-              bgcolor: '#2e7d32',
-              textTransform: 'none',
-              fontWeight: 600,
-              fontSize: '0.82rem',
-              py: 0.9,
-              justifyContent: 'flex-start',
-              textAlign: 'left',
-              '& .MuiButton-startIcon': {
-                marginRight: '8px',
-                marginLeft: 0,
-                color: 'inherit',
-              },
-              '& .MuiButton-startIcon .MuiSvgIcon-root': {
-                fontSize: '0.9rem',
-              },
-              '&:hover': { bgcolor: '#388e3c' },
-              '&:disabled': { bgcolor: 'rgba(46,125,50,0.4)', color: 'rgba(255,255,255,0.5)' },
-            }}
-          >
-            {isSaving ? 'Сохраняю...' : 'Сохранить'}
-          </Button>
-        ) : null}
+          {selectedSkillId !== 'new' && isOwner && (
+            <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', width: '100%' }}>
+              <Box component="span" sx={{ flex: '1 1 140px', minWidth: 0, display: 'flex' }}>
+                <Button
+                  size="small"
+                  fullWidth
+                  startIcon={<ShareIcon />}
+                  onClick={() => setShareDialogOpen(true)}
+                  sx={footerNeutralActionBtnSx}
+                >
+                  Поделиться скиллом
+                </Button>
+              </Box>
+              {canPublish && (
+                <Box component="span" sx={{ flex: '1 1 140px', minWidth: 0, display: 'flex' }}>
+                  <Button
+                    size="small"
+                    fullWidth
+                    disabled={isPublishing}
+                    startIcon={
+                      isPublishing ? (
+                        <CircularProgress size={12} sx={{ color: 'inherit' }} />
+                      ) : isPublic ? (
+                        <PublicOffIcon />
+                      ) : (
+                        <PublicIcon />
+                      )
+                    }
+                    onClick={() => void handleTogglePublish()}
+                    sx={{
+                      ...footerActionBtnSx,
+                      flex: '1 1 auto',
+                      width: '100%',
+                      color: isPublic ? '#2e7d32' : panelChrome.fgMuted,
+                      border: `1px solid ${isPublic ? 'rgba(46,125,50,0.45)' : panelChrome.buttonBorder.replace('1px solid ', '')}`,
+                      bgcolor: isPublic ? 'rgba(46,125,50,0.1)' : 'transparent',
+                      '&:hover': {
+                        bgcolor: isPublic ? 'rgba(46,125,50,0.16)' : panelChrome.hoverBg,
+                        color: isPublic ? '#2e7d32' : panelChrome.fgMuted,
+                      },
+                      '&:disabled': { color: panelChrome.fgSubtle },
+                    }}
+                  >
+                    {isPublic ? 'Снять с публикации' : 'Опубликовать в галерее'}
+                  </Button>
+                </Box>
+              )}
+              <Box component="span" sx={{ flex: '1 1 140px', minWidth: 0, display: 'flex' }}>
+                <Button
+                  size="small"
+                  fullWidth
+                  startIcon={<DeleteIcon />}
+                  onClick={() => void handleDelete()}
+                  data-sidebar-danger
+                  sx={footerDeleteActionBtnSx}
+                >
+                  Удалить skill
+                </Button>
+              </Box>
+            </Box>
+          )}
+
+          {canEdit ? (
+            <Button
+              fullWidth
+              variant="contained"
+              startIcon={
+                isSaving ? (
+                  <CircularProgress size={14} sx={{ color: 'white' }} />
+                ) : (
+                  <SaveIcon />
+                )
+              }
+              onClick={() => void handleSave()}
+              disabled={isSaving || loadingDetail}
+              sx={{
+                bgcolor: '#2e7d32',
+                textTransform: 'none',
+                fontWeight: 600,
+                fontSize: '0.82rem',
+                py: 0.9,
+                justifyContent: 'flex-start',
+                textAlign: 'left',
+                '& .MuiButton-startIcon': {
+                  marginRight: '8px',
+                  marginLeft: 0,
+                  color: 'inherit',
+                },
+                '& .MuiButton-startIcon .MuiSvgIcon-root': {
+                  fontSize: '0.9rem',
+                },
+                '&:hover': { bgcolor: '#388e3c' },
+                '&:disabled': { bgcolor: 'rgba(46,125,50,0.4)', color: 'rgba(255,255,255,0.5)' },
+              }}
+            >
+              {isSaving ? 'Сохраняю...' : 'Сохранить'}
+            </Button>
+          ) : null}
+        </Box>
       </Box>
+
+      <Menu
+        anchorEl={exportMenuAnchor}
+        open={Boolean(exportMenuAnchor)}
+        onClose={() => setExportMenuAnchor(null)}
+        anchorOrigin={{ vertical: 'top', horizontal: 'left' }}
+        transformOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+      >
+        <MenuItem onClick={() => handleExport('json')}>JSON (.json)</MenuItem>
+        <MenuItem onClick={() => handleExport('md')}>Markdown (.md)</MenuItem>
+      </Menu>
 
       {selectedSkillId !== 'new' && (
         <ShareSkillDialog

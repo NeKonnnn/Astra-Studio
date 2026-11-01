@@ -217,6 +217,20 @@ async def kb_get_document(
     return info
 
 
+@router.get("/documents/{document_id}/chunks")
+async def kb_get_document_chunks(
+    document_id: int,
+    start: int = 0,
+    limit: int = 20,
+    kb: KbService = Depends(get_kb_service),
+):
+    """Текст чанков документа (любая dim-таблица векторов / сырой content)."""
+    out = await kb.get_document_chunks(document_id, start=start, limit=limit)
+    if out is None:
+        raise HTTPException(status_code=404, detail="Документ не найден в Базе Знаний")
+    return out
+
+
 class KbCloneDocumentRequest(BaseModel):
     agent_id: Optional[int] = None
     knowledge_base_id: Optional[int] = None

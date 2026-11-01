@@ -21,6 +21,21 @@ def _rag_models_request_url(base_url: str, path: str) -> str:
     return f"{b}/v1{p}"
 
 
+def _rag_models_api_key() -> str:
+    """Общий ключ SVC-RAG-MODELS: те же env, что читает сервис (RAG_MODELS_API_KEY / …_ENV)."""
+    direct = (os.getenv("RAG_MODELS_API_KEY") or "").strip()
+    if direct:
+        return direct
+    env_name = (os.getenv("RAG_MODELS_API_KEY_ENV") or "").strip()
+    return (os.getenv(env_name) or "").strip() if env_name else ""
+
+
+def _auth_headers() -> Dict[str, str]:
+    # SVC-RAG-MODELS без ключа отвечает 503 (fail-closed), кроме /health
+    key = _rag_models_api_key()
+    return {"Authorization": f"Bearer {key}", "X-API-Key": key} if key else {}
+
+
 class RagModelsClient:
     def __init__(self, base_url: Optional[str] = None, timeout: float = 600.0):
         # LLM-реранкеры (MiniCPM ~2B) на CPU грузятся минутами — 120с мало.
@@ -42,7 +57,6 @@ class RagModelsClient:
         env_timeout = os.getenv("RAG_MODELS_HTTP_TIMEOUT", "").strip()
         self.timeout = float(env_timeout) if env_timeout else timeout
 
-
     async def _request(
         self,
         method: str,
@@ -53,7 +67,9 @@ class RagModelsClient:
     ) -> Any:
         url = _rag_models_request_url(self.base_url, path)
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.request(method=method, url=url, json=json, params=params)
+            resp = await client.request(
+                method=method, url=url, json=json, params=params, headers=_auth_headers()
+            )
             if resp.is_error:
                 detail = None
                 try:

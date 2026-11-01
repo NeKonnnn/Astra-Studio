@@ -43,14 +43,15 @@ export function astra185Mark(kind: string, detail?: string): void {
   push(kind, detail);
   if (!enabled()) return;
   // Не спамим каждый токен — только важные события и петли.
-  if (
-    kind.startsWith('effect:') ||
-    kind.startsWith('render-loop') ||
-    kind.startsWith('error') ||
-    kind.startsWith('chat:') ||
-    kind.startsWith('stream:') ||
-    kind.startsWith('patch:')
-  ) {
+    if (
+      kind.startsWith('effect:') ||
+      kind.startsWith('render-loop') ||
+      kind.startsWith('error') ||
+      kind.startsWith('chat:') ||
+      kind.startsWith('stream:') ||
+      kind.startsWith('patch:') ||
+      kind.startsWith('grok:')
+    ) {
     // eslint-disable-next-line no-console
     console.log(PREFIX, kind, detail ?? '', new Date().toISOString());
   }
@@ -94,11 +95,18 @@ export function astra185Dump(reason = 'manual'): void {
   };
   // eslint-disable-next-line no-console
   console.error(PREFIX, 'DUMP', payload);
+  // eslint-disable-next-line no-console
+  console.error(PREFIX, 'BREADCRUMBS (последние 30):');
+  lines.slice(-30).forEach((line) => {
+    // eslint-disable-next-line no-console
+    console.error(PREFIX, line);
+  });
   try {
     (window as unknown as { __ASTRA_185_LAST_DUMP__?: unknown }).__ASTRA_185_LAST_DUMP__ = payload;
   } catch {
     /* */
   }
+  return;
 }
 
 export function installAstra185GlobalHandlers(): void {

@@ -3,6 +3,7 @@
  */
 
 jest.mock('@/config/api', () => ({
+  authFetch: (...a: unknown[]) => (require('@tests/unit/helpers/authFetchMock').authFetchMock as (...x: unknown[]) => unknown)(...a),
   API_ENDPOINTS: { KNOWLEDGE_BASES: '/api/knowledge-bases' },
   getApiUrl: (endpoint: string) => endpoint,
   getAuthFetchHeaders: () => ({}),

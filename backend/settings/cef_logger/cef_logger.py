@@ -7,8 +7,28 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
-
 logger = logging.getLogger("cef")
+
+_cef_logging_configured = False
+
+
+def configure_cef_logging() -> None:
+    """Stdout-логгер CEF: только сырая строка ``CEF:0|...`` без формата backend."""
+    global _cef_logging_configured
+    if _cef_logging_configured:
+        return
+    import sys
+
+    _cef_logger = logging.getLogger("cef")
+    _cef_logger.setLevel(logging.INFO)
+    _cef_logger.propagate = False
+    if not _cef_logger.handlers:
+        _cef_handler = logging.StreamHandler(sys.stdout)
+        _cef_handler.setLevel(logging.INFO)
+        _cef_handler.setFormatter(logging.Formatter("%(message)s"))
+        _cef_logger.addHandler(_cef_handler)
+    _cef_logging_configured = True
+
 
 # Отправка в АС СВОИ по UDP: syslog RFC5424, полезная нагрузка MSG — сырая строка CEF.
 _SYSLOG_UDP_SOCK: Optional[socket.socket] = None
@@ -49,9 +69,15 @@ def _cef_severity_to_syslog_pri_severity(cef_severity: int) -> int:
 
 def _build_rfc5424_syslog_payload(cef_line: str, cef_severity: int) -> bytes:
     fac_name = (os.getenv("AUDIT_SYSLOG_FACILITY") or "LOCAL4").upper()
-    facility_code = _SYSLOG_FACILITY_CODES.get(fac_name, _SYSLOG_FACILITY_CODES["LOCAL4"])
+    facility_code = _SYSLOG_FACILITY_CODES.get(
+        fac_name, _SYSLOG_FACILITY_CODES["LOCAL4"]
+    )
     pri = facility_code * 8 + _cef_severity_to_syslog_pri_severity(int(cef_severity))
-    ts = datetime.now(tz=timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    ts = (
+        datetime.now(tz=timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
     hostname = resolve_cef_dvchost()
     app_name = os.getenv("CEF_DEVICE_PROCESS", "astrachat")
     proc_id = os.getpid()
@@ -369,6 +395,16 @@ EVENTS: Dict[str, CEFEventSpec] = {
         "success",
         "Агент {cs1} (ID: {cs2}) удалён пользователем {suser} [{cat}]",
     ),
+    "AGT006": CEFEventSpec(
+        "AGT006",
+        "Agent Create Failed",
+        5,
+        "/Object/Agent/Create",
+        "create",
+        "failure",
+        "Попытка создания агента {cs1} пользователем {suser} отклонена. "
+        "Причина: {reason} (платформенная роль: {cs3}) [{cat}]",
+    ),
     "CNV001": CEFEventSpec(
         "CNV001",
         "Conversation Renamed",
@@ -404,6 +440,15 @@ EVENTS: Dict[str, CEFEventSpec] = {
         "delete",
         "success",
         "Диалог {cs2} удалён пользователем {suser} [{cat}]",
+    ),
+    "CNV006": CEFEventSpec(
+        "CNV006",
+        "Conversation Branched",
+        1,
+        "/Object/Conversation/Branch",
+        "branch",
+        "success",
+        "Диалог {cs3} разветвлён пользователем {suser}, новая ветка {cs2} [{cat}]",
     ),
     "CNV005": CEFEventSpec(
         "CNV005",
@@ -483,6 +528,38 @@ EVENTS: Dict[str, CEFEventSpec] = {
 }
 
 
+_SEC001_KEYCLOAK_MSG = (
+    "Пользователь {suser} аутентифицирован с адреса {src} через Keycloak SSO "
+    "(issuer {cs1}, client {cs2}). Ролевая модель: {cs4} ({cs3}) [{cat}]"
+)
+_USR001_KEYCLOAK_MSG = (
+    "УЗ пользователя {duser} создана при первом входе через Keycloak SSO "
+    "(issuer {cs1}, client {cs2}). Ролевая модель: {cs4} ({cs3}) [{cat}]"
+)
+
+
+def _resolve_auth_method(
+    *, extra: Optional[Dict[str, Any]], current_user: Optional[dict]
+) -> str:
+    method = (
+        (extra or {}).get("auth_method")
+        or (current_user or {}).get("auth_method")
+        or "ldap"
+    )
+    return str(method).strip().lower() or "ldap"
+
+
+def _login_audit_msg_template(
+    event_id: str, auth_method: str, default_template: str
+) -> str:
+    if auth_method == "keycloak":
+        if event_id == "SEC001":
+            return _SEC001_KEYCLOAK_MSG
+        if event_id == "USR001":
+            return _USR001_KEYCLOAK_MSG
+    return default_template
+
+
 # Порядок полей расширения как в разделе 7 CEF.md (примеры полных сообщений)
 _EXTENSION_KEY_ORDER: List[str] = [
     "externalId",
@@ -541,7 +618,23 @@ class _SafeDict(dict):
 
 def _esc(val: Any) -> str:
     text = str(val if val is not None else "-")
-    return text.replace("\\", "\\\\").replace("=", r"\=").replace("\n", r"\n")
+    return (
+        text.replace("\\", "\\\\")
+        .replace("=", r"\=")
+        .replace("\n", r"\n")
+        .replace("\r", r"\r")
+    )
+
+
+def _esc_header(val: Any) -> str:
+    """Экранирование поля заголовка CEF: ``\\``, ``|`` и переводы строк."""
+    text = str(val if val is not None else "-")
+    return (
+        text.replace("\\", "\\\\")
+        .replace("|", r"\|")
+        .replace("\n", r"\n")
+        .replace("\r", r"\r")
+    )
 
 
 def _outcome_from_status(status_code: Optional[int]) -> str:
@@ -572,6 +665,7 @@ def ldap_audit_cs_fields(user: Optional[dict]) -> Dict[str, Any]:
     try:
         from urllib.parse import urlparse
 
+        from backend.auth.agent_platform_roles import resolve_cef_role_model
         from backend.auth.ldap_auth import _get_ldap_settings
 
         settings = _get_ldap_settings()
@@ -582,8 +676,11 @@ def ldap_audit_cs_fields(user: Optional[dict]) -> Dict[str, Any]:
             host = p.hostname or p.netloc or "-"
         bind_dn = settings.get("bind_dn") or "-"
         admin_groups = settings.get("admin_groups") or []
-        matched = admin_groups[0] if user.get("is_admin") and admin_groups else "-"
-        role = "ADMIN" if user.get("is_admin") else "USER"
+        role, matched = resolve_cef_role_model(user)
+        if role == "ADMIN":
+            matched = admin_groups[0] if admin_groups else "-"
+        elif not matched:
+            matched = "-"
         return {
             "cs1": host,
             "cs1Label": "LDAPServer",
@@ -605,6 +702,71 @@ def ldap_audit_cs_fields(user: Optional[dict]) -> Dict[str, Any]:
             "cs4": "USER",
             "cs4Label": "RoleModel",
         }
+
+
+def keycloak_audit_cs_fields(user: Optional[dict]) -> Dict[str, Any]:
+    """cs1–cs4 для SEC001/USR001 при входе через Keycloak SSO."""
+    defaults = {
+        "cs1": "-",
+        "cs1Label": "KeycloakIssuer",
+        "cs2": "-",
+        "cs2Label": "OIDCClientId",
+        "cs3": "-",
+        "cs3Label": "MatchedKeycloakRole",
+        "cs4": "USER",
+        "cs4Label": "RoleModel",
+    }
+    try:
+        from backend.auth.agent_platform_roles import resolve_cef_role_model
+        from backend.auth.keycloak_auth import get_keycloak_settings
+
+        settings = get_keycloak_settings()
+        issuer = str(settings.get("issuer") or "").strip()
+        host = "-"
+        if issuer:
+            parsed = urlparse(issuer)
+            host = parsed.netloc or issuer.rstrip("/").split("/")[-1] or "-"
+        client_id = settings.get("client_id") or "-"
+        admin_groups = list(settings.get("admin_groups") or [])
+        user_groups = list((user or {}).get("groups") or [])
+        role, matched = resolve_cef_role_model(user)
+        if role == "ADMIN":
+            matched = "-"
+            if admin_groups:
+                for group in admin_groups:
+                    if group in user_groups:
+                        matched = group
+                        break
+                if matched == "-":
+                    matched = admin_groups[0]
+        elif role == "USER":
+            # mapping выключен: как раньше — первая группа из токена
+            matched = user_groups[0] if user_groups else "-"
+        elif not matched:
+            matched = "-"
+        return {
+            "cs1": host,
+            "cs1Label": "KeycloakIssuer",
+            "cs2": client_id,
+            "cs2Label": "OIDCClientId",
+            "cs3": matched,
+            "cs3Label": "MatchedKeycloakRole",
+            "cs4": role,
+            "cs4Label": "RoleModel",
+        }
+    except Exception:
+        return defaults
+
+
+def login_audit_cef_extra(user: Optional[dict], auth_method: str) -> Dict[str, Any]:
+    """Общие cs-поля и auth_method для SEC001/USR001 (LDAP или Keycloak)."""
+    method = str(auth_method or "ldap").strip().lower() or "ldap"
+    extra: Dict[str, Any] = {"auth_method": method}
+    if method == "keycloak":
+        extra.update(keycloak_audit_cs_fields(user))
+    else:
+        extra.update(ldap_audit_cs_fields(user))
+    return extra
 
 
 def ldap_reason_suffix() -> str:
@@ -650,7 +812,9 @@ def _resolve_cef_current_user(
     return None
 
 
-def request_context(request: Any, current_user: Optional[dict] = None) -> Dict[str, Any]:
+def request_context(
+    request: Any, current_user: Optional[dict] = None
+) -> Dict[str, Any]:
     base_dn = os.getenv("LDAP_USER_SEARCH_BASE", "")
     sntdom = domain_from_ldap_base_dn(base_dn) or (base_dn or "-")
     current_user = _resolve_cef_current_user(request, current_user)
@@ -716,7 +880,9 @@ def request_context(request: Any, current_user: Optional[dict] = None) -> Dict[s
             else (shost_ov or src)
         )
         spt = int(getattr(request.client, "port", 0) or 0)
-        proto = request.headers.get("x-forwarded-proto") or getattr(request.url, "scheme", "http")
+        proto = request.headers.get("x-forwarded-proto") or getattr(
+            request.url, "scheme", "http"
+        )
         app = "HTTPS" if str(proto).lower().startswith("https") else "HTTP"
         channel = "http"
 
@@ -729,9 +895,15 @@ def request_context(request: Any, current_user: Optional[dict] = None) -> Dict[s
         "sntdom": sntdom,
     }
     try:
-        from backend.settings.cef_logger.cef_audit_context import log_request_context_shost
+        from backend.settings.cef_logger.cef_audit_context import (
+            log_request_context_shost,
+        )
 
-        req_path = getattr(getattr(request, "url", None), "path", None) if request is not None else None
+        req_path = (
+            getattr(getattr(request, "url", None), "path", None)
+            if request is not None
+            else None
+        )
         log_request_context_shost(
             channel=channel,
             ctx=ctx,
@@ -884,7 +1056,8 @@ def log_cef_event(
             "spt": 0,
             "app": "HTTPS",
             "suser": "SYSTEM",
-            "sntdom": domain_from_ldap_base_dn(os.getenv("LDAP_USER_SEARCH_BASE", "")) or "-",
+            "sntdom": domain_from_ldap_base_dn(os.getenv("LDAP_USER_SEARCH_BASE", ""))
+            or "-",
         }
         current_user_effective = {"username": "SYSTEM", "user_id": None}
     else:
@@ -917,11 +1090,17 @@ def log_cef_event(
         "dpt": int(os.getenv("CEF_DPT", "443")),
         "app": ctx["app"],
         "act": spec.act,
-        "outcome": outcome or _outcome_from_status(status_code) or spec.outcome,
+        # Без кода ответа берём outcome события (spec.outcome): _outcome_from_status(None)
+        # давал "success", и INT006-ошибки уходили в SIEM как успешные (BUG-BE-61).
+        "outcome": outcome
+        or (_outcome_from_status(status_code) if status_code is not None else None)
+        or spec.outcome,
         "suser": ctx["suser"],
         "start": now_ms,
         "end": now_ms,
-        "rt": datetime.now(tz=timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        "rt": datetime.now(tz=timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z"),
         "dvchost": resolve_cef_dvchost(),
         "deviceDirection": effective_dir,
     }
@@ -942,7 +1121,9 @@ def log_cef_event(
         if extra.get("dpt") is not None:
             extension["dpt"] = int(extra["dpt"])
 
-    extension.update({k: v for k, v in extra.items() if v is not None and not str(k).startswith("_")})
+    extension.update(
+        {k: v for k, v in extra.items() if v is not None and not str(k).startswith("_")}
+    )
 
     if event_id in ("INT001", "INT002"):
         extension.pop("src", None)
@@ -955,16 +1136,18 @@ def log_cef_event(
     if event_id == "AGT003" and (fmt_map.get("agt_copy_target") in (None, "", "-")):
         fmt_map["agt_copy_target"] = fmt_map.get("cs2") or "-"
 
-    extension["msg"] = spec.msg_template.format_map(fmt_map)
+    auth_method = _resolve_auth_method(extra=extra, current_user=current_user_effective)
+    msg_template = _login_audit_msg_template(event_id, auth_method, spec.msg_template)
+    extension["msg"] = msg_template.format_map(fmt_map)
 
     for _msg_only in ("agt_copy_target", "dmail"):
         extension.pop(_msg_only, None)
 
     # Заголовок CEF: поля через "|", далее расширение — пары key=value через пробел (как в CEF.md §7).
     prefix = "CEF:0|{vendor}|{product}|{version}|{event_id}|{name}|{severity}|".format(
-        vendor=os.getenv("CEF_DEVICE_VENDOR", "CORSUR"),
-        product=os.getenv("CEF_DEVICE_PRODUCT", "AstraChat"),
-        version=resolve_cef_device_version(),
+        vendor=_esc_header(os.getenv("CEF_DEVICE_VENDOR", "CORSUR")),
+        product=_esc_header(os.getenv("CEF_DEVICE_PRODUCT", "AstraChat")),
+        version=_esc_header(resolve_cef_device_version()),
         event_id=spec.event_id,
         name=spec.name,
         severity=spec.severity,
@@ -973,14 +1156,3 @@ def log_cef_event(
     full_cef = f"{prefix}{ext_str}"
     logger.info("%s", full_cef)
     _emit_cef_syslog_udp(full_cef, spec.severity)
-
-def login_audit_cef_extra(user: Optional[dict], auth_method: str) -> Dict[str, Any]:
-    """Общие cs-поля и auth_method для SEC001/USR001 (LDAP или Keycloak)."""
-    method = str(auth_method or "ldap").strip().lower() or "ldap"
-    extra: Dict[str, Any] = {"auth_method": method}
-    if method == "keycloak":
-        extra.update(keycloak_audit_cs_fields(user))
-    else:
-        extra.update(ldap_audit_cs_fields(user))
-    return extra
-

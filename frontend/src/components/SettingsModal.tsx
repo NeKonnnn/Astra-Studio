@@ -83,7 +83,7 @@ const settingsSections = [
     id: 'rag' as SettingsSection,
     title: 'RAG',
     icon: <SearchIcon />,
-    description: 'Общая библиотека · проекты · агенты'
+    description: 'Базы знаний · эмбеддинги'
   },
   {
     id: 'transcription' as SettingsSection,

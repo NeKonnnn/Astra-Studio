@@ -26,9 +26,11 @@ import { useAuth } from '../contexts/AuthContext';
 import {
   directoryUserOptionLabel,
   directoryUserOptionSecondary,
+  formatShareFeedback,
   resolveShareUsernames,
   searchDirectoryUsers,
   type DirectoryUserHit,
+  type ShareApiResponse,
 } from '../utils/directoryUserSearch';
 
 type SharePermission = 'viewer' | 'editor';
@@ -81,9 +83,11 @@ export default function ShareAgentDialog({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [userOptions, setUserOptions] = useState<DirectoryUserHit[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchAbortRef = useRef<AbortController | null>(null);
 
   // Якоря выпадающих списков (стиль как «Агенты» в конструкторе)
   const [addRoleAnchor, setAddRoleAnchor] = useState<HTMLElement | null>(null);
@@ -153,6 +157,7 @@ export default function ShareAgentDialog({
       setPermission('viewer');
       setError(null);
       setSuccess(null);
+      setWarning(null);
       setUserOptions([]);
       void loadShares();
     }
@@ -161,6 +166,7 @@ export default function ShareAgentDialog({
   const scheduleUserSearch = useCallback(
     (q: string) => {
       if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+      searchAbortRef.current?.abort();
       const query = q.trim();
       // Берём последний фрагмент после запятой для поиска
       const last = query.split(/[,;\n]+/).pop()?.trim() || '';
@@ -171,17 +177,23 @@ export default function ShareAgentDialog({
       }
       setSearchLoading(true);
       searchTimerRef.current = setTimeout(() => {
+        const controller = new AbortController();
+        searchAbortRef.current = controller;
         void (async () => {
           try {
-            const hits = await searchDirectoryUsers(token, last, 10);
+            const hits = await searchDirectoryUsers(token, last, 10, controller.signal, true);
+            if (controller.signal.aborted) return;
             setUserOptions(hits);
           } catch {
+            if (controller.signal.aborted) return;
             setUserOptions([]);
           } finally {
-            setSearchLoading(false);
+            if (!controller.signal.aborted) {
+              setSearchLoading(false);
+            }
           }
         })();
-      }, 300);
+      }, 400);
     },
     [token],
   );
@@ -189,22 +201,23 @@ export default function ShareAgentDialog({
   useEffect(
     () => () => {
       if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+      searchAbortRef.current?.abort();
     },
     [],
   );
 
   const applyShare = useCallback(
-    async (usernames: string[], perm: SharePermission): Promise<boolean> => {
+    async (usernames: string[], perm: SharePermission): Promise<ShareApiResponse> => {
       const resp = await fetch(getApiUrl(`/api/agents/${agentId}/share`), {
         method: 'POST',
         headers: authHeaders(),
         body: JSON.stringify({ usernames, permission: perm }),
       });
-      const data = await resp.json().catch(() => ({}));
+      const data = (await resp.json().catch(() => ({}))) as ShareApiResponse & { detail?: string };
       if (!resp.ok) {
         throw new Error(typeof data.detail === 'string' ? data.detail : 'Не удалось поделиться агентом');
       }
-      return true;
+      return data;
     },
     [agentId, authHeaders],
   );
@@ -221,6 +234,7 @@ export default function ShareAgentDialog({
     setSaving(true);
     setError(null);
     setSuccess(null);
+    setWarning(null);
     try {
       const { usernames, unresolved } = await resolveShareUsernames(token, username);
       if (unresolved.length > 0) {
@@ -230,10 +244,12 @@ export default function ShareAgentDialog({
         setError('Укажите ФИО, почту или gpbu');
         return;
       }
-      await applyShare(usernames, permission);
+      const data = await applyShare(usernames, permission);
       setUsername('');
       setUserOptions([]);
-      setSuccess('Доступ выдан');
+      const feedback = formatShareFeedback(data);
+      setSuccess(feedback.success);
+      setWarning(feedback.warning);
       await loadShares();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Ошибка');
@@ -247,9 +263,12 @@ export default function ShareAgentDialog({
     setSaving(true);
     setError(null);
     setSuccess(null);
+    setWarning(null);
     try {
-      await applyShare([userId], newPermission);
-      setSuccess('Роль обновлена');
+      const data = await applyShare([userId], newPermission);
+      const feedback = formatShareFeedback(data);
+      setSuccess(feedback.success || 'Роль обновлена');
+      setWarning(feedback.warning);
       await loadShares();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Ошибка');
@@ -597,6 +616,11 @@ export default function ShareAgentDialog({
         {success && (
           <Alert severity="success" sx={{ mb: 1.5, py: 0.5 }} onClose={() => setSuccess(null)}>
             {success}
+          </Alert>
+        )}
+        {warning && (
+          <Alert severity="warning" sx={{ mb: 1.5, py: 0.5 }} onClose={() => setWarning(null)}>
+            {warning}
           </Alert>
         )}
 

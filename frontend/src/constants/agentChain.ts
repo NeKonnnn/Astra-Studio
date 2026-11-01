@@ -164,6 +164,10 @@ function mapDocumentSearchTrace(raw: unknown): Message['documentSearch'] | undef
   if (!hits.length && !sourceFiles.length && !String(ds.query ?? '').trim()) {
     return undefined;
   }
+  // Только query — без пустых массивов; если есть файлы/хиты — пишем оба поля.
+  if (!hits.length && !sourceFiles.length) {
+    return { query: String(ds.query ?? '') };
+  }
   return {
     query: String(ds.query ?? ''),
     sourceFiles,
@@ -231,6 +235,11 @@ export function resolveChainRenderSegments(
   const steps = Array.isArray(chainSteps) ? chainSteps : [];
   const streaming = Boolean(isStreaming);
   const hasCurrent = Boolean(chainCurrent?.agentName?.trim());
+
+  // Стрим без текущего агента: не раскрываем сохранённые шаги — обычное тело ответа.
+  if (streaming && steps.length && !hasCurrent) {
+    return null;
+  }
 
   if (!steps.length && !hasCurrent) {
     const parsed = splitBodyByChainHeaders(visibleBody);

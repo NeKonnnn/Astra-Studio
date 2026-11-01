@@ -53,8 +53,7 @@ def is_llm_reranker_path(model_path: str) -> bool:
         return False
     arches = cfg.get("architectures") or []
     if any(
-        isinstance(a, str)
-        and ("LayerWiseMiniCPM" in a or "MiniCPMForCausalLM" in a)
+        isinstance(a, str) and ("LayerWiseMiniCPM" in a or "MiniCPMForCausalLM" in a)
         for a in arches
     ):
         return True
@@ -182,12 +181,12 @@ def _register_local_remote_code(model_path: str) -> None:
         if not isinstance(ref, str) or "." not in ref:
             continue
         try:
-            cls = get_class_from_dynamic_module(
-                ref, model_path, trust_remote_code=True
-            )
+            cls = get_class_from_dynamic_module(ref, model_path, trust_remote_code=True)
             if key == "AutoConfig":
                 try:
-                    AutoConfig.register(cfg.get("model_type") or "minicpm", cls, exist_ok=True)
+                    AutoConfig.register(
+                        cfg.get("model_type") or "minicpm", cls, exist_ok=True
+                    )
                 except Exception:
                     pass
             elif key == "AutoModelForCausalLM":
@@ -203,9 +202,9 @@ def _register_local_remote_code(model_path: str) -> None:
 def _build_inputs(pairs: Sequence[Sequence[str]], tokenizer, max_length: int = 1024):
     prompt = _DEFAULT_PROMPT
     sep = "\n"
-    prompt_inputs = tokenizer(
-        prompt, return_tensors=None, add_special_tokens=False
-    )["input_ids"]
+    prompt_inputs = tokenizer(prompt, return_tensors=None, add_special_tokens=False)[
+        "input_ids"
+    ]
     sep_inputs = tokenizer(sep, return_tensors=None, add_special_tokens=False)[
         "input_ids"
     ]
@@ -271,8 +270,10 @@ class LlmReranker:
         self.max_length = max_length
         self.batch_size = max(1, batch_size)
         self.cutoff_layers = cutoff_layers or [28]
+        # Режим определяем по имени папки модели, а не по всему пути (родительские каталоги не в счёт)
+        folder_name = model_path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].lower()
         self._layerwise = is_llm_reranker_path(model_path) and (
-            "minicpm" in model_path.lower() or "layerwise" in model_path.lower()
+            "minicpm" in folder_name or "layerwise" in folder_name
         )
         self._tmp_dir: Optional[str] = None
 

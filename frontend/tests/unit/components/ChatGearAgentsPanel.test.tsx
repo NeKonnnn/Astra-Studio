@@ -25,6 +25,10 @@ jest.mock('@/utils/clearActiveAgent', () => ({
   clearActiveAgent: jest.fn(),
 }));
 
+jest.mock('@/hooks/useFeatureAccess', () => ({
+  useFeatureAccess: () => ({ canUseAgents: true }),
+}));
+
 describe('ChatGearAgentsPanel', () => {
   it('has search, my/gallery tabs and reset selection when agent active', () => {
     render(<ChatGearAgentsPanel isDarkMode={false} />);

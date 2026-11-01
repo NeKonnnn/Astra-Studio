@@ -33,8 +33,8 @@ def view_skill(id: str) -> str:
         return json.dumps({"error": "Skill id is required"}, ensure_ascii=False)
 
     if allowed and skill_id not in {str(a).strip().lower() for a in allowed}:
-        # allow numeric id match against resolved list later
-        pass
+        # навык не подключён к агенту — не отдаём, даже если он доступен пользователю
+        return json.dumps({"error": f"Skill '{id}' not found"}, ensure_ascii=False)
 
     if not user_id:
         return json.dumps({"error": "User context not available"}, ensure_ascii=False)
@@ -46,7 +46,9 @@ def view_skill(id: str) -> str:
         repo = get_skill_repository()
 
         async def _load():
-            return await repo.resolve_skills_for_user([skill_id], user_id, is_admin=is_admin)
+            return await repo.resolve_skills_for_user(
+                [skill_id], user_id, is_admin=is_admin
+            )
 
         try:
             loop = asyncio.get_running_loop()

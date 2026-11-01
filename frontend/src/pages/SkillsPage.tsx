@@ -23,6 +23,7 @@ import { useTheme } from '@mui/material/styles';
 import { getApiUrl, API_ENDPOINTS } from '../config/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useAppActions, useAppContext } from '../contexts/AppContext';
+import { useFeatureAccess } from '../hooks/useFeatureAccess';
 import { formatAuthorLabel } from '../utils/formatAuthorLabel';
 import SkillFilesEditor from '../components/skills/SkillFilesEditor';
 import {
@@ -60,6 +61,7 @@ interface SkillItem {
   created_at: string;
   updated_at: string;
   write_access?: boolean;
+  my_permission?: 'owner' | 'editor' | 'viewer' | string | null;
   is_shared_with_me?: boolean;
   views_count?: number;
   usage_count?: number;
@@ -119,6 +121,7 @@ export default function SkillsPage() {
 
 export function SkillsGalleryContent({ embedded = false }: { embedded?: boolean }) {
   const { token, user } = useAuth();
+  const { canPublishToLibrary } = useFeatureAccess();
   const { showNotification } = useAppActions();
   const { state: appState } = useAppContext();
   const theme = useTheme();
@@ -254,14 +257,13 @@ export function SkillsGalleryContent({ embedded = false }: { embedded?: boolean 
       const slug = /^[a-z0-9][a-z0-9._-]*$/i.test(rawSlug)
         ? rawSlug.toLowerCase()
         : slugifySkillName(form.name);
-      const payload = {
+      const payload: Record<string, unknown> = {
         slug,
         name: form.name.trim(),
         display_title: (form.display_title.trim() || form.name.trim()).slice(0, 128),
         description: form.description.trim() || null,
         content: form.content,
         is_active: form.is_active,
-        is_public: form.is_public,
         user_invocable: form.user_invocable,
         disable_model_invocation: form.disable_model_invocation,
         always_apply: form.always_apply,
@@ -277,6 +279,11 @@ export function SkillsGalleryContent({ embedded = false }: { embedded?: boolean 
             .filter(Boolean),
         },
       };
+      if (canPublishToLibrary) {
+        payload.is_public = form.is_public;
+      } else if (!editing) {
+        payload.is_public = false;
+      }
       const url = editing
         ? `${getApiUrl(API_ENDPOINTS.SKILLS)}/${editing.id}`
         : `${getApiUrl(API_ENDPOINTS.SKILLS)}/create`;
@@ -305,8 +312,8 @@ export function SkillsGalleryContent({ embedded = false }: { embedded?: boolean 
   };
 
   const canWrite = (s: SkillItem) =>
-    Boolean(s.write_access) ||
-    (user?.user_id || '').toLowerCase() === (s.author_id || '').toLowerCase() ||
+    s.my_permission === 'owner' ||
+    s.my_permission === 'editor' ||
     Boolean(user?.is_admin);
 
   const handleToggleBookmark = async (skill: SkillItem) => {
@@ -575,15 +582,17 @@ export function SkillsGalleryContent({ embedded = false }: { embedded?: boolean 
               onChange={(e) => setForm((f) => ({ ...f, tags: e.target.value }))}
               fullWidth
             />
-            <FormControlLabel
-              control={
-                <Checkbox
-                  checked={form.is_public}
-                  onChange={(e) => setForm((f) => ({ ...f, is_public: e.target.checked }))}
-                />
-              }
-              label="Публичный (чтение для всех)"
-            />
+            {canPublishToLibrary && (
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={form.is_public}
+                    onChange={(e) => setForm((f) => ({ ...f, is_public: e.target.checked }))}
+                  />
+                }
+                label="Публичный (чтение для всех)"
+              />
+            )}
             <FormControlLabel
               control={
                 <Checkbox

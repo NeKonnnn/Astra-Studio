@@ -147,6 +147,7 @@ class TestActiveSources:
     def test_each_source_independently(self):
         assert self.resolve(project_id="p").store_list() == ["project"]
         assert self.resolve(use_agent_scoped_kb=True, agent_kb_doc_ids=[1]).store_list() == ["kb"]
+        # Тумблер «Библиотека» включает memory-rag (если он не выключен env).
         assert self.resolve(use_memory_library_rag=True).store_list() == ["memory"]
 
     def test_agent_kb_follows_scoped_flag(self):
@@ -155,17 +156,26 @@ class TestActiveSources:
         assert self.resolve(use_agent_scoped_kb=True, agent_kb_doc_ids=None).agent_kb is True
         assert self.resolve(use_agent_scoped_kb=False, agent_kb_doc_ids=[1]).agent_kb is False
 
-    def test_either_library_flag_enables_memory(self):
+    def test_library_flags_enable_memory(self):
         assert self.resolve(use_kb_rag=True).memory is True
         assert self.resolve(use_memory_library_rag=True).memory is True
+        assert self.resolve(use_kb_rag=True, use_memory_library_rag=True).memory is True
 
-    def test_global_switch_overrides_the_users_toggle(self, monkeypatch):
+    def test_global_switch_disables_memory(self, monkeypatch):
+        monkeypatch.setenv("RAG_MEMORY_ENABLED", "1")
+        assert self.resolve(use_memory_library_rag=True, use_kb_rag=True).memory is True
         monkeypatch.setenv("RAG_MEMORY_ENABLED", "0")
         assert self.resolve(use_memory_library_rag=True, use_kb_rag=True).memory is False
 
-    def test_sources_are_additive(self):
-        s = self.resolve(project_id="p", use_agent_scoped_kb=True, agent_kb_doc_ids=[1], use_memory_library_rag=True)
+    def test_sources_are_additive_with_memory(self):
+        s = self.resolve(
+            project_id="p",
+            use_agent_scoped_kb=True,
+            agent_kb_doc_ids=[1],
+            use_memory_library_rag=True,
+        )
         assert s.store_list() == ["project", "kb", "memory"] and s.any
+        assert s.memory is True
 
     def test_only_one_source_never_leaks_into_the_others(self):
         s = self.resolve(project_id="p")
@@ -403,12 +413,14 @@ class TestFormatFragments:
         parts, _ = ev.format_rag_fragments(hits, self.NAMES, max_chars=300, store_label="kb", truncate_marker="…")
         assert parts[-1].endswith("…")
 
-    def test_malformed_row_before_a_valid_one_crashes_known_issue(self):
-        """Известная проблема: номер фрагмента берётся по позиции в исходном списке, а массив
-        выбранных — по числу валидных строк. Строка не из 4 элементов в начале списка даёт
-        ``IndexError`` (ответ чата не строится), хотя код явно собирался такие строки пропускать."""
-        with pytest.raises(IndexError):
-            ev.format_rag_fragments([("only-two", 1.0), hit("ok", doc=1)], self.NAMES, max_chars=1000, store_label="kb")
+    def test_malformed_row_before_a_valid_one_is_skipped(self):
+        """Раньше (known issue) номер фрагмента брался по позиции в исходном списке, а массив
+        выбранных — по числу валидных строк, и строка не из 4 элементов в начале списка давала
+        ``IndexError``. Теперь такие строки пропускаются, нумерация сохраняется."""
+        parts, metrics = ev.format_rag_fragments(
+            [("only-two", 1.0), hit("ok", doc=1)], self.NAMES, max_chars=1000, store_label="kb"
+        )
+        assert len(parts) == 1 and metrics["received"] == 2 and parts[0].startswith("Фрагмент 2")
 
     def test_malformed_row_after_valid_ones_is_skipped(self):
         parts, metrics = ev.format_rag_fragments([hit("ok", doc=1), ("only-two", 1.0)], self.NAMES, max_chars=1000, store_label="kb")

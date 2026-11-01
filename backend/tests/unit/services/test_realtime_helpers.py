@@ -297,7 +297,35 @@ class TestResolveAgentKbDocumentIds:
                 "kb_document_ids": [7],
             },
         )
-        assert out == [7, 24]
+        # Legacy kb_document_ids больше не подмешиваются — только entity БЗ.
+        assert out == [24]
+
+    async def test_ignores_legacy_file_search_without_kb_ids(self):
+        out = await h.resolve_agent_kb_document_ids(
+            self.Client([{"id": 7, "metadata": {"agent_id": 3}}]),
+            {
+                "file_search_enabled": True,
+                "kb_document_ids": [7, 8],
+                "knowledge_bases_enabled": False,
+                "knowledge_base_ids": [],
+            },
+        )
+        assert out == []
+        assert h.resolve_agent_legacy_kb_document_ids(
+            {"file_search_enabled": True, "kb_document_ids": [7]}
+        ) == []
+
+    async def test_multi_kb_ids_merge_docs(self):
+        c = self.Client([
+            {"id": 10, "metadata": {"knowledge_base_id": 1}},
+            {"id": 20, "metadata": {"knowledge_base_id": 2}},
+            {"id": 30, "metadata": {"knowledge_base_id": 3}},
+        ])
+        out = await h.resolve_agent_kb_document_ids(
+            c,
+            {"knowledge_bases_enabled": True, "knowledge_base_ids": [1, 2]},
+        )
+        assert out == [10, 20]
 
     async def test_warns_when_kb_ids_do_not_expand(self, caplog):
         caplog.set_level(logging.WARNING, logger=h.logger.name)

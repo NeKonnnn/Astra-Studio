@@ -64,8 +64,9 @@ class DocumentRepository:
                 
                 logger.info("Таблицы для документов созданы")
                 
-        except Exception as e:
-            logger.error(f"Ошибка при создании таблиц документов: {e}")
+        except Exception:
+            logger.exception("Ошибка при создании таблиц документов")
+            raise
     
     async def create_document(self, document: Document) -> Optional[int]:
         """
@@ -261,8 +262,9 @@ class VectorRepository:
                 
                 logger.info(f"Таблицы для векторов созданы (размерность: {self.embedding_dim})")
                 
-        except Exception as e:
-            logger.error(f"Ошибка при создании таблиц векторов: {e}")
+        except Exception:
+            logger.exception("Ошибка при создании таблиц векторов")
+            raise
     
     async def create_vector(self, vector: DocumentVector) -> Optional[int]:
         """

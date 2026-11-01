@@ -49,7 +49,7 @@ export function skillImpliesPresentation(slug: string): boolean {
   return (
     s.includes('present') ||
     s.includes('html-prese') ||
-    s.includes('gpb-html') ||
+    s.includes('deck-html') ||
     s.includes('pptx') ||
     s.includes('презента') ||
     s.includes('слайд') ||

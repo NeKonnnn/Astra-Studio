@@ -37,6 +37,7 @@ import type { PluginPublic } from '../plugins/types';
 import { formatDuration } from '../plugins/verdict';
 import ArtifactMarkdownPreview from '../components/artifacts/ArtifactMarkdownPreview';
 import { GallerySearchBookmarksBar } from '../components/galleryCards';
+import { getGalleryCardGlassSx } from '../constants/galleryCardGlass';
 import { getPluginBookmarkIds, togglePluginBookmark } from '../utils/pluginBookmarks';
 
 function downloadMarkdown(filename: string, content: string) {
@@ -388,14 +389,7 @@ export function PluginGalleryContent({ embedded = false }: { embedded?: boolean 
             {filtered.map((plugin) => (
               <Card
                 key={plugin.id}
-                sx={{
-                  height: '100%',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  backgroundColor: isDarkMode ? undefined : '#ffffff',
-                  boxShadow: isDarkMode ? undefined : '0 2px 8px rgba(0,0,0,0.1)',
-                  border: isDarkMode ? undefined : '1px solid rgba(0,0,0,0.08)',
-                }}
+                sx={getGalleryCardGlassSx(isDarkMode, { clickable: false })}
               >
                 <CardContent sx={{ flex: 1 }}>
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 1, gap: 1 }}>

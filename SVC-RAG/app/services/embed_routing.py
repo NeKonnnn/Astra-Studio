@@ -512,6 +512,78 @@ async def resolve_for(
     )
     return profile, repo
 
+
+async def profile_for_dim(
+    default_client: Any,
+    dim: int,
+    *,
+    prefer_provider: Optional[str] = None,
+) -> Optional[EmbedProfile]:
+    """Профиль эмбеддинга под известную dim.
+
+    Сначала смотрим кэш проб. Если пусто (после рестарта ещё не зондировали
+    модель, которой индексировали) — пробуем провайдеров из rag_models.providers
+    и их embedding_model: одна удачная проба с нужной dim и достаточно.
+    """
+    want = int(dim or 0)
+    if want < 1:
+        return None
+    prefer = (prefer_provider or "").strip().lower()
+    matches: List[Tuple[str, str]] = [
+        (p, m) for (p, m), d in _dims.items() if int(d) == want
+    ]
+    if prefer:
+        preferred = [(p, m) for p, m in matches if (p or "").lower() == prefer]
+        if preferred:
+            matches = preferred + [x for x in matches if x not in preferred]
+
+    candidates: List[Tuple[Optional[str], Optional[str]]] = [
+        (p or None, m or None) for p, m in matches
+    ]
+    if not candidates:
+        try:
+            from app.core.config import get_settings
+
+            section = getattr(get_settings(), "rag_models", None)
+            providers = list(getattr(section, "providers", None) or [])
+            if prefer:
+                providers = sorted(
+                    providers,
+                    key=lambda e: 0 if (getattr(e, "id", "") or "").lower() == prefer else 1,
+                )
+            for entry in providers:
+                pid = (getattr(entry, "id", None) or "").strip()
+                mid = (getattr(entry, "embedding_model", None) or "").strip() or None
+                if pid:
+                    candidates.append((pid, mid))
+        except Exception:
+            logger.debug(
+                "[EMBED-ROUTE] profile_for_dim(%s): каталог провайдеров недоступен",
+                want,
+                exc_info=True,
+            )
+
+    seen: set = set()
+    for p, m in candidates:
+        key = ((p or "").lower(), (m or "").lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            prof = await resolve_profile(default_client, p, m)
+        except Exception:
+            logger.debug(
+                "[EMBED-ROUTE] profile_for_dim(%s): skip %s/%s",
+                want,
+                p,
+                m,
+                exc_info=True,
+            )
+            continue
+        if int(getattr(prof, "dim", 0) or 0) == want:
+            return prof
+    return None
+
 # Клиенты реранка. Отдельный кэш от эмбеддинга: у провайдера это разные модели,
 # и пользователь волен взять эмбеддер у одного, а реранкер у другого.
 _rerank_clients: Dict[Tuple[str, str], Any] = {}

@@ -121,7 +121,7 @@ async def maybe_run_mcp_agent(
                         await platform.list_tools_for_server(sid, mcp_context)
                     )
                 except Exception:
-                    log.exception("MCP list_tools failed server=")
+                    log.exception("MCP list_tools failed server=%s", sid)
             mcp_tools = platform.filter_tools_by_context(
                 mcp_tools, mcp_context, enabled_server_ids=enabled_ids
             )

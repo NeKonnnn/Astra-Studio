@@ -18,12 +18,14 @@ logger = get_logger(__name__)
 
 def _mongo_endpoint() -> Tuple[str, int]:
     try:
-        from backend.settings.config import get_settings
+        from settings import get_settings
 
         m = get_settings().mongodb
         return str(m.host or "mongodb"), int(m.port or 27017)
     except Exception:
-        return os.getenv("MONGODB_HOST", "mongodb"), int(os.getenv("MONGODB_PORT", "27017"))
+        return os.getenv("MONGODB_HOST", "mongodb"), int(
+            os.getenv("MONGODB_PORT", "27017")
+        )
 
 
 def _integration_extra(
@@ -44,13 +46,21 @@ def _integration_extra(
     }
 
 
-def _emit_cef(event_id: str, *, status_code: Optional[int] = None, extra: Optional[dict] = None) -> None:
+def _emit_cef(
+    event_id: str, *, status_code: Optional[int] = None, extra: Optional[dict] = None
+) -> None:
     with logged_suppress(logger):
         from backend.settings.cef_logger.cef_audit_context import cef_audit_peek
         from backend.settings.cef_logger.cef_logger import log_cef_event
 
         _req, _user, _ = cef_audit_peek()
-        log_cef_event(event_id, request=_req, current_user=_user, status_code=status_code, extra=extra)
+        log_cef_event(
+            event_id,
+            request=_req,
+            current_user=_user,
+            status_code=status_code,
+            extra=extra,
+        )
 
 
 def log_mongo_success(method_name: str, request_uuid: Optional[str] = None) -> None:
@@ -68,7 +78,9 @@ def log_mongo_success(method_name: str, request_uuid: Optional[str] = None) -> N
     )
 
 
-def log_mongo_failure(method_name: str, error: str, request_uuid: Optional[str] = None) -> None:
+def log_mongo_failure(
+    method_name: str, error: str, request_uuid: Optional[str] = None
+) -> None:
     dhost, dpt = _mongo_endpoint()
     extra = _integration_extra(
         service_name="AstraChat-MongoDB",
@@ -82,7 +94,9 @@ def log_mongo_failure(method_name: str, error: str, request_uuid: Optional[str] 
     _emit_cef("INT006", status_code=None, extra=extra)
 
 
-def log_postgres_success(method_name: str, *, dhost: str, dpt: int, request_uuid: Optional[str] = None) -> None:
+def log_postgres_success(
+    method_name: str, *, dhost: str, dpt: int, request_uuid: Optional[str] = None
+) -> None:
     _emit_cef(
         "INT005",
         status_code=200,
@@ -126,16 +140,25 @@ def log_minio_read_success(object_name: str, bucket_name: str) -> None:
     _emit_cef(
         "FS001",
         status_code=200,
-        extra={"file": object_name, "bucket": _minio_bucket_uri(bucket_name, object_name)},
+        extra={
+            "file": object_name,
+            "bucket": _minio_bucket_uri(bucket_name, object_name),
+        },
     )
 
 
 def log_minio_read_failure(object_name: str, bucket_name: str, error: str) -> None:
-    extra = {"file": object_name, "bucket": _minio_bucket_uri(bucket_name, object_name), "reason": str(error)[:300]}
+    extra = {
+        "file": object_name,
+        "bucket": _minio_bucket_uri(bucket_name, object_name),
+        "reason": str(error)[:300],
+    }
     _emit_cef("FS002", status_code=500, extra=extra)
 
 
-def log_minio_write_success(object_name: str, bucket_name: str, *, display_name: Optional[str] = None) -> None:
+def log_minio_write_success(
+    object_name: str, bucket_name: str, *, display_name: Optional[str] = None
+) -> None:
     _emit_cef(
         "FS003",
         status_code=200,
@@ -164,7 +187,7 @@ def log_minio_write_failure(
 def log_minio_remove_success(object_name: str, bucket_name: str) -> None:
     """Низкоуровневое удаление объекта MinIO (INT005, исходящее событие)."""
     try:
-        from backend.settings.config import get_settings
+        from settings import get_settings
 
         endpoint = get_settings().minio.endpoint
     except Exception:
@@ -187,7 +210,7 @@ def log_minio_remove_success(object_name: str, bucket_name: str) -> None:
 
 def log_minio_remove_failure(object_name: str, bucket_name: str, error: str) -> None:
     try:
-        from backend.settings.config import get_settings
+        from settings import get_settings
 
         endpoint = get_settings().minio.endpoint
     except Exception:
@@ -258,7 +281,13 @@ def log_rag_pvc_write_failure(
 
 
 def log_rag_pvc_remove_success(object_name: str, *, scope: str) -> None:
-    """Удаление исходника RAG из PVC (FS011)."""
+    """Удаление исходника RAG из PVC
+
+    Раньше здесь был INT005 - тот же код, что у вызовов MongoDB, PostgreSQL,
+    MinIO и SVC-RAG.
+    Хранилищу PVC уже принадлежат FS009/FS010 на запись — удаление логично
+    туда же.
+    """
     filename = str(object_name or "").rsplit("/", 1)[-1] or str(object_name or "")
     _emit_cef(
         "FS011",
@@ -276,7 +305,11 @@ def log_rag_pvc_remove_success(object_name: str, *, scope: str) -> None:
 
 
 def log_rag_pvc_remove_failure(object_name: str, scope: str, error: str) -> None:
-    """Ошибка удаления исходника RAG из PVC (FS012)."""
+    """Ошибка удаления исходника RAG из PVC
+
+    scope намеренно позиционный: так его передаёт
+    rag_pvc.delete_rag_pvc_file, сигнатуру не меняем.
+    """
     filename = str(object_name or "").rsplit("/", 1)[-1] or str(object_name or "")
     _emit_cef(
         "FS012",

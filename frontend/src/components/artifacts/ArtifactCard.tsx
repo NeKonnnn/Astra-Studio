@@ -28,7 +28,7 @@ import {
   exportArtifactPreviewAsJpg,
   exportArtifactPreviewAsPng,
 } from '../../utils/artifactDownload';
-import { isGpbPresentationHtml, openPresentationViewer } from '../../utils/presentationViewer';
+import { isDeckPresentationHtml, openPresentationViewer } from '../../utils/presentationViewer';
 import ArtifactPreview from './ArtifactPreview';
 import type { ChatArtifact } from '../../types/artifacts';
 import { artifactTypeLabel, guessCodeLanguage } from '../../utils/artifacts';
@@ -167,7 +167,7 @@ export default function ArtifactCard({ artifact, isStreaming = false }: Props) {
     void (async () => {
       try {
         // GPB-презентации открываем своим viewer'ом (слайды / PPTX), не generic HTML.
-        if (isGpbPresentationHtml(localContent)) {
+        if (isDeckPresentationHtml(localContent)) {
           openPresentationViewer(localContent);
           return;
         }

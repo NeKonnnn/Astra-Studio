@@ -183,6 +183,8 @@ class TestErrorText:
             "Модель не загружена на стороне провайдера (503).",
             "Запрос не помещается в контекстное окно модели",
             "  ОШИБКА LLM (HTTP 500)",
+            routing.LLM_USER_FACING_OUTAGE_TEXT,
+            "Ошибка потока: Client error '404 Not Found'",
         ],
     )
     def test_known_error_texts(self, text):
@@ -216,42 +218,22 @@ class TestFormatHttpError:
 
         assert "контекстное окно" in message
 
-    def test_503_model_not_loaded(self):
-        message = routing.format_llm_http_error(_http_error(503, json={"detail": "Model not loaded"}))
-
-        assert "не загружена" in message
-
-    def test_503_unavailable(self):
-        message = routing.format_llm_http_error(_http_error(503, json={"detail": "busy"}))
-
-        assert "недоступен (503)" in message
-
-    @pytest.mark.parametrize("field", ["detail", "message", "error"])
-    def test_other_errors_use_the_detail_fields(self, field):
-        message = routing.format_llm_http_error(_http_error(422, json={field: "плохой запрос"}))
-
-        assert message == "Ошибка LLM (HTTP 422): плохой запрос"
-
-    def test_json_without_known_fields_is_dumped(self):
-        message = routing.format_llm_http_error(_http_error(500, json={"foo": "бар"}))
-
-        assert message.startswith("Ошибка LLM (HTTP 500): ")
-        assert "бар" in message
-
-    def test_non_json_body_is_quoted(self):
-        message = routing.format_llm_http_error(_http_error(502, text="Bad gateway"))
-
-        assert message == "Ошибка LLM (HTTP 502): Bad gateway"
-
-    def test_long_details_are_truncated(self):
-        message = routing.format_llm_http_error(_http_error(500, json={"detail": "x" * 2000}))
-
-        assert len(message) < 500
-
-    def test_400_without_context_hint_is_a_plain_error(self):
-        message = routing.format_llm_http_error(_http_error(400, json={"detail": "bad field"}))
-
-        assert message == "Ошибка LLM (HTTP 400): bad field"
+    def test_503_and_other_http_errors_use_user_facing_outage_text(self):
+        for status, payload in (
+            (503, {"detail": "Model not loaded"}),
+            (503, {"detail": "busy"}),
+            (422, {"detail": "плохой запрос"}),
+            (500, {"foo": "бар"}),
+            (502, None),
+            (400, {"detail": "bad field"}),
+            (404, {"detail": "Not Found"}),
+        ):
+            kwargs = {"json": payload} if payload is not None else {"text": "Bad gateway"}
+            message = routing.format_llm_http_error(_http_error(status, **kwargs))
+            assert message == routing.LLM_USER_FACING_OUTAGE_TEXT
+            assert "for url" not in message
+            assert routing.is_llm_error_text(message) is True
+            assert routing.is_llm_outage_text(message) is True
 
     def test_result_is_recognized_as_an_llm_error_text(self):
         message = routing.format_llm_http_error(_http_error(422, json={"detail": "x"}))

@@ -94,7 +94,7 @@ def _log_subagent_trace(
             " | перечень файлов=%s"
             " | итог: системный=%s симв, сообщение=%s симв",
             target_agent_id,
-            child_profile.get("name") or f"agent*{target_agent_id}",
+            child_profile.get("name") or f"agent_{target_agent_id}",
             parent_profile.get("agent_id") if isinstance(parent_profile, dict) else None,
             depth,
             child_profile.get("model_path"),

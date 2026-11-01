@@ -4,6 +4,7 @@
 import { downloadMcpFile } from '@/mcp/api';
 
 jest.mock('@/config/api', () => ({
+  authFetch: (...a: unknown[]) => (require('@tests/unit/helpers/authFetchMock').authFetchMock as (...x: unknown[]) => unknown)(...a),
   getApiUrl: (path: string) => `https://app.example.com${path.startsWith('/') ? path : `/${path}`}`,
 }));
 

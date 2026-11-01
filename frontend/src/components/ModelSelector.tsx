@@ -151,7 +151,13 @@ export default function ModelSelector({ isDarkMode, onModelSelect }: ModelSelect
     if (!token) return;
     const path =
       (typeof selectedModelPath === 'string' && selectedModelPath) ||
-      (localStorage.getItem(LAST_SELECTED_MODEL_PATH_STORAGE_KEY) || '');
+      (() => {
+        try {
+          return localStorage.getItem(LAST_SELECTED_MODEL_PATH_STORAGE_KEY) || '';
+        } catch {
+          return '';
+        }
+      })();
     if (!isValidSelectedModelPath(path)) return;
     void ensureSelectedModelWeights(token, path);
   }, [token, selectedModelPath]);
@@ -166,6 +172,13 @@ export default function ModelSelector({ isDarkMode, onModelSelect }: ModelSelect
 
   const handleModelSelect = async (modelPath: string) => {
     const sameAsSelected = modelPath === selectedModelPath;
+    // loadAgentModelOnly запоминает путь ещё до ответа /load — при ошибке откатываем выбор.
+    let previousStoredPath: string | null = null;
+    try {
+      previousStoredPath = localStorage.getItem(LAST_SELECTED_MODEL_PATH_STORAGE_KEY);
+    } catch {
+      previousStoredPath = null;
+    }
     try {
       handleClose();
       if (!token) {
@@ -189,6 +202,20 @@ export default function ModelSelector({ isDarkMode, onModelSelect }: ModelSelect
       );
       onModelSelect?.(modelPath);
     } catch (err: any) {
+      try {
+        if (previousStoredPath === null) {
+          localStorage.removeItem(LAST_SELECTED_MODEL_PATH_STORAGE_KEY);
+        } else if (localStorage.getItem(LAST_SELECTED_MODEL_PATH_STORAGE_KEY) !== previousStoredPath) {
+          localStorage.setItem(LAST_SELECTED_MODEL_PATH_STORAGE_KEY, previousStoredPath);
+          if (isValidSelectedModelPath(previousStoredPath)) {
+            window.dispatchEvent(
+              new CustomEvent(MODEL_PATH_CHANGED_EVENT, { detail: { path: previousStoredPath } }),
+            );
+          }
+        }
+      } catch {
+        /* ignore storage errors */
+      }
       showNotification('error', `Ошибка загрузки модели: ${err.message || err}`);
     }
   };

@@ -20,10 +20,19 @@ def _strip_reasoning_from_history_content(text: str) -> str:
         return text
     cleaned = re.sub("<think>[\\s\\S]*?</think>", "", text, flags=re.IGNORECASE)
     cleaned = re.sub("<think>[\\s\\S]*$", "", cleaned, flags=re.IGNORECASE)
+    if "</think>".lower() in cleaned.lower():
+        cleaned = re.sub(r"^[\s\S]*?</think>", "", cleaned, count=1, flags=re.IGNORECASE)
     return cleaned.strip()
 
 
-def _history_content_with_inline_attach(role: str, content: str, metadata: Optional[Dict[str, Any]]) -> str:
+def _is_event_loop_closed(error: BaseException) -> bool:
+    """Ошибка «Event loop is closed» (клиент Mongo создан в другом event loop)."""
+    return "Event loop is closed" in str(error)
+
+
+def _history_content_with_inline_attach(
+    role: str, content: str, metadata: Optional[Dict[str, Any]]
+) -> str:
     """Для LLM: к user-сообщению из истории подмешиваем сохранённый inline_context.
 
     В Mongo content хранит только вопрос (для UI), текст файла — в metadata.inline_context.
@@ -52,8 +61,14 @@ def _message_to_history_entry(message: Any) -> Dict[str, Any]:
 
     entry: Dict[str, Any] = {
         "role": message.role,
-        "content": _history_content_with_inline_attach(message.role, message.content, meta),
-        "timestamp": message.timestamp.isoformat() if getattr(message, "timestamp", None) else None,
+        "content": _history_content_with_inline_attach(
+            message.role, message.content, meta
+        ),
+        "timestamp": (
+            message.timestamp.isoformat()
+            if getattr(message, "timestamp", None)
+            else None
+        ),
     }
     refs = image_refs_from_metadata(meta)
     if refs:
@@ -71,7 +86,9 @@ try:
     from backend.database.mongodb.models import Conversation, Message
 
     logger.info("MongoDB модуль импортирован для работы с памятью")
-    logger.debug(f"get_conversation_repository импортирован: {get_conversation_repository is not None}")
+    logger.debug(
+        f"get_conversation_repository импортирован: {get_conversation_repository is not None}"
+    )
 except ImportError:
     logger.exception("MongoDB недоступен")
     logger.exception("Приложение не сможет сохранять диалоги без MongoDB!")
@@ -84,8 +101,12 @@ def _check_mongodb_available() -> bool:
     """Проверка реальной доступности MongoDB (не только импорт модулей)"""
     global conversation_repo, mongodb_available
     if get_conversation_repository is None:
-        logger.warning("get_conversation_repository is None - MongoDB модули не импортированы")
-        logger.warning("  Убедитесь, что motor и pymongo установлены в виртуальном окружении")
+        logger.warning(
+            "get_conversation_repository is None - MongoDB модули не импортированы"
+        )
+        logger.warning(
+            "  Убедитесь, что motor и pymongo установлены в виртуальном окружении"
+        )
         mongodb_available = False
         return False
     try:
@@ -96,7 +117,9 @@ def _check_mongodb_available() -> bool:
     except RuntimeError as e:
         mongodb_available = False
         logger.warning(f"MongoDB не инициализирован: {e}")
-        logger.warning("  Убедитесь, что init_mongodb() был вызван при старте приложения")
+        logger.warning(
+            "  Убедитесь, что init_mongodb() был вызван при старте приложения"
+        )
         return False
     except Exception:
         mongodb_available = False
@@ -116,8 +139,8 @@ def _check_mongodb_available() -> bool:
 # Теперь это ContextVar: значение изолировано в рамках одной asyncio-задачи
 # (один HTTP-запрос / одно событие Socket.IO / одно WS-соединение). Утечки между
 # параллельными пользователями больше невозможны через этот механизм.
-_current_conversation_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
-    "current_conversation_id", default=None
+_current_conversation_id: contextvars.ContextVar[Optional[str]] = (
+    contextvars.ContextVar("current_conversation_id", default=None)
 )
 
 
@@ -152,7 +175,9 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-async def verify_conversation_owner(conversation_id: Optional[str], user_id: Optional[str]) -> bool:
+async def verify_conversation_owner(
+    conversation_id: Optional[str], user_id: Optional[str]
+) -> bool:
     """Проверяет, что диалог можно читать/писать текущему пользователю.
 
     Возвращает True, если:
@@ -218,18 +243,29 @@ async def save_dialog_entry_mongodb(
         if message_id is None:
             message_id = f"msg_{uuid.uuid4().hex[:12]}"
         message = Message(
-            message_id=message_id, role=role, content=content, timestamp=datetime.utcnow(), metadata=metadata or {}
+            message_id=message_id,
+            role=role,
+            content=content,
+            timestamp=datetime.utcnow(),
+            metadata=metadata or {},
         )
-        existing_conversation = await conversation_repo.get_conversation(conversation_id)
+        existing_conversation = await conversation_repo.get_conversation(
+            conversation_id
+        )
         promote_branch_draft = False
         if (
             existing_conversation
             and role == "user"
             and isinstance(existing_conversation.metadata, dict)
-            and existing_conversation.metadata.get("hidden_from_sidebar_until_user_message")
+            and existing_conversation.metadata.get(
+                "hidden_from_sidebar_until_user_message"
+            )
         ):
             seeded = existing_conversation.metadata.get("branch_seeded_message_count")
-            if isinstance(seeded, int) and len(existing_conversation.messages or []) == seeded:
+            if (
+                isinstance(seeded, int)
+                and len(existing_conversation.messages or []) == seeded
+            ):
                 promote_branch_draft = True
         if existing_conversation is None:
             conversation = Conversation(
@@ -248,12 +284,18 @@ async def save_dialog_entry_mongodb(
             if promote_branch_draft:
                 new_meta = dict(existing_conversation.metadata or {})
                 new_meta.pop("hidden_from_sidebar_until_user_message", None)
-                await conversation_repo.update_conversation(conversation_id, {"metadata": new_meta})
+                await conversation_repo.update_conversation(
+                    conversation_id, {"metadata": new_meta}
+                )
         return True
-    except RuntimeError:
+    except RuntimeError as e:
+        if _is_event_loop_closed(e):
+            raise  # повтор с переинициализацией делает save_dialog_entry
         logger.exception("MongoDB не инициализирован")
         return False
-    except Exception:
+    except Exception as e:
+        if _is_event_loop_closed(e):
+            raise
         logger.exception("Ошибка при сохранении сообщения в MongoDB")
         return False
 
@@ -274,18 +316,25 @@ async def save_dialog_entry(
         logger.error("MongoDB недоступен! Сообщение не будет сохранено.")
         msg = "MongoDB недоступен. Невозможно сохранить сообщение."
         raise RuntimeError(msg)
+    if not await verify_conversation_owner(conversation_id, user_id):
+        msg = "Диалог принадлежит другому пользователю"
+        raise PermissionError(msg)
     for attempt in range(2):
         try:
-            success = await save_dialog_entry_mongodb(role, content, metadata, message_id, conversation_id, user_id)
+            success = await save_dialog_entry_mongodb(
+                role, content, metadata, message_id, conversation_id, user_id
+            )
             if not success:
                 msg = "Не удалось сохранить сообщение в MongoDB"
                 raise RuntimeError(msg)
             return
-        except RuntimeError:
-            raise
         except Exception as e:
-            if attempt == 0 and "Event loop is closed" in str(e):
-                logger.warning("MongoDB создан в другом event loop, переинициализируем в текущем...")
+            if isinstance(e, RuntimeError) and not _is_event_loop_closed(e):
+                raise
+            if attempt == 0 and _is_event_loop_closed(e):
+                logger.warning(
+                    "MongoDB создан в другом event loop, переинициализируем в текущем..."
+                )
                 try:
                     global conversation_repo
                     from backend.database.init_db import (
@@ -303,6 +352,46 @@ async def save_dialog_entry(
             logger.exception("Ошибка при сохранении сообщения")
             msg = f"Ошибка при сохранении сообщения: {e}"
             raise RuntimeError(msg) from e
+
+
+async def load_dialog_history_mongodb(
+    conversation_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Загрузка истории диалога из MongoDB
+
+    Args:
+        conversation_id: ID диалога (если None, используется текущий)
+
+    Returns:
+        Список сообщений в формате словарей
+    """
+    try:
+        global conversation_repo
+        if not _check_mongodb_available():
+            logger.warning("MongoDB не инициализирован. Не удалось загрузить историю.")
+            return []
+        if conversation_repo is None:
+            conversation_repo = get_conversation_repository()
+        if conversation_id is None:
+            conversation_id = get_or_create_conversation_id()
+        conversation = await conversation_repo.get_conversation(conversation_id)
+        if conversation is None:
+            return []
+        history = []
+        for message in conversation.messages:
+            history.append(_message_to_history_entry(message))
+        return history
+    except RuntimeError as e:
+        if _is_event_loop_closed(e):
+            raise  # повтор с переинициализацией делает get_recent_dialog_history
+        logger.warning(f"MongoDB не инициализирован: {e}")
+        return []
+    except Exception as e:
+        if _is_event_loop_closed(e):
+            raise
+        logger.exception("Ошибка при загрузке истории из MongoDB")
+        return []
 
 
 def _coerce_alternative_responses(
@@ -344,8 +433,7 @@ async def save_assistant_response(
     alternative_responses: Optional[list] = None,
     current_response_index: Optional[int] = None,
 ) -> Optional[str]:
-    """
-    Сохраняет ответ ассистента.
+    """Сохраняет ответ ассистента.
 
     При regenerate=True обновляет существующее сообщение (не создаёт новое),
     записывая alternative_responses / current_response_index в metadata —
@@ -367,7 +455,10 @@ async def save_assistant_response(
             existing = None
             if target_id:
                 for msg in conv.messages or []:
-                    if getattr(msg, "message_id", None) == target_id and getattr(msg, "role", None) == "assistant":
+                    if (
+                        getattr(msg, "message_id", None) == target_id
+                        and getattr(msg, "role", None) == "assistant"
+                    ):
                         existing = msg
                         break
             if existing is None:
@@ -439,40 +530,6 @@ async def save_assistant_response(
     return effective_id
 
 
-async def load_dialog_history_mongodb(conversation_id: Optional[str] = None) -> List[Dict[str, Any]]:
-    """
-    Загрузка истории диалога из MongoDB
-
-    Args:
-        conversation_id: ID диалога (если None, используется текущий)
-
-    Returns:
-        Список сообщений в формате словарей
-    """
-    try:
-        global conversation_repo
-        if not _check_mongodb_available():
-            logger.warning("MongoDB не инициализирован. Не удалось загрузить историю.")
-            return []
-        if conversation_repo is None:
-            conversation_repo = get_conversation_repository()
-        if conversation_id is None:
-            conversation_id = get_or_create_conversation_id()
-        conversation = await conversation_repo.get_conversation(conversation_id)
-        if conversation is None:
-            return []
-        history = []
-        for message in conversation.messages:
-            history.append(_message_to_history_entry(message))
-        return history
-    except RuntimeError as e:
-        logger.warning(f"MongoDB не инициализирован: {e}")
-        return []
-    except Exception:
-        logger.exception("Ошибка при загрузке истории из MongoDB")
-        return []
-
-
 async def load_dialog_history() -> List[Dict[str, Any]]:
     """
     Загрузка истории диалога из MongoDB (файловый режим отключен)
@@ -505,7 +562,9 @@ async def get_recent_dialog_history_mongodb(
         if max_entries is None:
             return history
         return history[-max_entries:] if len(history) > max_entries else history
-    except Exception:
+    except Exception as e:
+        if _is_event_loop_closed(e):
+            raise
         logger.exception("Ошибка при получении последних сообщений из MongoDB")
         return []
 
@@ -529,8 +588,10 @@ async def get_recent_dialog_history(
         try:
             return await get_recent_dialog_history_mongodb(max_entries, conversation_id)
         except Exception as e:
-            if attempt == 0 and "Event loop is closed" in str(e):
-                logger.warning("MongoDB создан в другом event loop, переинициализируем в текущем...")
+            if attempt == 0 and _is_event_loop_closed(e):
+                logger.warning(
+                    "MongoDB создан в другом event loop, переинициализируем в текущем..."
+                )
                 try:
                     global conversation_repo
                     from backend.database.init_db import (
@@ -586,7 +647,9 @@ async def clear_dialog_history() -> str:
         return f"Ошибка при очистке: {str(e)}"
 
 
-async def search_conversations(query: str, user_id: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+async def search_conversations(
+    query: str, user_id: Optional[str] = None, limit: int = 50
+) -> List[Dict[str, Any]]:
     """
     Поиск диалогов по тексту (только MongoDB)
 
@@ -605,15 +668,21 @@ async def search_conversations(query: str, user_id: Optional[str] = None, limit:
         global conversation_repo
         if conversation_repo is None:
             conversation_repo = get_conversation_repository()
-        conversations = await conversation_repo.search_conversations(query, user_id, limit)
+        conversations = await conversation_repo.search_conversations(
+            query, user_id, limit
+        )
         results = []
         for conv in conversations:
             results.append(
                 {
                     "conversation_id": conv.conversation_id,
                     "title": conv.title,
-                    "created_at": conv.created_at.isoformat() if conv.created_at else None,
-                    "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
+                    "created_at": (
+                        conv.created_at.isoformat() if conv.created_at else None
+                    ),
+                    "updated_at": (
+                        conv.updated_at.isoformat() if conv.updated_at else None
+                    ),
                     "message_count": len(conv.messages),
                 }
             )
@@ -646,9 +715,13 @@ async def remove_last_user_message(conversation_id: Optional[str] = None) -> boo
             conversation_repo = get_conversation_repository()
         if conversation_id is None:
             conversation_id = get_or_create_conversation_id()
-        success = await conversation_repo.remove_last_message(conversation_id, role="user")
+        success = await conversation_repo.remove_last_message(
+            conversation_id, role="user"
+        )
         if success:
-            logger.info(f"Последнее сообщение пользователя удалено из диалога {conversation_id}")
+            logger.info(
+                f"Последнее сообщение пользователя удалено из диалога {conversation_id}"
+            )
         return success
     except RuntimeError as e:
         logger.warning(f"MongoDB не инициализирован: {e}")
@@ -686,7 +759,11 @@ async def save_dialog_entry_to_project(
         if message_id is None:
             message_id = f"msg_{uuid.uuid4().hex[:12]}"
         message = Message(
-            message_id=message_id, role=role, content=content, timestamp=datetime.utcnow(), metadata=metadata or {}
+            message_id=message_id,
+            role=role,
+            content=content,
+            timestamp=datetime.utcnow(),
+            metadata=metadata or {},
         )
         existing = await conversation_repo.get_conversation(conversation_id)
         promote_branch_draft = False
@@ -713,18 +790,24 @@ async def save_dialog_entry_to_project(
         else:
             await conversation_repo.add_message(conversation_id, message)
             if existing.project_id != project_id:
-                await conversation_repo.set_conversation_project(conversation_id, project_id)
+                await conversation_repo.set_conversation_project(
+                    conversation_id, project_id
+                )
             if promote_branch_draft:
                 new_meta = dict(existing.metadata or {})
                 new_meta.pop("hidden_from_sidebar_until_user_message", None)
-                await conversation_repo.update_conversation(conversation_id, {"metadata": new_meta})
+                await conversation_repo.update_conversation(
+                    conversation_id, {"metadata": new_meta}
+                )
         return True
     except Exception:
         logger.exception("Ошибка при сохранении сообщения проекта в MongoDB")
         return False
 
 
-async def get_project_memory_history(project_id: str, max_entries: Optional[int] = None) -> List[Dict[str, Any]]:
+async def get_project_memory_history(
+    project_id: str, max_entries: Optional[int] = None
+) -> List[Dict[str, Any]]:
     """
     Возвращает историю диалогов только из указанного проекта.
     Используется при memory='project-only'.
@@ -748,7 +831,9 @@ async def get_project_memory_history(project_id: str, max_entries: Optional[int]
         return []
 
 
-async def get_default_memory_history(max_entries: Optional[int] = None) -> List[Dict[str, Any]]:
+async def get_default_memory_history(
+    max_entries: Optional[int] = None,
+) -> List[Dict[str, Any]]:
     """
     Возвращает историю только из глобальных (не привязанных к проекту) диалогов.
     Используется при memory='default'.

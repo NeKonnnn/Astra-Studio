@@ -12,28 +12,27 @@ import {
   ErrorOutline as ErrorIcon,
   ExpandMore as ExpandMoreIcon,
 } from '@mui/icons-material';
+import { formatGenerationDuration, useElapsedSeconds } from '../../hooks/useElapsedSeconds';
 import type { McpToolCallRecord } from '../types';
 import { downloadMcpFile } from '../api';
 import { mergeMcpToolCalls } from '../utils/mergeToolCalls';
+
 import { DocumentSearchPanel, type DocumentSearchTrace } from '../../components/DocumentSearchPanel';
+
+/** Backend шлёт unix-секунды; Date.now() — миллисекунды. */
+function toStartedAtMs(startedAt: number | undefined): number | null {
+  if (startedAt == null || startedAt <= 0) return null;
+  return startedAt < 1e12 ? startedAt * 1000 : startedAt;
+}
+
+/** Длительность tool/субагента в mm:ss, как у «думает / думал». */
+function formatDurationMs(durationMs: number): string {
+  return formatGenerationDuration(Math.max(0, durationMs / 1000));
+}
 
 interface McpToolCallsPanelProps {
   toolCalls: McpToolCallRecord[];
   serverLabels?: Record<string, string>;
-}
-
-/** Длительность tool-вызова: минуты (и секунды), не сырые ms. */
-function formatDuration(durationMs: number): string {
-  const totalSec = Math.max(0, Math.round(durationMs / 1000));
-  const mins = Math.floor(totalSec / 60);
-  const secs = totalSec % 60;
-  if (mins <= 0) {
-    // меньше минуты — показываем как доли минуты
-    const frac = Math.max(0.1, Math.round((durationMs / 60000) * 10) / 10);
-    return `${frac.toLocaleString('ru-RU')} мин`;
-  }
-  if (secs === 0) return `${mins} мин`;
-  return `${mins} мин ${secs} с`;
 }
 
 function formatJsonBlock(value: unknown): string {
@@ -155,6 +154,17 @@ function McpToolCallCard({
   const inputText = formatJsonBlock(execution.arguments ?? {});
   const resultText = formatJsonBlock(execution.result ?? execution.result_preview ?? execution.error ?? '');
 
+  const liveSec = useElapsedSeconds(
+    toStartedAtMs(execution.started_at),
+    execution.status === 'running',
+  );
+  const durationLabel =
+    execution.status === 'running' && liveSec != null
+      ? formatGenerationDuration(liveSec)
+      : execution.duration_ms != null
+        ? formatDurationMs(execution.duration_ms)
+        : null;
+
   return (
     <Box
       sx={{
@@ -196,9 +206,13 @@ function McpToolCallCard({
         <Typography variant="body2" sx={{ flex: 1, fontWeight: 500 }}>
           {statusLabel(execution.status, execution.tool, execution.arguments)}
         </Typography>
-        {execution.duration_ms != null ? (
-          <Typography variant="caption" color="text.secondary">
-            {formatDuration(execution.duration_ms)}
+        {durationLabel ? (
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            sx={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}
+          >
+            {durationLabel}
           </Typography>
         ) : null}
         <IconButton
@@ -259,6 +273,10 @@ export default function McpToolCallsPanel({ toolCalls, serverLabels }: McpToolCa
   const runningCount = executions.filter((x) => x.status === 'running').length;
   const completedCount = executions.filter((x) => x.status === 'completed').length;
 
+  // Только вызовы tool subagent — «Субагенты»; иначе MCP/native — «Инструменты».
+  const onlySubagents = executions.every((x) => x.tool === 'subagent');
+  const sectionTitle = onlySubagents ? 'Субагенты' : 'Инструменты';
+
   return (
     <Box sx={{ mt: 1.25, display: 'flex', flexDirection: 'column', gap: 1 }}>
       <Box
@@ -268,7 +286,7 @@ export default function McpToolCallsPanel({ toolCalls, serverLabels }: McpToolCa
         sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, cursor: 'pointer', width: 'fit-content' }}
       >
         <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
-          MCP-инструменты ({completedCount}/{executions.length}
+          {sectionTitle} ({completedCount}/{executions.length}
           {runningCount > 0 ? `, выполняется ${runningCount}` : ''})
         </Typography>
         <IconButton size="small" sx={{ transform: open ? 'rotate(180deg)' : 'none' }}>

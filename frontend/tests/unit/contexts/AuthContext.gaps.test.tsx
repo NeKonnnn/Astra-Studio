@@ -16,6 +16,7 @@ jest.mock('@/settings', () => ({
 }));
 
 jest.mock('@/config/api', () => ({
+  authFetch: (...a: unknown[]) => (require('@tests/unit/helpers/authFetchMock').authFetchMock as (...x: unknown[]) => unknown)(...a),
   getApiUrl: (path: string) => `http://api.test${path}`,
   fetchSessionPolicy: jest.fn().mockResolvedValue({ timeoutSeconds: 600 }),
 }));

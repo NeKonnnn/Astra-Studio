@@ -36,19 +36,12 @@ import {
   Upload as UploadIcon,
   Computer as ComputerIcon,
   Memory as MemoryIcon,
-  LibraryBooks as LibraryBooksIcon,
   HelpOutline as HelpOutlineIcon,
 } from '@mui/icons-material';
 import { useAppActions } from '../contexts/AppContext';
-import MemoryRagLibraryModal from '../components/MemoryRagLibraryModal';
 
 // Backend URL
 import { getApiUrl, getAuthFetchHeaders } from '../config/api';
-import {
-  isKnowledgeRagEnabled,
-  setKnowledgeRagEnabled,
-  KNOWLEDGE_RAG_STORAGE_EVENT,
-} from '../utils/knowledgeRagStorage';
 import {
   MODEL_SETTINGS_LABEL_WRAPPER_SX,
   MODEL_SETTINGS_HELP_ICON_BUTTON_SX,
@@ -95,15 +88,6 @@ export default function SettingsPage() {
     clear_on_restart: false,
   });
 
-  const [memoryRagModalOpen, setMemoryRagModalOpen] = useState(false);
-  const [useMemoryLibraryRag, setUseMemoryLibraryRag] = useState(() => isKnowledgeRagEnabled());
-
-  useEffect(() => {
-    const onRag = () => setUseMemoryLibraryRag(isKnowledgeRagEnabled());
-    window.addEventListener(KNOWLEDGE_RAG_STORAGE_EVENT, onRag);
-    return () => window.removeEventListener(KNOWLEDGE_RAG_STORAGE_EVENT, onRag);
-  }, []);
-
   // Состояния для контекстных промптов
   const [contextPrompts, setContextPrompts] = useState({
     globalPrompt: '',
@@ -113,11 +97,13 @@ export default function SettingsPage() {
 
   const [modelsWithPrompts, setModelsWithPrompts] = useState<Array<{
     name: string;
+    display_name?: string;
     path: string;
     size: number;
     size_mb: number;
     context_prompt: string;
     has_custom_prompt: boolean;
+    provider_id?: string;
   }>>([]);
 
   const [selectedModelForPrompt, setSelectedModelForPrompt] = useState<string>('');
@@ -140,6 +126,9 @@ export default function SettingsPage() {
   
 
   const { showNotification } = useAppActions();
+
+  const getModelLabel = (model: { display_name?: string; name: string; path: string }) =>
+    model.display_name || model.name || model.path;
 
   // Загрузка данных при монтировании компонента
   useEffect(() => {
@@ -935,7 +924,7 @@ export default function SettingsPage() {
                         primary={
                           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                             <Typography variant="subtitle2" color="text.primary">
-                              {model.name}
+                              {getModelLabel(model)}
                             </Typography>
                             <Chip label="Кастомный" size="small" color="primary" />
                           </Box>
@@ -1059,41 +1048,17 @@ export default function SettingsPage() {
              </Box>
              
              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-               История сообщений чата (не путать с общей библиотекой документов ниже)
+               История сообщений чата (отдельно от баз знаний RAG)
              </Typography>
 
-             <Box sx={{ mb: 2, display: 'flex', flexWrap: 'wrap', gap: 2, alignItems: 'center' }}>
-               <Button
-                 variant="contained"
-                 color="primary"
-                 startIcon={<LibraryBooksIcon />}
-                 onClick={() => setMemoryRagModalOpen(true)}
-               >
-                 Общая библиотека документов
-               </Button>
-               <FormControlLabel
-                 control={
-                   <Switch
-                     checked={useMemoryLibraryRag}
-                     onChange={(_, c) => {
-                       setUseMemoryLibraryRag(c);
-                       setKnowledgeRagEnabled(c);
-                     }}
-                   />
-                 }
-                 label="Учитывать общую библиотеку в ответах чата"
-               />
-             </Box>
-             <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 2 }}>
-               Общие документы для любого чата. Документы проекта и агента настраиваются отдельно.
-             </Typography>
-
-             <MemoryRagLibraryModal open={memoryRagModalOpen} onClose={() => setMemoryRagModalOpen(false)} />
-             
              <Alert severity="info" sx={{ mb: 2 }}>
+               <Typography variant="body2" sx={{ mb: 1 }}>
+                 Документы для RAG — через <strong>Базы знаний</strong> (правая панель); к чату,
+                 агенту и проекту можно прикрепить 1…N баз.
+               </Typography>
                <Typography variant="body2">
-                 <strong>Как это работает:</strong> Ассистент использует последние сообщения из диалога для понимания контекста. 
-                 Больше сообщений = лучше понимание, но больше потребление памяти. Рекомендуется: 20-40 сообщений для обычного общения.
+                 <strong>Контекст диалога:</strong> ассистент использует последние сообщения чата.
+                 Больше сообщений = лучше понимание, но больше потребление памяти. Рекомендуется: 20-40.
                </Typography>
              </Alert>
              
@@ -1435,7 +1400,7 @@ export default function SettingsPage() {
                     primary={
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                         <Typography variant="subtitle2">
-                          {model.name}
+                          {getModelLabel(model)}
                         </Typography>
                         {model.has_custom_prompt && (
                           <Chip label="Есть промпт" size="small" color="primary" />
@@ -1501,7 +1466,7 @@ export default function SettingsPage() {
                   onClick={() => setSelectedModelPath(model.path)}
                 >
                   <ListItemText
-                    primary={model.name}
+                    primary={getModelLabel(model)}
                     secondary={
                       <Box>
                         <Typography variant="caption" display="block">

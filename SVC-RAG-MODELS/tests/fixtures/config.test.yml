@@ -1,0 +1,31 @@
+# Конфиг только для автотестов svc-rag-models: веса не нужны, всё офлайн.
+server:
+  host: 127.0.0.1
+  port: 8012
+  log_level: warning
+
+cors:
+  allowed_origins: ["http://front.test"]
+  allow_credentials: true
+  allow_methods: ["*"]
+  allow_headers: ["*"]
+
+app:
+  title: "RAG Models (test)"
+  description: "test"
+  version: "0.0.1"
+
+logging:
+  level: "INFO"
+
+rag_models:
+  enabled: true
+  # В тестах переопределяется фикстурой на каталог в tmp_path
+  models_dir: "/nonexistent/astra-tests/models"
+  embedding_model: "FRIDA"
+  embedding_model2: "Giga-Embeddings-instruct"
+  reranker_model: "ms-marco-MiniLM-L6-v2"
+  max_loaded_embedding: 2
+  max_loaded_reranker: 2
+  offline: true
+  device: "cpu"

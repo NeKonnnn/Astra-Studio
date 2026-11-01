@@ -162,7 +162,9 @@ class AgentFilters(BaseModel):
     min_rating: Optional[float] = Field(None, description="Минимальный рейтинг", ge=0, le=5)
     sort_by: str = Field("rating", description="Поле сортировки")
     sort_order: str = Field("desc", description="Порядок сортировки (asc/desc)")
-    limit: int = Field(20, description="Количество результатов", ge=1, le=100)
+    # le=1000: совпадает с GET /api/agents/admin/all (Query le=1000, default 200).
+    # Раньше le=100 ломало admin-каталог в конструкторе (ValidationError → пустой список).
+    limit: int = Field(20, description="Количество результатов", ge=1, le=1000)
     offset: int = Field(0, description="Смещение для пагинации", ge=0)
 
 

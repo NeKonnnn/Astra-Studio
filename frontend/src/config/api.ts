@@ -1,6 +1,7 @@
 // Конфигурация API для astrachat Frontend
 // Использует новый модуль settings
 import axios from 'axios';
+import { authFetch as authFetchImpl, setAuthTokenRefreshHandler as setRefreshHandlerImpl } from '../utils/authFetch';
 import { getSettings } from '../settings';
 import {
   mapApiPolicyToConfig,
@@ -98,7 +99,7 @@ export const API_ENDPOINTS = {
   // Skills (markdown instructions)
   SKILLS: '/api/skills',
 
-  // Knowledge Bases (named RAG collections)
+  // Базы знаний (entity KB gallery / shares)
   KNOWLEDGE_BASES: '/api/knowledge-bases',
 
   // Plugins (HTTP microservices gallery)
@@ -138,24 +139,19 @@ export function getAuthFetchHeaders(extra?: Record<string, string>): Record<stri
   };
 }
 
+type RefreshFn = () => Promise<string | null>;
+
+/** Регистрируется из AuthContext (единый in-flight refresh с axios-interceptor). */
+export function setAuthTokenRefreshHandler(fn: RefreshFn | null): void {
+  setRefreshHandlerImpl(fn);
+}
+
 /**
- * fetch к API с JWT и cookie client binding.
- * Без credentials: 'include' на cross-origin (:3000→:8000) cookie не уходит →
- * 401 «Токен не привязан к сессии браузера».
+ * fetch с Authorization и cookie-сессией (credentials: include); при 401 один раз
+ * пробует refresh (если handler задан) и повторяет запрос.
  */
-export async function authFetch(input: string, init?: RequestInit): Promise<Response> {
-  const headers = new Headers(init?.headers || {});
-  const auth = getAuthFetchHeaders();
-  for (const [key, value] of Object.entries(auth)) {
-    if (value && !headers.has(key)) {
-      headers.set(key, value);
-    }
-  }
-  return fetch(input, {
-    ...init,
-    headers,
-    credentials: init?.credentials ?? 'include',
-  });
+export function authFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  return authFetchImpl(input, { credentials: 'include', ...init });
 }
 
 // Функция для получения WebSocket URL
@@ -167,6 +163,13 @@ export const getWsUrl = (endpoint: string): string => {
 /**
  * WebSocket URL с JWT-токеном в query (?token=) — для защищённых WS-роутов,
  * где заголовки авторизации недоступны (браузерный WebSocket их не передаёт).
+ *
+ * BUG-FE-08 (остаток, п.1): основной access-токен в query-строке попадает в логи
+ * reverse-proxy/ingress. Правильное решение — одноразовый короткоживущий ws-ticket
+ * (как в SSO exchange), но backend-эндпоинта для WS-ticket сейчас нет
+ * (ticket есть только в `auth/sso_routes.py` для SSO-обмена). Как только появится
+ * `POST /api/auth/ws-ticket`, заменить здесь токен на ticket. Устаревший ключ
+ * `localStorage.token` не используется — только `auth_token`.
  */
 export const getAuthWsUrl = (endpoint: string): string => {
   const base = getWsUrl(endpoint);

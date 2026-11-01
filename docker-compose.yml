@@ -11,6 +11,9 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       # 27B Q8 (~30 ГБ) на CPU: дефолт 600с не хватает; backend httpx = 2400с.
       - LLM_MODEL_LOAD_TIMEOUT=${LLM_MODEL_LOAD_TIMEOUT:-1800}
+      # Параллельные стримы в разных чатах: независимые Llama-реплики одной модели.
+      # При нехватке VRAM поставьте LLM_INFERENCE_REPLICAS=1.
+      - LLM_INFERENCE_REPLICAS=${LLM_INFERENCE_REPLICAS:-2}
     deploy:
       resources:
         reservations:
@@ -217,8 +220,11 @@ services:
       - RAG_SERVICE_ENABLED=${RAG_SERVICE_ENABLED:-true}
       - RAG_MODELS_SERVICE_ENABLED=${RAG_MODELS_SERVICE_ENABLED:-true}
       - POSTGRESQL_SERVICE_ENABLED=${POSTGRESQL_SERVICE_ENABLED:-true}
-      # Поиск в чате: не держать UI «думает…» 4+ мин на cold MiniCPM/CPU
-      - SVC_RAG_SEARCH_READ_TIMEOUT=${SVC_RAG_SEARCH_READ_TIMEOUT:-90}
+      # Поиск в чате: cold MiniCPM-реранкер на CPU легко ест 120–180с —
+      # при 90с бэкенд RecvTimeout и выбрасывает уже найденные hits.
+      - SVC_RAG_SEARCH_READ_TIMEOUT=${SVC_RAG_SEARCH_READ_TIMEOUT:-240}
+      # По умолчанию без реранкера в entity-RAG (локальный CPU); включить явно.
+      - RAG_ENTITY_RERANKING_ENABLED=${RAG_ENTITY_RERANKING_ENABLED:-false}
       - MINIO_SERVICE_ENABLED=${MINIO_SERVICE_ENABLED:-true}
       - AGENTS_SERVICE_ENABLED=${AGENTS_SERVICE_ENABLED:-true}
       - STT_SERVICE_ENABLED=${STT_SERVICE_ENABLED:-true}
@@ -229,12 +235,16 @@ services:
       - LLM_SERVICE_MIN_MAX_TOKENS=${LLM_SERVICE_MIN_MAX_TOKENS:-1024}
       - RAG_MEMORY_ENABLED=${RAG_MEMORY_ENABLED:-true}
       - RAG_TYPOS_MIN_SIMILARITY=${RAG_TYPOS_MIN_SIMILARITY:-0.6}
+      # Дефолт эмбеддинга для entity RAG (агент/БЗ/проект): FRIDA легче и быстрее Giga
+      - RAG_ENTITY_EMBEDDING_MODEL=${RAG_ENTITY_EMBEDDING_MODEL:-local/FRIDA}
       # ComfyUI в compose: бэкенд ходит на сервис comfyui (перекрывает comfyui_base_url из YAML при генерации картинок)
       - IMAGE_GEN_COMFYUI_URL=http://comfyui:8188
-      # MCP Open-WebSearch: в Docker — HTTP к контейнеру mcp-websearch (stdio/npx только для локальной разработки)
+      # MCP Open-WebSearch: в Docker — HTTP к контейнеру mcp-websearch (stdio/npx только для локальной разработки).
+      # Поля сервера читаются из MCP_SERVER_<ID>_* (см. McpPlatformConfig._apply_per_server_env).
+      - MCP_SERVER_WEBSEARCH_ENABLED=${MCP_SERVER_WEBSEARCH_ENABLED:-true}
       - MCP_SERVER_WEBSEARCH_TRANSPORT=${MCP_SERVER_WEBSEARCH_TRANSPORT:-streamable-http}
-      - MCP_SERVER_WEBSEARCH_BASE_PATH=/mcp
-      - MCP_SERVER_WEBSEARCH_HEALTH_PATH=/mcp
+      - MCP_SERVER_WEBSEARCH_BASE_PATH=${MCP_SERVER_WEBSEARCH_BASE_PATH:-/mcp}
+      - MCP_SERVER_WEBSEARCH_HEALTH_PATH=${MCP_SERVER_WEBSEARCH_HEALTH_PATH:-/mcp}
     depends_on:
       comfyui:
         condition: service_started

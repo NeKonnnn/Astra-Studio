@@ -298,7 +298,12 @@ async def save_entity_rag_settings(
     stored = _strip_legacy_default_overrides(dict(await repo.get(sc, ek) or {}))
     for key in RAG_SETTING_KEYS:
         if key in updates and updates[key] is not None:
-            stored[key] = updates[key]
+            if updates[key] == "":
+                # Пустая строка очищает текстовую настройку (возврат к дефолту
+                # кластера); None по-прежнему означает «не менять».
+                stored.pop(key, None)
+            else:
+                stored[key] = updates[key]
 
     defaults = _defaults_from_app_state()
     # Индексные ключи храним ВСЕГДА, даже когда значение совпало с дефолтным
@@ -426,7 +431,9 @@ def get_runtime_rag_settings(scope: Optional[str] = None) -> Dict[str, Any]:
 
 def runtime_rag_top_k(scope: Optional[str] = None) -> int:
     try:
-        v = int(get_runtime_rag_settings(scope).get("rag_chat_top_k") or 12)
+        raw = get_runtime_rag_settings(scope).get("rag_chat_top_k")
+        # 0 — не «пусто»: зажимаем до минимума 1, а не подменяем дефолтом
+        v = int(raw) if raw is not None else 12
     except (TypeError, ValueError):
         v = 12
     return max(1, min(v, 64))
@@ -466,7 +473,8 @@ def runtime_agentic_rag_enabled(scope: Optional[str] = None) -> bool:
 def runtime_agentic_max_iterations(scope: Optional[str] = None) -> int:
     sc = scope or runtime_primary_scope()
     try:
-        v = int(get_runtime_rag_settings(sc).get("agentic_max_iterations") or 2)
+        raw = get_runtime_rag_settings(sc).get("agentic_max_iterations")
+        v = int(raw) if raw is not None else 2
     except (TypeError, ValueError):
         v = 2
     return max(1, min(v, 5))
@@ -543,9 +551,11 @@ def chunk_params_from_rag_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
         "universal",
     }:
         strategy = "hierarchical"
+    size = max(200, min(size, 8000))
     return {
-        "chunk_size": max(200, min(size, 8000)),
-        "chunk_overlap": max(0, min(overlap, 2000)),
+        "chunk_size": size,
+        # перекрытие строго меньше чанка, иначе индекс разрастается
+        "chunk_overlap": max(0, min(overlap, 2000, size - 1)),
         "chunking_strategy": strategy,
     }
 
@@ -652,7 +662,7 @@ def embedding_fields_from_path(model_path: Optional[str]) -> Dict[str, Any]:
     if "/" not in p:
         return {"embedding_model": p, "embedding_provider": "native"}
     prefix, model = (part.strip() for part in p.split("/", 1))
-    if not model:
+    if not prefix or not model:
         return {}
     # Префикс — это id провайдера в конфиге SVC-RAG (rag_models.providers), там
     # сравнение регистронезависимое. Раньше здесь стоял разбор трёх известных

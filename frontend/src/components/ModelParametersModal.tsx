@@ -113,7 +113,10 @@ export function resolveProviderOptions(
     ),
   );
   const ids = fromIds.length ? fromIds : fromModels;
-  if (!ids.length) return FALLBACK_PROVIDER_OPTIONS;
+  if (!ids.length) {
+    // Каталог моделей есть, но провайдеров вывести не из чего — не подсовываем захардкоженные.
+    return Array.isArray(providerModels) && providerModels.length > 0 ? [] : FALLBACK_PROVIDER_OPTIONS;
+  }
   return ids
     .filter((id) => String(id).toUpperCase() !== 'SC')
     .map((id) => ({ value: id, label: id }));

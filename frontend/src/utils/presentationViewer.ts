@@ -48,7 +48,7 @@ export function classAttrHasSlideToken(classValue: string): boolean {
 }
 
 /** В HTML есть элемент с class-токеном `slide`. */
-export function hasGpbSlideClass(code: string): boolean {
+export function hasDeckSlideClass(code: string): boolean {
   if (!code) return false;
 
   const quoted = new RegExp(CLASS_ATTR_QUOTED_RE.source, 'gi');
@@ -61,7 +61,7 @@ export function hasGpbSlideClass(code: string): boolean {
 }
 
 /** Сколько открывающих тегов с class-токеном slide уже есть в потоке. */
-export function countGpbSlideOpens(code: string): number {
+export function countDeckSlideOpens(code: string): number {
   if (!code) return 0;
   let count = 0;
 
@@ -90,7 +90,7 @@ export function isHtmlFenceBlock(codeBlock: string): boolean {
   return /```(?:html|htm|xhtml)\b/i.test(codeBlock || '');
 }
 
-/** Языки fence, которые точно не GPB-презентация. */
+/** Языки fence, которые точно не презентация. */
 const NON_PRESENTATION_FENCE_LANGS = new Set([
   'python', 'py', 'javascript', 'js', 'typescript', 'ts', 'json', 'sql', 'bash', 'sh', 'shell',
   'yaml', 'yml', 'csv', 'svg', 'mermaid', 'mmd', 'tsx', 'jsx', 'java', 'c', 'cpp', 'c++', 'go',
@@ -113,19 +113,19 @@ export function shouldTreatHtmlFenceAsPresentationStream(
   // Уже открыт html-fence при skill презентации — сразу viewer, не сырой код.
   if (isHtmlFenceLanguage(lang) || isHtmlFenceBlock(codeBlock)) return true;
   const body = (code || '').trim();
-  if (isGpbPresentationStreaming(body, lang)) return true;
+  if (isDeckPresentationStreaming(body, lang)) return true;
   if (body && hasPresentationStreamHints(body)) return true;
   return false;
 }
 
 /**
- * HTML-блок презентации GPB: обязателен реальный class-токен `slide`.
+ * HTML-блок презентации: обязателен реальный class-токен `slide`.
  * Одних CSS-классов скилла (.slide-title / .content-zone) или путей иконок мало —
  * иначе viewer открывается и падает с «не найдены слайды с классом .slide».
  */
-export function isGpbPresentationHtml(code: string): boolean {
+export function isDeckPresentationHtml(code: string): boolean {
   if (!code || code.length < 40) return false;
-  if (!hasGpbSlideClass(code)) return false;
+  if (!hasDeckSlideClass(code)) return false;
 
   const lower = code.toLowerCase();
   const looksLikeHtml =
@@ -139,15 +139,15 @@ export function isGpbPresentationHtml(code: string): boolean {
 
 /**
  * Во время стрима: показать chrome презентации (спиннер), если уже видны
- * признаки GPB-скилла. В iframe попадают только готовые `.slide`.
+ * признаки скилла. В iframe попадают только готовые `.slide`.
  */
-export function isGpbPresentationStreaming(code: string, _language?: string | null): boolean {
-  if (isGpbPresentationHtml(code)) return true;
+export function isDeckPresentationStreaming(code: string, _language?: string | null): boolean {
+  if (isDeckPresentationHtml(code)) return true;
   if (!code || code.length < 8) return false;
   return hasPresentationStreamHints(code);
 }
 
-/** Показывать GPB viewer: готовые .slide или стрим/skill презентации с признаками GPB HTML. */
+/** Показывать presentation viewer: готовые .slide или стрим/skill презентации с признаками deck HTML. */
 export function shouldOpenPresentationViewer(
   code: string,
   opts: {
@@ -156,12 +156,12 @@ export function shouldOpenPresentationViewer(
     language?: string | null;
   } = {},
 ): boolean {
-  if (isGpbPresentationHtml(code)) return true;
+  if (isDeckPresentationHtml(code)) return true;
   // Skill презентации + стрим: с первого ```html / <!DOCTYPE>/<style> — viewer со спиннером,
   // не ждём .slide (иначе мелькает Monaco/ArtifactCard с сырым HTML).
   if (opts.presentationExpected && opts.isStreaming) {
     if (isHtmlFenceLanguage(opts.language)) return true;
-    if (isGpbPresentationStreaming(code, opts.language)) return true;
+    if (isDeckPresentationStreaming(code, opts.language)) return true;
     const low = (code || '').toLowerCase();
     if (
       low.includes('<!doctype') ||
@@ -173,7 +173,7 @@ export function shouldOpenPresentationViewer(
     ) {
       return true;
     }
-  } else if (opts.presentationExpected && isGpbPresentationStreaming(code, opts.language)) {
+  } else if (opts.presentationExpected && isDeckPresentationStreaming(code, opts.language)) {
     return true;
   }
   // Обычный ```html (Excel-дашборд и т.п.) — ArtifactCard, не presentation viewer.
@@ -182,7 +182,7 @@ export function shouldOpenPresentationViewer(
 
 /**
  * Выделяет unfenced HTML презентации из текста ответа.
- * Модели часто отдают GPB HTML без ```html — иначе ChatInlineHtml рисует img/иконки в ленте.
+ * Модели часто отдают HTML презентации без ```html — иначе ChatInlineHtml рисует img/иконки в ленте.
  */
 export function extractUnfencedPresentationHtml(
   text: string,
@@ -209,7 +209,7 @@ export function extractUnfencedPresentationHtml(
   ].filter((i) => i >= 0);
 
   if (!startCandidates.length) {
-    if (isGpbPresentationHtml(text) || hasGpbSlideClass(text)) {
+    if (isDeckPresentationHtml(text) || hasDeckSlideClass(text)) {
       return { before: '', html: text, after: '' };
     }
     return { before: text, html: null, after: '' };
@@ -222,9 +222,9 @@ export function extractUnfencedPresentationHtml(
     /<!doctype\s+html\b|<html\b|<head\b|<style\b|@font-face/i.test(html);
 
   if (
-    !isGpbPresentationHtml(html) &&
-    !hasGpbSlideClass(html) &&
-    !isGpbPresentationStreaming(html) &&
+    !isDeckPresentationHtml(html) &&
+    !hasDeckSlideClass(html) &&
+    !isDeckPresentationStreaming(html) &&
     !earlyPresentationStream
   ) {
     return { before: text, html: null, after: '' };
@@ -233,7 +233,7 @@ export function extractUnfencedPresentationHtml(
 }
 
 /** Куски HTML от каждого открывающего .slide до следующего (работает на обрезанном стриме). */
-export function extractGpbSlideFragments(code: string): string[] {
+export function extractDeckSlideFragments(code: string): string[] {
   if (!code) return [];
   const starts: number[] = [];
 
@@ -264,8 +264,8 @@ function extractPresentationHeadChrome(code: string, firstSlideIndex: number): s
   return [...links, ...styles].join('\n');
 }
 
-/** Минимальный GPB chrome, если модель отдала пустой <head> (типично после auto-continue). */
-const GPB_FALLBACK_STYLE = `
+/** Минимальный chrome, если модель отдала пустой <head> (типично после auto-continue). */
+const DECK_FALLBACK_STYLE = `
 @font-face{font-family:'Cera CY';src:url('/static/fonts/Cera-Regular-App.ttf') format('truetype');font-weight:400;font-style:normal}
 @font-face{font-family:'Cera CY';src:url('/static/fonts/Cera-Bold-App.ttf') format('truetype');font-weight:700;font-style:normal}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -276,7 +276,7 @@ body{font-family:'Cera CY',Calibri,sans-serif;background:#e8e8e8}
 .slide-title--md{font-size:32px;max-width:220mm}.slide-title--sm{font-size:27px;max-width:220mm}
 .slide-title--xs{font-size:24px;max-width:220mm}.slide-title--mini{font-size:21px;max-width:220mm;line-height:1.25}
 .content-zone{position:absolute;left:13.3mm;right:13.3mm;top:var(--content-top,22mm);width:calc(297mm - 26.6mm);z-index:3}
-.gpb-small{position:absolute;right:13.3mm;top:8.9mm;width:43.6mm;height:auto;z-index:4}
+.deck-small{position:absolute;right:13.3mm;top:8.9mm;width:43.6mm;height:auto;z-index:4}
 .page-num,.page-number{position:absolute;right:13.3mm;bottom:7.3mm;z-index:5;font-size:8px;color:#696E82}
 .card{border-radius:2.5mm;padding:5mm}
 .title-slide .main-title{position:absolute;left:13.6mm;top:66.8mm;font-size:48px;font-weight:700;color:#2355D7;z-index:3;max-width:200mm}
@@ -285,7 +285,7 @@ body{font-family:'Cera CY',Calibri,sans-serif;background:#e8e8e8}
 `.trim();
 
 function presentationFallbackChrome(): string {
-  return `<style>\n${GPB_FALLBACK_STYLE}\n</style>`;
+  return `<style>\n${DECK_FALLBACK_STYLE}\n</style>`;
 }
 
 /** Убирает fence/DOCTYPE-шум auto-continue из фрагмента слайда. */
@@ -364,7 +364,7 @@ function ensureHtmlDocumentClosed(html: string): string {
  * (первый блок в ```html, второй — сырой <!DOCTYPE html>).
  */
 export function coalescePresentationHtmlInMessage(text: string): string {
-  if (!text || !hasGpbSlideClass(text)) return text;
+  if (!text || !hasDeckSlideClass(text)) return text;
 
   // Начало презентационной части: первый fence ```html ИЛИ первый <!DOCTYPE>/<html>
   // ИЛИ первый элемент с class="slide" (если модель дала слайды без обёртки).
@@ -383,7 +383,7 @@ export function coalescePresentationHtmlInMessage(text: string): string {
   const presPart = text.slice(presStart);
   const allSlides: string[] = [];
   const seen = new Set<string>();
-  for (const frag of extractGpbSlideFragments(presPart)) {
+  for (const frag of extractDeckSlideFragments(presPart)) {
     let cleaned = cleanSlideFragment(frag)
       .replace(/```[\w.+-]*\s*$/i, '')
       .replace(/<\/body>\s*<\/html>\s*$/i, '')
@@ -425,15 +425,15 @@ function classAttrHasSlideTokenInFragment(fragment: string): boolean {
 export function hasPresentationStreamHints(code: string): boolean {
   const lower = code.toLowerCase();
   return (
-    hasGpbSlideClass(code) ||
-    lower.includes('/static/icons/gpb_') ||
+    hasDeckSlideClass(code) ||
+    lower.includes('/static/icons/') ||
     lower.includes('/static/icons_new/') ||
     lower.includes('content-zone') ||
     lower.includes('slide-title') ||
     lower.includes('slide-header') ||
-    lower.includes('gpb-slide') ||
-    lower.includes('--gpb-') ||
-    // GPB mm-формат (не `.slide` в CSS — ложное срабатывание на обычных HTML-дашбордах)
+    lower.includes('deck-slide') ||
+    lower.includes('--deck-') ||
+    // mm-формат deck (не `.slide` в CSS — ложное срабатывание на обычных HTML-дашбордах)
     (lower.includes('<style') && (lower.includes('297mm') || lower.includes('167mm')))
   );
 }
@@ -447,7 +447,7 @@ export function artifactMetaLooksLikePresentation(meta?: {
   type?: string | null;
 }): boolean {
   const blob = `${meta?.title || ''} ${meta?.identifier || ''} ${meta?.type || ''}`.toLowerCase();
-  return /present|презента|слайд|slide|gpb.?html|deck/.test(blob);
+  return /present|презента|слайд|slide|deck.?html|deck/.test(blob);
 }
 
 export interface StablePresentationSnapshot {
@@ -477,8 +477,8 @@ export function getStablePresentationSnapshot(
     : // После complete HTML мог оборваться на max_tokens — чиним битый хвост,
       // иначе последний слайд теряется и viewer ложно пишет «нет .slide».
       repairTruncatedPresentationHtml(sanitizePresentationHtmlSource(code));
-  const fragments = extractGpbSlideFragments(cleaned);
-  const startedCount = Math.max(countGpbSlideOpens(cleaned), fragments.length);
+  const fragments = extractDeckSlideFragments(cleaned);
+  const startedCount = Math.max(countDeckSlideOpens(cleaned), fragments.length);
   const maxReady = opts?.maxReadyCount;
   const truncatedTail = !isStreaming && cleaned.length < sanitizePresentationHtmlSource(code).length;
 
@@ -550,7 +550,7 @@ export function getStablePresentationSnapshot(
       if (readyCount === 0) {
         presentationLog('снапшот (complete): НЕТ слайдов — viewer покажет ошибку', {
           startedCount,
-          hasSlideClass: hasGpbSlideClass(code),
+          hasSlideClass: hasDeckSlideClass(code),
           hasStreamHints: hasPresentationStreamHints(code),
           rawLen: (code || '').length,
           sample: (code || '').slice(0, 300),
@@ -571,7 +571,11 @@ export function getStablePresentationSnapshot(
         startedCount: Math.max(startedCount, readyCount),
         pending: false,
       };
-    } catch {
+    } catch (err) {
+      presentationLog('снапшот (complete): ошибка DOMParser — фолбэк на regex-фрагменты', {
+        error: String(err),
+        fragments: fragments.length,
+      });
       if (!fragments.length) {
         return { html: null, readyCount: 0, startedCount: 0, pending: false };
       }

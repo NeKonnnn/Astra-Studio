@@ -11,8 +11,8 @@ import {
 
 export type DocumentSearchTrace = {
   query: string;
-  sourceFiles: string[];
-  hits: Array<{
+  sourceFiles?: string[];
+  hits?: Array<{
     file: string;
     anchor: string;
     relevance: number;
@@ -62,11 +62,13 @@ export function DocumentSearchPanel({ trace }: { trace: DocumentSearchTrace }) {
   const [sourcesOpen, setSourcesOpen] = useState(true);
   const [searchOpen, setSearchOpen] = useState(false);
 
+  const hits = trace.hits ?? [];
+  const sourceFiles = trace.sourceFiles ?? [];
   const fromHits = Array.from(
-    new Set(trace.hits.map((h) => h.file).filter(Boolean))
+    new Set(hits.map((h) => h.file).filter(Boolean))
   ).sort();
   const files =
-    fromHits.length > 0 ? fromHits : [...trace.sourceFiles].sort();
+    fromHits.length > 0 ? fromHits : [...sourceFiles].sort();
 
   const subtleToggleSx = {
     display: 'flex',
@@ -270,19 +272,19 @@ export function DocumentSearchPanel({ trace }: { trace: DocumentSearchTrace }) {
           <Typography variant="subtitle2" sx={{ mt: 2, mb: 1, fontWeight: 600 }}>
             Результат
           </Typography>
-          {trace.hits.length === 0 ? (
+          {hits.length === 0 ? (
             <Typography variant="body2" color="text.secondary">
               Фрагменты не найдены.
             </Typography>
           ) : (
-            trace.hits.map((h, i) => (
+            hits.map((h, i) => (
               <Box
                 key={`${h.file}-${h.chunkIndex}-${i}`}
                 sx={{
-                  mb: i < trace.hits.length - 1 ? 2 : 0,
-                  pb: i < trace.hits.length - 1 ? 2 : 0,
+                  mb: i < hits.length - 1 ? 2 : 0,
+                  pb: i < hits.length - 1 ? 2 : 0,
                   borderBottom:
-                    i < trace.hits.length - 1 ? '1px solid' : 'none',
+                    i < hits.length - 1 ? '1px solid' : 'none',
                   borderColor: 'divider',
                 }}
               >

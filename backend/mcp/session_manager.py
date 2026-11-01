@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import time
 from typing import Dict, List, Optional
 
@@ -44,12 +45,20 @@ _PROXY_ENV_KEYS = (
 )
 
 
+_PROXY_USERINFO_RE = re.compile(r"(://[^/?#\s@:]*):[^/?#\s]*@")
+
+
+def _mask_proxy_credentials(value: str) -> str:
+    """Скрывает пароль в URL прокси (scheme://user:pass@host -> scheme://user:***@host)."""
+    return _PROXY_USERINFO_RE.sub(r"\1:***@", value)
+
+
 def _proxy_env_snapshot() -> str:
     parts: list[str] = []
     for key in _PROXY_ENV_KEYS:
         val = os.getenv(key)
         if val and str(val).strip():
-            parts.append(f"{key}={val.strip()}")
+            parts.append(f"{key}={_mask_proxy_credentials(val.strip())}")
     return "; ".join(parts) if parts else "(proxy env not set)"
 
 
@@ -186,7 +195,7 @@ class McpSessionManager:
                     sid, context, use_pool=use_pool, ephemeral=ephemeral
                 )
             except Exception:
-                log.exception("MCP connect failed server=")
+                log.exception("MCP connect failed server=%s", sid)
         return sessions
 
     async def disconnect_all(self) -> None:
@@ -201,7 +210,9 @@ class McpSessionManager:
                 else:
                     await session.close()
             except Exception:
-                log.exception("MCP disconnect error server=")
+                log.exception(
+                    "MCP disconnect error server=%s", getattr(session, "server_id", "")
+                )
         self._active.clear()
 
     async def discard_session(self, session: McpServerSession) -> None:

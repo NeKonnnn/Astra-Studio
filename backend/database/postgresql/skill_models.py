@@ -5,7 +5,6 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-
 SKILL_PERMISSION_VIEWER = "viewer"
 SKILL_PERMISSION_EDITOR = "editor"
 SKILL_PERMISSION_OWNER = "owner"
@@ -23,11 +22,22 @@ def normalize_skill_permission(value: Optional[str]) -> str:
     return SKILL_PERMISSION_VIEWER
 
 
+# Транслитерация русского алфавита (упрощённая, без внешних зависимостей).
+_CYRILLIC_TO_LATIN = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
+    "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "kh", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "shch",
+    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+}
+
+
 def slugify_skill_id(raw: str) -> str:
-    """Machine name / $mention key: kebab-case."""
+    """Machine name / $mention key: kebab-case (кириллица транслитерируется)."""
     import re
 
-    s = (raw or "").strip().lower().replace(" ", "-")
+    s = (raw or "").strip().lower()
+    s = "".join(_CYRILLIC_TO_LATIN.get(ch, ch) for ch in s).replace(" ", "-")
     s = re.sub(r"[^a-z0-9._-]+", "-", s).strip("-")
     return s
 
@@ -47,9 +57,13 @@ class Skill(BaseModel):
     """Skill entity (LibreChat-like)."""
 
     id: Optional[int] = None
-    slug: str = Field(..., min_length=1, max_length=100, description="Machine name (kebab-case)")
+    slug: str = Field(
+        ..., min_length=1, max_length=100, description="Machine name (kebab-case)"
+    )
     name: str = Field(..., min_length=1, max_length=255, description="Display title")
-    display_title: Optional[str] = Field(None, max_length=128, description="UI label; fallback=name")
+    display_title: Optional[str] = Field(
+        None, max_length=128, description="UI label; fallback=name"
+    )
     description: Optional[str] = Field(None, description="When to use (model trigger)")
     content: str = Field(..., description="Markdown body (= SKILL.md body)")
     meta: Dict[str, Any] = Field(default_factory=dict)
@@ -58,7 +72,9 @@ class Skill(BaseModel):
     user_invocable: bool = Field(True, description="Visible in $ popover")
     disable_model_invocation: bool = Field(False, description="Hide from model catalog")
     always_apply: bool = Field(False, description="Prime every turn when accessible")
-    allowed_tools: List[str] = Field(default_factory=list, description="Tools/MCP ids to union on prime")
+    allowed_tools: List[str] = Field(
+        default_factory=list, description="Tools/MCP ids to union on prime"
+    )
     category: Optional[str] = None
     version: int = 1
     file_count: int = 0
@@ -155,7 +171,9 @@ class SkillUpdate(BaseModel):
 
 class SkillFilters(BaseModel):
     search_query: Optional[str] = None
-    view_option: Optional[str] = Field(None, description="created | shared | public | ''")
+    view_option: Optional[str] = Field(
+        None, description="created | shared | public | ''"
+    )
     author_id: Optional[str] = None
     category: Optional[str] = None
     limit: int = Field(30, ge=1, le=1000)
@@ -203,6 +221,8 @@ class SkillFileOut(BaseModel):
 
 class SkillFileCreate(BaseModel):
     relative_path: str = Field(..., min_length=1, max_length=512)
-    content: Optional[str] = Field(None, description="Text content; mutually exclusive with binary upload")
+    content: Optional[str] = Field(
+        None, description="Text content; mutually exclusive with binary upload"
+    )
     mime_type: Optional[str] = "text/plain"
     is_executable: bool = False

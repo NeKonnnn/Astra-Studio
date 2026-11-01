@@ -8,6 +8,17 @@ from typing import Any, Dict, List
 
 from backend.mcp.types import ParsedMcpResult
 
+__all__ = [
+    "parse_mcp_result",
+    "parse_mcp_result_to_struct",
+    "format_parsed_for_llm",
+    "preview_parsed_for_ui",
+    "parsed_to_api_dict",
+    "extract_download_links",
+    "enrich_download_links",
+    "format_tool_result_for_ui",
+]
+
 # Лимит текста tool-result в follow-up LLM (иначе n_ctx переполняется на fetchWebContent)
 DEFAULT_TOOL_RESULT_MAX_CHARS = 6000
 _SEARCH_RESULT_LIMIT = 5
@@ -15,18 +26,14 @@ _FETCH_CONTENT_MAX_CHARS = 3500
 
 _URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 _FILE_PATH_RE = re.compile(r"[^\s<>\"']+\.(?:pptx|ppt|pdf|docx|xlsx)\b", re.IGNORECASE)
-# Расширения, которые считаем файлом для скачивания (не обычные страницы поиска).
-_FILE_URL_EXT_RE = re.compile(
-    r"\.(?:pptx|ppt|pdf|docx|doc|xlsx|xls|csv|zip|7z|rar|tar|gz|"
-    r"png|jpe?g|gif|webp|mp3|mp4|wav|txt|json|xml)(?:\?|#|$)",
-    re.IGNORECASE,
-)
-# Явные ключи download — берём даже без расширения в URL.
-_EXPLICIT_DOWNLOAD_KEYS = (
+_LINK_KEYS = (
     "download_url",
     "downloadUrl",
     "file_url",
     "fileUrl",
+    "url",
+    "href",
+    "link",
     "download_link",
     "downloadLink",
     "s3_url",
@@ -34,8 +41,6 @@ _EXPLICIT_DOWNLOAD_KEYS = (
     "presigned_url",
     "presignedUrl",
 )
-# Общие url/href — только если это файл или рядом указано имя файла.
-_GENERIC_URL_KEYS = ("url", "href", "link")
 _NAME_KEYS = ("filename", "file_name", "fileName", "name", "title")
 _STORAGE_KEY_KEYS = (
     "s3_key",
@@ -57,83 +62,9 @@ _SAVED_FILE_RE = re.compile(
 )
 
 
-def parse_mcp_result(content: Any) -> str:
-    return format_parsed_for_llm(parse_mcp_result_to_struct(content))
-
-
-def parse_mcp_result_to_struct(content: Any) -> ParsedMcpResult:
-    if content is None:
-        return ParsedMcpResult(text="")
-    if isinstance(content, str):
-        return ParsedMcpResult(text=content, raw=content)
-    if isinstance(content, dict):
-        if "contents" in content and isinstance(content["contents"], list):
-            return parse_mcp_result_to_struct(content["contents"])
-        if "content" in content:
-            return parse_mcp_result_to_struct(content["content"])
-        if "text" in content and isinstance(content["text"], str):
-            return ParsedMcpResult(text=content["text"], raw=content)
-        if "type" in content:
-            return _parse_content_item(content)
-        return ParsedMcpResult(text=str(content), raw=content)
-    if isinstance(content, list):
-        parts: List[str] = []
-        images: List[dict] = []
-        audio: List[dict] = []
-        resources: List[dict] = []
-        for item in content:
-            parsed = _parse_content_item(item if isinstance(item, dict) else {"type": "text", "text": str(item)})
-            if parsed.text:
-                parts.append(parsed.text)
-            images.extend(parsed.images)
-            audio.extend(parsed.audio)
-            resources.extend(parsed.resources)
-        return ParsedMcpResult(
-            text="\n".join(p for p in parts if p),
-            images=images,
-            audio=audio,
-            resources=resources,
-            raw=content,
-        )
-    return ParsedMcpResult(text=str(content), raw=content)
-
-
-def _parse_content_item(item: dict) -> ParsedMcpResult:
-    ctype = str(item.get("type") or "").lower()
-    if ctype == "text":
-        text = item.get("text") or item.get("data") or ""
-        if isinstance(text, bytes):
-            text = text.decode("utf-8", errors="replace")
-        return ParsedMcpResult(text=str(text), raw=item)
-    if ctype == "image":
-        mime = item.get("mimeType") or item.get("mime_type") or "image/png"
-        data = item.get("data") or item.get("blob")
-        meta = {"type": "image", "mimeType": mime, "data": data, "uri": item.get("uri")}
-        return ParsedMcpResult(text="[image]", images=[meta], raw=item)
-    if ctype == "audio":
-        mime = item.get("mimeType") or item.get("mime_type") or "audio/wav"
-        data = item.get("data") or item.get("blob")
-        meta = {"type": "audio", "mimeType": mime, "data": data, "uri": item.get("uri")}
-        return ParsedMcpResult(text="[audio]", audio=[meta], raw=item)
-    if ctype == "resource":
-        uri = item.get("uri") or item.get("resource", {}).get("uri") if isinstance(item.get("resource"), dict) else None
-        text = item.get("text")
-        if not text and isinstance(item.get("resource"), dict):
-            text = item["resource"].get("text")
-        meta = {
-            "type": "resource",
-            "uri": uri,
-            "mimeType": item.get("mimeType") or item.get("mime_type"),
-            "text": text,
-        }
-        label = text or uri or "[resource]"
-        return ParsedMcpResult(text=str(label), resources=[meta], raw=item)
-    if "text" in item and isinstance(item["text"], str):
-        return ParsedMcpResult(text=item["text"], raw=item)
-    return ParsedMcpResult(text=str(item), raw=item)
-
-
-def format_parsed_for_llm(parsed: ParsedMcpResult, *, max_resource_chars: int = 4000) -> str:
+def format_parsed_for_llm(
+    parsed: ParsedMcpResult, *, max_resource_chars: int = 4000
+) -> str:
     """Текст для LLM follow-up с кратким описанием non-text content."""
     lines: List[str] = []
     if parsed.text:
@@ -254,40 +185,8 @@ def preview_parsed_for_ui(parsed: ParsedMcpResult, *, max_len: int = 320) -> str
     return text[:max_len] if text else ""
 
 
-def parsed_to_api_dict(parsed: ParsedMcpResult, *, include_binary: bool = False) -> dict:
-    """JSON-safe dict для REST API (без base64 blob по умолчанию)."""
-    def _strip_blob(items: List[dict]) -> List[dict]:
-        out = []
-        for it in items:
-            row = dict(it)
-            if not include_binary and "data" in row:
-                row["data"] = "[binary omitted]" if row["data"] else None
-            out.append(row)
-        return out
-
-    return {
-        "text": parsed.text,
-        "images": _strip_blob(parsed.images),
-        "audio": _strip_blob(parsed.audio),
-        "resources": parsed.resources,
-        "has_attachments": bool(parsed.images or parsed.audio or parsed.resources),
-    }
-
-
-def _looks_like_downloadable_file(url: str) -> bool:
-    """True только для URL/пути к файлу, не для обычных веб-страниц (погода, поиск)."""
-    cleaned = (url or "").strip()
-    if not cleaned:
-        return False
-    path = cleaned.split("?", 1)[0].split("#", 1)[0]
-    return bool(_FILE_URL_EXT_RE.search(path) or _FILE_PATH_RE.search(path))
-
-
 def extract_download_links(parsed: ParsedMcpResult) -> List[Dict[str, str]]:
-    """Ссылки на файлы из текста/JSON MCP tool result (pptx и др.).
-
-    Не превращает обычные URL из websearch (yandex/gismeteo/…) в «Скачать».
-    """
+    """Ссылки на файлы из текста/JSON MCP tool result (pptx и др.)."""
     links: List[Dict[str, str]] = []
     seen: set[str] = set()
 
@@ -311,20 +210,9 @@ def extract_download_links(parsed: ParsedMcpResult) -> List[Dict[str, str]]:
                 label = next(
                     (str(data[k]) for k in _NAME_KEYS if data.get(k)), "Скачать файл"
                 )
-                has_filename = any(
-                    isinstance(data.get(k), str) and str(data.get(k)).strip()
-                    for k in ("filename", "file_name", "fileName")
-                )
-                for key in _EXPLICIT_DOWNLOAD_KEYS:
+                for key in _LINK_KEYS:
                     value = data.get(key)
                     if isinstance(value, str) and value.strip():
-                        _add(value, label)
-                for key in _GENERIC_URL_KEYS:
-                    value = data.get(key)
-                    if not isinstance(value, str) or not value.strip():
-                        continue
-                    # url рядом с filename (office MCP) или сам url — файл
-                    if has_filename or _looks_like_downloadable_file(value):
                         _add(value, label)
                 for key in (
                     "path",
@@ -337,9 +225,8 @@ def extract_download_links(parsed: ParsedMcpResult) -> List[Dict[str, str]]:
                     if isinstance(value, str) and _FILE_PATH_RE.search(value):
                         _add(value, label or value.rsplit("/", 1)[-1])
         for match in _URL_RE.findall(text):
-            if not _looks_like_downloadable_file(match):
-                continue
-            name = match.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+            # хвостовая пунктуация срезается и из подписи, как из url
+            name = match.rstrip(".,);]").rsplit("/", 1)[-1]
             _add(match, name or "Скачать файл")
         for match in _FILE_PATH_RE.findall(text):
             if match.startswith("http"):
@@ -509,6 +396,110 @@ def append_download_links_to_content(content: str, links: List[Dict[str, str]]) 
         if url:
             block_lines.append(f"- [{label}]({url})")
     block = "\n".join(block_lines)
-    if body and any(url in body for url in (x.get("url") or "" for x in links)):
+    if body and any(
+        url in body for url in (x.get("url") or "" for x in links) if url
+    ):
         return body
     return f"{body}{block}".strip()
+
+
+def parse_mcp_result(content: Any) -> str:
+    return format_parsed_for_llm(parse_mcp_result_to_struct(content))
+
+
+def parse_mcp_result_to_struct(content: Any) -> ParsedMcpResult:
+    if content is None:
+        return ParsedMcpResult(text="")
+    if isinstance(content, str):
+        return ParsedMcpResult(text=content, raw=content)
+    if isinstance(content, dict):
+        if "contents" in content and isinstance(content["contents"], list):
+            return parse_mcp_result_to_struct(content["contents"])
+        if "content" in content:
+            return parse_mcp_result_to_struct(content["content"])
+        if "text" in content and isinstance(content["text"], str):
+            return ParsedMcpResult(text=content["text"], raw=content)
+        if "type" in content:
+            return _parse_content_item(content)
+        return ParsedMcpResult(text=str(content), raw=content)
+    if isinstance(content, list):
+        parts: List[str] = []
+        images: List[dict] = []
+        audio: List[dict] = []
+        resources: List[dict] = []
+        for item in content:
+            parsed = _parse_content_item(
+                item if isinstance(item, dict) else {"type": "text", "text": str(item)}
+            )
+            if parsed.text:
+                parts.append(parsed.text)
+            images.extend(parsed.images)
+            audio.extend(parsed.audio)
+            resources.extend(parsed.resources)
+        return ParsedMcpResult(
+            text="\n".join(p for p in parts if p),
+            images=images,
+            audio=audio,
+            resources=resources,
+            raw=content,
+        )
+    return ParsedMcpResult(text=str(content), raw=content)
+
+
+def _parse_content_item(item: dict) -> ParsedMcpResult:
+    ctype = str(item.get("type") or "").lower()
+    if ctype == "text":
+        text = item.get("text") or item.get("data") or ""
+        if isinstance(text, bytes):
+            text = text.decode("utf-8", errors="replace")
+        return ParsedMcpResult(text=str(text), raw=item)
+    if ctype == "image":
+        mime = item.get("mimeType") or item.get("mime_type") or "image/png"
+        data = item.get("data") or item.get("blob")
+        meta = {"type": "image", "mimeType": mime, "data": data, "uri": item.get("uri")}
+        return ParsedMcpResult(text="[image]", images=[meta], raw=item)
+    if ctype == "audio":
+        mime = item.get("mimeType") or item.get("mime_type") or "audio/wav"
+        data = item.get("data") or item.get("blob")
+        meta = {"type": "audio", "mimeType": mime, "data": data, "uri": item.get("uri")}
+        return ParsedMcpResult(text="[audio]", audio=[meta], raw=item)
+    if ctype == "resource":
+        nested = item.get("resource") if isinstance(item.get("resource"), dict) else {}
+        uri = item.get("uri") or nested.get("uri")
+        text = item.get("text")
+        if not text and isinstance(item.get("resource"), dict):
+            text = item["resource"].get("text")
+        meta = {
+            "type": "resource",
+            "uri": uri,
+            "mimeType": item.get("mimeType") or item.get("mime_type"),
+            "text": text,
+        }
+        label = text or uri or "[resource]"
+        return ParsedMcpResult(text=str(label), resources=[meta], raw=item)
+    if "text" in item and isinstance(item["text"], str):
+        return ParsedMcpResult(text=item["text"], raw=item)
+    return ParsedMcpResult(text=str(item), raw=item)
+
+
+def parsed_to_api_dict(
+    parsed: ParsedMcpResult, *, include_binary: bool = False
+) -> dict:
+    """JSON-safe dict для REST API (без base64 blob по умолчанию)."""
+
+    def _strip_blob(items: List[dict]) -> List[dict]:
+        out = []
+        for it in items:
+            row = dict(it)
+            if not include_binary and "data" in row:
+                row["data"] = "[binary omitted]" if row["data"] else None
+            out.append(row)
+        return out
+
+    return {
+        "text": parsed.text,
+        "images": _strip_blob(parsed.images),
+        "audio": _strip_blob(parsed.audio),
+        "resources": parsed.resources,
+        "has_attachments": bool(parsed.images or parsed.audio or parsed.resources),
+    }

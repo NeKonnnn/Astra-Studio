@@ -6,14 +6,10 @@ import os
 import subprocess
 import sys
 
-try:
-    from backend.settings.logging import get_logger
-except Exception:
-    import logging
-
-    def get_logger(name: str):
-        return logging.getLogger(name)
-
+from backend.settings.logging import (
+    get_logger,
+    reconfigure_backend_handler_streams_utf8,
+)
 
 logger = get_logger(__name__)
 
@@ -29,21 +25,16 @@ def fix_windows_encoding():
         _chcp = shutil.which("chcp") or os.path.join(
             os.environ.get("SystemRoot", r"C:\Windows"), "System32", "chcp.exe"
         )
-        subprocess.run([_chcp, "65001"], check=False, capture_output=True)
+        subprocess.run([_chcp, "65001"], check=False, capture_output=True)  # noqa: S603
 
         if hasattr(sys.stdout, "reconfigure"):
             sys.stdout.reconfigure(encoding="utf-8")
         if hasattr(sys.stderr, "reconfigure"):
             sys.stderr.reconfigure(encoding="utf-8")
 
-        try:
-            from backend.settings.logging import reconfigure_backend_handler_streams_utf8
+        reconfigure_backend_handler_streams_utf8()
 
-            reconfigure_backend_handler_streams_utf8()
-        except Exception:
-            pass
-
-        logger.info("Кодировка Windows настроена на UTF-8")
+        logger.debug("Кодировка Windows настроена на UTF-8")
         return True
     except Exception:
         logger.exception("Ошибка настройки кодировки")

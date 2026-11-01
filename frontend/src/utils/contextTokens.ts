@@ -1,5 +1,6 @@
 import type { InlineAttachment } from '../components/ChatInputBar';
 import type { Message } from '../contexts/AppContext';
+import { getInlineAttachmentExtension } from './inlineAttachmentRules';
 
 /** Событие смены модели (ModelSelector → счётчик контекста). */
 export const MODEL_PATH_CHANGED_EVENT = 'astrachatModelPathChanged';
@@ -153,13 +154,49 @@ function messageAttachmentTokens(msg: Message): number {
       total += Math.ceil(tokenEstimate);
     } else if (att.contentType === 'text' && att.preview) {
       total += estimateTokens(att.preview);
-    } else if (att.contentType === 'text' && typeof att.size === 'number' && att.size > 0) {
-      total += Math.ceil(att.size / 4);
+    } else if (att.contentType === 'text') {
+      total += estimateAttachmentTokensByName(att.name, att.size);
     } else if (att.contentType === 'image') {
       total += 512;
     }
   }
   return total;
+}
+
+const TEXT_ATTACHMENT_MAX_TOKENS = 20_000;
+
+/**
+
+* Оценка токенов inline-вложения по имени файла (fallback, когда нет tokenEstimate).
+* Текстовые форматы — от размера файла (байт ≈ символы), бинарные — типичное
+* количество извлечённого текста на страницу (допускается 20 МБ на файл).
+ */
+export function estimateAttachmentTokensByName(name: string | undefined, size?: number): number {
+  const ext = getInlineAttachmentExtension(name || '');
+  switch (ext) {
+    case '.txt':
+    case '.md':
+    case '.log': {
+      const chars = typeof size === 'number' && size > 0 ? size : 5_000;
+      return Math.min(Math.ceil(chars / 4), TEXT_ATTACHMENT_MAX_TOKENS);
+    }
+    case '.rtf':
+      return 3_000;
+    case '.pdf':
+      return 6_000;
+    case '.docx':
+    case '.docm':
+    case '.doc':
+      return 4_000;
+    case '.xlsx':
+    case '.xls':
+    case '.xlsm':
+    case '.ppt':
+    case '.pptx':
+      return 3_000;
+    default:
+      return 1_000;
+  }
 }
 
 function messageCoreTokens(msg: Message): number {
@@ -207,6 +244,27 @@ export interface ConversationTokenBreakdown {
   attachmentTokens: number;
 }
 
+function isMessageStreaming(msg: Message): boolean {
+  // Завершённый ответ (есть длительность) не считаем стримом, даже если флаг залип.
+  if (msg.generationDurationSec != null && msg.generationDurationSec > 0) {
+    return false;
+  }
+  if (msg.isStreaming) return true;
+  return Boolean(msg.multiLLMResponses?.some((r) => r.isStreaming));
+}
+
+/**
+ * Ход «открыт», пока ждём/стримим ответ на последний user.
+ * После complete весь диалог уходит в память, «текущее» = только черновик.
+ */
+function isOpenUserTurn(messages: Message[], lastUserIdx: number): boolean {
+  if (lastUserIdx < 0) return false;
+  const after = messages.slice(lastUserIdx + 1);
+  const assistantAfter = after.filter((m) => m.role === 'assistant');
+  if (assistantAfter.length === 0) return true;
+  return assistantAfter.some(isMessageStreaming);
+}
+
 /** Разбивает переписку на память / текущий запрос / генерацию / RAG-фрагменты без пересечений. */
 export function analyzeConversationTokens(
   messages: Message[],
@@ -221,6 +279,8 @@ export function analyzeConversationTokens(
     }
   }
 
+  const openTurn = isOpenUserTurn(messages, lastUserIdx);
+
   let memoryTokens = 0;
   let currentUserTokens = 0;
   let generationTokens = 0;
@@ -232,6 +292,12 @@ export function analyzeConversationTokens(
     ragContentTokens += messageRagContentTokens(msg);
     attachmentTokens += messageAttachmentTokens(msg);
     const core = messageCoreTokens(msg);
+
+    if (!openTurn) {
+      // Ход завершён: user+assistant уже история следующего запроса.
+      memoryTokens += core;
+      continue;
+    }
 
     if (msg.role === 'assistant') {
       if (lastUserIdx >= 0 && i > lastUserIdx) {
@@ -305,6 +371,8 @@ export const CONTEXT_SEGMENT_COLORS: Record<string, string> = {
   context_instructions: '#9e9e9e',
   project: '#388e3c',
   agent: '#7b1fa2',
+  skills: '#00838f',
+  artifacts: '#5c6bc0',
   rag_rules: '#f57c00',
   mcp_tools: '#ba68c8',
   memory: '#5d4037',
@@ -318,6 +386,8 @@ export const CONTEXT_SEGMENT_ORDER: string[] = [
   'context_instructions',
   'project',
   'agent',
+  'skills',
+  'artifacts',
   'rag_rules',
   'mcp_tools',
   'memory',
@@ -332,6 +402,8 @@ export interface ContextFeatureFlags {
   hasMcp?: boolean;
   hasRag?: boolean;
   hasProject?: boolean;
+  hasSkills?: boolean;
+  hasArtifacts?: boolean;
 }
 
 export function mergeContextUsageWithOverhead(
@@ -345,7 +417,7 @@ export function mergeContextUsageWithOverhead(
   const convSegments: ContextUsageSegment[] = [
     {
       id: 'memory',
-      label: 'Память (история)',
+      label: 'Память (история диалога)',
       tokens: conversation.memoryTokens,
       active: true,
       showWhenEmpty: true,
@@ -373,14 +445,22 @@ export function mergeContextUsageWithOverhead(
     },
     {
       id: 'generation',
-      label: 'Генерация (ответы модели)',
+      label: 'Генерация (ответ модели)',
       tokens: conversation.generationTokens,
       active: true,
       showWhenEmpty: true,
     },
   ];
 
-  const overheadIds = ['context_instructions', 'project', 'agent', 'rag_rules', 'mcp_tools'];
+  const overheadIds = [
+    'context_instructions',
+    'project',
+    'agent',
+    'skills',
+    'artifacts',
+    'rag_rules',
+    'mcp_tools',
+  ];
   const overheadOrdered: ContextUsageSegment[] = overheadIds.map((id) => {
     const existing = overheadById.get(id);
     if (existing) {
@@ -393,6 +473,10 @@ export function mergeContextUsageWithOverhead(
               ? 'Проект'
               : id === 'agent'
                 ? 'Агент'
+                : id === 'skills'
+                  ? 'Скиллы'
+                  : id === 'artifacts'
+                    ? 'Artifacts'
                 : id === 'rag_rules'
                   ? 'RAG (правила)'
                   : id === 'mcp_tools'
@@ -400,6 +484,8 @@ export function mergeContextUsageWithOverhead(
                     : existing.label,
         showWhenEmpty:
           (id === 'agent' && features.hasAgent) ||
+          (id === 'skills' && features.hasSkills) ||
+          (id === 'artifacts' && features.hasArtifacts) ||
           (id === 'mcp_tools' && features.hasMcp) ||
           (id === 'rag_rules' && features.hasRag) ||
           (id === 'project' && features.hasProject) ||
@@ -420,6 +506,12 @@ export function mergeContextUsageWithOverhead(
     }
     if (id === 'agent' && features.hasAgent) {
       return { id, label: 'Агент', tokens: 0, active: true, showWhenEmpty: true };
+    }
+    if (id === 'skills' && features.hasSkills) {
+      return { id, label: 'Скиллы', tokens: 0, active: true, showWhenEmpty: true };
+    }
+    if (id === 'artifacts' && features.hasArtifacts) {
+      return { id, label: 'Artifacts', tokens: 0, active: true, showWhenEmpty: true };
     }
     if (id === 'rag_rules' && features.hasRag) {
       return { id, label: 'RAG (правила)', tokens: 0, active: true, showWhenEmpty: true };

@@ -1,23 +1,22 @@
-"""Streamable HTTP transport (MCP SDK streamable_http_client)."""
+"""Streamable HTTP transport (MCP SDK streamablehttp_client / streamable_http_client)."""
 
 from __future__ import annotations
 
-import inspect
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict, Optional, Tuple
 from urllib.parse import urljoin
 
+from backend.mcp.client import create_httpx_client, create_insecure_httpx_client
 from backend.mcp.sdk import import_mcp_sdk_submodule
 
 _mod = import_mcp_sdk_submodule("mcp.client.streamable_http")
+# Новый API SDK (>=1.8, http_client=...) и прежний streamablehttp_client(headers=...).
 _streamable_http_client = getattr(_mod, "streamable_http_client", None)
-_legacy_streamablehttp_client = getattr(_mod, "streamablehttp_client", None)
-if _streamable_http_client is None and _legacy_streamablehttp_client is None:
+streamablehttp_client = getattr(_mod, "streamablehttp_client", None)
+if _streamable_http_client is None and streamablehttp_client is None:
     raise AttributeError(
         "mcp.client.streamable_http: нет streamable_http_client / streamablehttp_client"
     )
-
-from backend.mcp.client import create_httpx_client, create_insecure_httpx_client
 
 
 def build_mcp_http_url(base_url: str, base_path: str) -> str:
@@ -29,10 +28,8 @@ def build_mcp_http_url(base_url: str, base_path: str) -> str:
 
 
 def _uses_new_streamable_http_api() -> bool:
-    if _streamable_http_client is None:
-        return False
-    params = inspect.signature(_streamable_http_client).parameters
-    return "http_client" in params
+    """Новый API - только если SDK больше не отдаёт прежний streamablehttp_client."""
+    return streamablehttp_client is None and _streamable_http_client is not None
 
 
 @asynccontextmanager
@@ -58,7 +55,7 @@ async def connect_streamable_http(
     headers: Optional[Dict[str, str]] = None,
     timeout: float = 120.0,
     verify_ssl: bool = True,
-    server_id: Optional[str] = None,
+    server_id: Optional[str] = "",
 ) -> None:
     if _uses_new_streamable_http_api():
         streams_context = _connect_new_streamable_http(
@@ -69,15 +66,14 @@ async def connect_streamable_http(
         )
     else:
         factory = create_httpx_client if verify_ssl else create_insecure_httpx_client
-        streams_context = _legacy_streamablehttp_client(
+        streams_context = streamablehttp_client(
             url,
             headers=headers,
             httpx_client_factory=factory,
-            timeout=timeout,
         )
     await client.connect_streams(
         streams_context,
         init_timeout=min(timeout, 30.0),
-        server_id=server_id,
+        server_id=server_id or None,
         mcp_url=url,
     )

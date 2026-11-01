@@ -41,7 +41,7 @@ def _load_attachment_bytes(object_name: str, bucket: str) -> bytes:
             raise RuntimeError("INLINE_ATTACH_DIR не задан")
         root = Path(base).resolve()
         candidate = (root / object_name).resolve()
-        if not str(candidate).startswith(str(root)) or not candidate.is_file():
+        if not candidate.is_relative_to(root) or not candidate.is_file():
             raise FileNotFoundError(f"Attachment not found: {object_name}")
         return candidate.read_bytes()
     client = getattr(state, "minio_client", None)
@@ -136,7 +136,9 @@ def _compact_result_for_llm(result: Any) -> Dict[str, Any]:
 
 
 @tool
-def audit_cash_flow_model(prompt: str = "", minio_object: str = "", minio_bucket: str = "", filename: str = "") -> str:
+def audit_cash_flow_model(
+    prompt: str = "", minio_object: str = "", minio_bucket: str = "", filename: str = ""
+) -> str:
     """
     Запускает аудит проектно-финансовой Excel-модели через плагин cash-flow
     (DSCR, CFADS, NPV, IRR, ковенанты). Передайте minio_object/minio_bucket
@@ -196,7 +198,11 @@ def audit_cash_flow_model(prompt: str = "", minio_object: str = "", minio_bucket
                 files=[
                     (
                         "model_file",
-                        (name, data, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+                        (
+                            name,
+                            data,
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        ),
                     )
                 ],
                 form={"prompt": prompt} if prompt else None,
@@ -209,7 +215,10 @@ def audit_cash_flow_model(prompt: str = "", minio_object: str = "", minio_bucket
         # Вердикт уходит в промпт агрегатора один раз — только внутри artifact_markdown.
         # Раньше тот же текст дублировался в result.verdict_markdown и verdict_markdown,
         # и на большой модели агрегатор упирался в контекст шлюза.
-        payload: Dict[str, Any] = {"ok": True, "result": _compact_result_for_llm(result)}
+        payload: Dict[str, Any] = {
+            "ok": True,
+            "result": _compact_result_for_llm(result),
+        }
         if artifact_md:
             payload["artifact_markdown"] = artifact_md
         return json.dumps(payload, ensure_ascii=False, default=str)
@@ -273,6 +282,7 @@ def plugin_attachment_prompt_note(
         f"[Прикреплённый файл {files} обрабатывается плагином и не вставлен в промпт целиком.]"
         f"{hint}"
     )
+
 
 PLUGIN_SYSTEM_HINTS: Dict[str, str] = {
     "cash-flow": (

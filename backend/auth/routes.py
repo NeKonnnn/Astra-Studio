@@ -9,7 +9,7 @@ from typing import Annotated, Optional
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile, status
 from pydantic import BaseModel
 
 from backend.auth.jwt_handler import (
@@ -95,6 +95,8 @@ class UserResponse(BaseModel):
     is_active: bool
     is_admin: bool
     avatar_url: Optional[str] = None
+    # Короткий статус профиля (редактируется пользователем).
+    status: Optional[str] = None
     # Платформенные флаги (LDAP / Keycloak) — иначе /me обрезает их
     # и UI снова показывает конструктор базовому пользователю.
     platform_role: Optional[str] = None
@@ -374,12 +376,39 @@ async def logout(
     }
 
 
+def _profile_user_id(current_user: dict) -> str:
+    return str(
+        (current_user or {}).get("user_id")
+        or (current_user or {}).get("username")
+        or ""
+    ).strip()
+
+
+def _enrich_user_profile(current_user: dict) -> dict:
+    """Добавляет status и avatar_url из локального профиля (свой аватар поверх LDAP/SSO)."""
+    from backend.services import user_profile_store as profile_store
+
+    out = dict(current_user or {})
+    uid = _profile_user_id(out)
+    if not uid:
+        return out
+    status_text = profile_store.get_status(uid)
+    if status_text:
+        out["status"] = status_text
+    elif "status" not in out:
+        out["status"] = None
+    if profile_store.has_custom_avatar(uid):
+        out["avatar_url"] = "/api/auth/me/avatar"
+        out["has_custom_avatar"] = True
+    return out
+
+
 @router.get("/me", response_model=UserResponse)
 async def get_current_user_info(
     current_user: Annotated[dict, Depends(get_current_user)],
 ):
     """Получить информацию о текущем пользователе"""
-    return current_user
+    return _enrich_user_profile(current_user)
 
 
 def _is_safe_avatar_url(url: str) -> bool:
@@ -412,7 +441,18 @@ def _is_safe_avatar_url(url: str) -> bool:
 
 @router.get("/me/avatar")
 async def get_user_avatar(current_user: Annotated[dict, Depends(get_current_user)]):
-    """Аватар текущего пользователя: LDAP/AD photo или прокси picture из Keycloak."""
+    """Аватар: свой загруженный → LDAP/AD photo → прокси picture из Keycloak."""
+    from backend.services import user_profile_store as profile_store
+
+    custom = profile_store.read_custom_avatar(_profile_user_id(current_user))
+    if custom:
+        content, ctype = custom
+        return Response(
+            content=content,
+            media_type=ctype,
+            headers={"Cache-Control": "private, max-age=60"},
+        )
+
     auth_method = current_user.get("auth_method") or "ldap"
     if auth_method == "keycloak":
         avatar_url = current_user.get("avatar_url")
@@ -455,18 +495,61 @@ async def get_user_avatar(current_user: Annotated[dict, Depends(get_current_user
     )
 
 
+@router.post("/me/avatar", response_model=UserResponse)
+async def upload_user_avatar(
+    current_user: Annotated[dict, Depends(get_current_user)],
+    file: Annotated[UploadFile, File(...)],
+):
+    """Загрузить свой аватар (JPEG/PNG/WebP/GIF, до 5MB)."""
+    from backend.services import user_profile_store as profile_store
+
+    raw = await file.read()
+    try:
+        profile_store.save_custom_avatar(
+            _profile_user_id(current_user),
+            raw,
+            file.content_type or "application/octet-stream",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return _enrich_user_profile(current_user)
+
+
+@router.delete("/me/avatar", response_model=UserResponse)
+async def delete_user_avatar(
+    current_user: Annotated[dict, Depends(get_current_user)],
+):
+    """Удалить свой аватар (вернётся LDAP/Keycloak, если есть)."""
+    from backend.services import user_profile_store as profile_store
+
+    profile_store.delete_custom_avatar(_profile_user_id(current_user))
+    return _enrich_user_profile(current_user)
+
+
 @router.put("/me", response_model=UserResponse)
 async def update_user_info(
     current_user: Annotated[dict, Depends(get_current_user)],
     email: Optional[str] = None,
     full_name: Optional[str] = None,
+    status: Optional[str] = None,
 ):
-    """Обновить информацию пользователя"""
-    if email:
-        current_user["email"] = email
-    if full_name:
-        current_user["full_name"] = full_name
-    return current_user
+    """Обновить информацию пользователя (имя, email, статус).
+
+    Параметры — query (как в тестах и клиенте); статус дополнительно
+    сохраняется в локальном профиле на диске.
+    """
+    from backend.services import user_profile_store as profile_store
+
+    if email is not None:
+        current_user["email"] = email or None
+    if full_name is not None:
+        current_user["full_name"] = full_name or None
+    if status is not None:
+        text = str(status).strip()[:160]
+        current_user["status"] = profile_store.set_status(
+            _profile_user_id(current_user), text
+        )
+    return _enrich_user_profile(current_user)
 
 
 @router.delete("/me")

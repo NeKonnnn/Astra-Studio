@@ -77,6 +77,8 @@ export function useChatContextUsage({
   const [entityContextSize, setEntityContextSize] = useState<number | null>(null);
   const [overheadSegments, setOverheadSegments] = useState<ContextUsageSegment[]>([]);
   const [overheadLoading, setOverheadLoading] = useState(false);
+  const [hasSkills, setHasSkills] = useState(false);
+  const [hasArtifacts, setHasArtifacts] = useState(false);
   const [agentId, setAgentId] = useState<number | null>(() => readStoredAgentId());
   const [mcpToolIds, setMcpToolIds] = useState<string[]>(() =>
     chatId ? getMcpToolIdsForChat(chatId) : [],
@@ -207,9 +209,13 @@ export function useChatContextUsage({
         setOverheadSegments(segs);
         const entityCtx = data.entity_context_size;
         setEntityContextSize(typeof entityCtx === 'number' && entityCtx > 0 ? entityCtx : null);
+        setHasSkills(Boolean(data.skills_enabled) || segs.some((s: { id?: string; tokens?: number }) => s.id === 'skills' && (s.tokens || 0) > 0));
+        setHasArtifacts(Boolean(data.artifacts_enabled) || segs.some((s: { id?: string; tokens?: number }) => s.id === 'artifacts' && (s.tokens || 0) > 0));
       } catch {
         setOverheadSegments([]);
         setEntityContextSize(null);
+        setHasSkills(false);
+        setHasArtifacts(false);
       } finally {
         setOverheadLoading(false);
       }
@@ -220,6 +226,8 @@ export function useChatContextUsage({
     overheadLoadedKeyRef.current = '';
     setOverheadSegments([]);
     setEntityContextSize(null);
+    setHasSkills(false);
+    setHasArtifacts(false);
   }, [overheadRequestKey]);
 
   const featureFlags = useMemo(
@@ -228,8 +236,10 @@ export function useChatContextUsage({
       hasMcp: mcpToolIds.length > 0,
       hasRag: useKbRag,
       hasProject: Boolean(projectInstructions?.trim()),
+      hasSkills,
+      hasArtifacts,
     }),
-    [agentId, mcpToolIds.length, useKbRag, projectInstructions],
+    [agentId, mcpToolIds.length, useKbRag, projectInstructions, hasSkills, hasArtifacts],
   );
 
   return useMemo(() => {

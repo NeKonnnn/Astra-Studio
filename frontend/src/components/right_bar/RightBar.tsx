@@ -63,6 +63,7 @@ import TranscriptionSidebarSection from './TranscriptionSidebarSection';
 import RightSidebarResizeHandle from './RightSidebarResizeHandle';
 import { clampRightSidebarWidthPx } from '../../hooks/useRightSidebarWidth';
 import { RIGHT_SIDEBAR_COLLAPSED_WIDTH_PX } from '../../hooks/useRightSidebarInsetCssVar';
+import { useFeatureAccess } from '../../hooks/useFeatureAccess';
 
 type RightBarSection = 'transcription' | 'skills' | 'knowledge' | 'agent';
 
@@ -95,6 +96,7 @@ export default function RightBar({
   setExpandedWidthPx,
   setWidthPinned,
 }: RightBarProps) {
+  const { canUseAgents } = useFeatureAccess();
   const [sidebarColorTick, setSidebarColorTick] = useState(0);
   const panelBg = useMemo(
     () => getSidebarPanelBackground(isDarkMode),
@@ -111,7 +113,7 @@ export default function RightBar({
 
   const drawerWidth = open ? clampRightSidebarWidthPx(expandedWidthPx) : RIGHT_SIDEBAR_COLLAPSED_WIDTH_PX;
 
-  const activeSection: RightBarSection | null = agentConstructorOpen
+  const activeSection: RightBarSection | null = canUseAgents && agentConstructorOpen
     ? 'agent'
     : skillsPanelOpen
       ? 'skills'
@@ -139,12 +141,20 @@ export default function RightBar({
     setAgentConstructorOpen(false);
   }, []);
 
-  const openSection = useCallback((section: RightBarSection) => {
-    setTranscriptionMenuOpen(section === 'transcription');
-    setSkillsPanelOpen(section === 'skills');
-    setKnowledgeBasesPanelOpen(section === 'knowledge');
-    setAgentConstructorOpen(section === 'agent');
-  }, []);
+  const openSection = useCallback(
+    (section: RightBarSection) => {
+      if (section === 'agent' && !canUseAgents) return;
+      setTranscriptionMenuOpen(section === 'transcription');
+      setSkillsPanelOpen(section === 'skills');
+      setKnowledgeBasesPanelOpen(section === 'knowledge');
+      setAgentConstructorOpen(section === 'agent' && canUseAgents);
+    },
+    [canUseAgents],
+  );
+
+  useEffect(() => {
+    if (!canUseAgents) setAgentConstructorOpen(false);
+  }, [canUseAgents]);
 
   useEffect(() => {
     const raw = (localStorage.getItem('sidebar_panel_color') || '').trim();
@@ -162,12 +172,13 @@ export default function RightBar({
   }, []);
 
   const openConstructorSidebar = useCallback(() => {
+    if (!canUseAgents) return;
     startTransition(() => {
       setHidden(false);
       setOpen(true);
       openSection('agent');
     });
-  }, [openSection, setHidden, setOpen]);
+  }, [canUseAgents, openSection, setHidden, setOpen]);
 
   const openKnowledgeBasesSidebar = useCallback(() => {
     startTransition(() => {
@@ -347,6 +358,7 @@ export default function RightBar({
                     </Box>
                   </Tooltip>
                 </ListItem>
+                {canUseAgents ? (
                 <ListItem disablePadding sx={{ mb: 0.5, display: 'block' }}>
                   <Tooltip title="Конструктор агента" placement="left">
                     <Box component="span" sx={{ display: 'flex', width: '100%', justifyContent: 'center' }}>
@@ -362,6 +374,7 @@ export default function RightBar({
                     </Box>
                   </Tooltip>
                 </ListItem>
+                ) : null}
               </List>
               <Box
                 sx={{
@@ -553,11 +566,15 @@ export default function RightBar({
                       label: 'Базы знаний',
                       icon: <KnowledgeBaseIcon sx={{ fontSize: 20 }} />,
                     },
-                    {
-                      id: 'agent' as const,
-                      label: 'Конструктор агента',
-                      icon: <SidebarRailAgentIcon sx={{ fontSize: 20 }} />,
-                    },
+                    ...(canUseAgents
+                      ? ([
+                          {
+                            id: 'agent' as const,
+                            label: 'Конструктор агента',
+                            icon: <SidebarRailAgentIcon sx={{ fontSize: 20 }} />,
+                          },
+                        ] as const)
+                      : []),
                   ] as const
                 ).map((item) => (
                   <MenuItem
@@ -689,6 +706,7 @@ export default function RightBar({
                       />
                     </ListItemButton>
                   </ListItem>
+                  {canUseAgents ? (
                   <ListItem disablePadding sx={{ mb: 0.5 }}>
                     <ListItemButton
                       onClick={() => openSection('agent')}
@@ -716,6 +734,7 @@ export default function RightBar({
                       />
                     </ListItemButton>
                   </ListItem>
+                  ) : null}
                 </List>
               )}
 

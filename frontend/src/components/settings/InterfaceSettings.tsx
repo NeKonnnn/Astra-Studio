@@ -209,6 +209,20 @@ export default function InterfaceSettings({ isDarkMode: isDarkModeProp }: { isDa
     return () => window.removeEventListener('interfaceSettingsChanged', sync);
   }, []);
 
+  useEffect(() => {
+    const syncFollowUp = () => {
+      const followUpSettings = loadFollowUpSettings();
+      setInterfaceSettings((prev) => ({
+        ...prev,
+        followUpAutoGenerate: followUpSettings.followUpAutoGenerate,
+        followUpShowScope: followUpSettings.followUpShowScope,
+        followUpClickAction: followUpSettings.followUpClickAction,
+      }));
+    };
+    window.addEventListener('interfaceSettingsChanged', syncFollowUp);
+    return () => window.removeEventListener('interfaceSettingsChanged', syncFollowUp);
+  }, []);
+
   type ModelSelectorMode = 'settings' | 'workspace' | 'workspace_agent';
   const [modelSelectorMode, setModelSelectorModeState] = useState<ModelSelectorMode>(() => {
     const saved = localStorage.getItem('model_selector_mode');
@@ -255,7 +269,7 @@ export default function InterfaceSettings({ isDarkMode: isDarkModeProp }: { isDa
     setInterfaceSettings(newSettings);
     localStorage.setItem(SIDEBAR_PANEL_COLOR_KEY, value);
     window.dispatchEvent(new CustomEvent('sidebarColorChanged', { detail: value }));
-    showNotification('success', value ? 'Цвет панелей изменён' : 'Цвет панелей сброшен (следует за темой)');
+    showNotification('success', value ? 'Цвет панелей изменён' : 'Цвет панелей сброшен');
   };
 
   const handlePaletteColorPick = (value: string) => {

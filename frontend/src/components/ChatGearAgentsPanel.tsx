@@ -15,6 +15,7 @@ import ChatGearMyAgentsTab from './ChatGearMyAgentsTab';
 import ChatGearGalleryAgentsTab from './ChatGearGalleryAgentsTab';
 import { getActiveAgentFromStorage } from './AgentSelector';
 import { clearActiveAgent } from '../utils/clearActiveAgent';
+import { useFeatureAccess } from '../hooks/useFeatureAccess';
 
 interface ChatGearAgentsPanelProps {
   isDarkMode: boolean;
@@ -23,6 +24,7 @@ interface ChatGearAgentsPanelProps {
 export default function ChatGearAgentsPanel({
   isDarkMode,
 }: ChatGearAgentsPanelProps) {
+  const { canUseAgents } = useFeatureAccess();
   const [agentSearch, setAgentSearch] = useState('');
   const [agentsSubtab, setAgentsSubtab] = useState<'my' | 'gallery'>('my');
   const [activeAgent, setActiveAgent] = useState(() => getActiveAgentFromStorage());
@@ -74,6 +76,27 @@ export default function ChatGearAgentsPanel({
     ),
     [agentsSubtab, border, menuDividerBorder],
   );
+
+  // Хуки выше раннего return: порядок хуков не должен зависеть от прав (BUG-FE-73).
+  if (!canUseAgents) {
+    return (
+      <Box
+        sx={{
+          display: 'flex',
+          flexDirection: 'column',
+          minHeight: 0,
+          flex: 1,
+          height: '100%',
+          px: 1.5,
+          py: 2,
+        }}
+      >
+        <Typography variant="body2" sx={{ color: muted, fontSize: MENU_ACTION_TEXT_SIZE }}>
+          Агенты недоступны для вашей роли.
+        </Typography>
+      </Box>
+    );
+  }
 
   return (
     <Box

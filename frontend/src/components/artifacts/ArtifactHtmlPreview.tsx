@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { Box } from '@mui/material';
 import {
-  isGpbPresentationHtml,
+  isDeckPresentationHtml,
 } from '../../utils/presentationViewer';
 import {
   escapeHtmlForSrcDoc,
@@ -39,7 +39,7 @@ interface Props {
 }
 
 export default function ArtifactHtmlPreview({ content, isStreaming = false }: Props) {
-  const isPresentation = isGpbPresentationHtml(content);
+  const isPresentation = isDeckPresentationHtml(content);
   const committed = useCommittedContent(content || '', isStreaming, isStreaming ? 1200 : 500);
   const srcDoc = useMemo(
     () => (isPresentation || isStreaming ? '' : buildGenericHtmlSrcDoc(committed)),

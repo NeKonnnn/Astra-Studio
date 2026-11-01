@@ -20,7 +20,7 @@ const SUBMENU_DEBUG = typeof window !== 'undefined' && (window as any).__SUBMENU
 const log = SUBMENU_DEBUG ? (...args: unknown[]) => console.log('[Submenu]', ...args) : () => {};
 
 // Держим короткие тайминги, чтобы переключение подменю ощущалось мгновенным,
-// как в «Модели», но без визуального мигания.
+// как в «Агенты / модели», но без визуального мигания.
 const GRACE_PERIOD_MS = 10;
 const CLOSE_CHECK_DELAY_MS = 5;
 

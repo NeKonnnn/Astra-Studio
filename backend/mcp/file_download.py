@@ -239,7 +239,12 @@ def fetch_from_s3(
             response.release_conn()
         except Exception as exc:
             last_error = str(exc)
-            logger.exception("MCP S3 download miss server= bucket= key=")
+            logger.exception(
+                "MCP S3 download miss server=%s bucket=%s key=%s",
+                storage.get("server_id"),
+                bucket,
+                key,
+            )
             continue
         if is_valid_office_blob(data, filename):
             logger.info(
@@ -299,7 +304,7 @@ async def fetch_from_http_proxy(
             try:
                 response = await client.get(url, headers=headers, follow_redirects=True)
             except Exception:
-                logger.exception("MCP HTTP download try failed url=")
+                logger.exception("MCP HTTP download try failed url=%s", url)
                 continue
             if response.status_code != 200:
                 continue

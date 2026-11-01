@@ -10,6 +10,7 @@ import {
 } from '@/utils/directoryUserSearch';
 
 jest.mock('@/config/api', () => ({
+  authFetch: (...a: unknown[]) => (require('@tests/unit/helpers/authFetchMock').authFetchMock as (...x: unknown[]) => unknown)(...a),
   getApiUrl: (p: string) => `https://app.example.com${p}`,
 }));
 
