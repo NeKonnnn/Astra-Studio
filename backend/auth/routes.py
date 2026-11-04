@@ -97,6 +97,8 @@ class UserResponse(BaseModel):
     avatar_url: Optional[str] = None
     # Короткий статус профиля (редактируется пользователем).
     status: Optional[str] = None
+    # Эмодзи рядом со статусом (отдельное поле).
+    status_emoji: Optional[str] = None
     # Платформенные флаги (LDAP / Keycloak) — иначе /me обрезает их
     # и UI снова показывает конструктор базовому пользователю.
     platform_role: Optional[str] = None
@@ -231,6 +233,12 @@ async def login(credentials: LoginRequest, request: Request, response: Response)
         jwt_token_byte_length(refresh_token),
     )
     logger.info("auth login success sub=%s method=%s", sub, auth_method)
+    try:
+        from backend.services.admin_activity import schedule_record_login
+
+        schedule_record_login(str(user.get("user_id") or sub))
+    except Exception:
+        logger.exception("admin activity: login record schedule failed")
     _login_cef_extra = login_audit_cef_extra(user, auth_method)
     log_cef_event(
         "SEC001",
@@ -364,6 +372,14 @@ async def logout(
     revoke_client_binding(get_client_binding_id_from_request(request))
     revoke_user_session(current_user["user_id"], current_user.get("session_id"))
     clear_client_binding_cookie(response)
+    try:
+        from backend.services.admin_activity import schedule_record_logout
+
+        schedule_record_logout(
+            str(current_user.get("user_id") or current_user.get("username") or "")
+        )
+    except Exception:
+        logger.exception("admin activity: logout record schedule failed")
     log_cef_event(
         "SEC002",
         request=request,
@@ -385,7 +401,7 @@ def _profile_user_id(current_user: dict) -> str:
 
 
 def _enrich_user_profile(current_user: dict) -> dict:
-    """Добавляет status и avatar_url из локального профиля (свой аватар поверх LDAP/SSO)."""
+    """Добавляет status/emoji и avatar_url из локального профиля (свой аватар поверх LDAP/SSO)."""
     from backend.services import user_profile_store as profile_store
 
     out = dict(current_user or {})
@@ -397,6 +413,11 @@ def _enrich_user_profile(current_user: dict) -> dict:
         out["status"] = status_text
     elif "status" not in out:
         out["status"] = None
+    status_emoji = profile_store.get_status_emoji(uid)
+    if status_emoji:
+        out["status_emoji"] = status_emoji
+    elif "status_emoji" not in out:
+        out["status_emoji"] = None
     if profile_store.has_custom_avatar(uid):
         out["avatar_url"] = "/api/auth/me/avatar"
         out["has_custom_avatar"] = True
@@ -532,11 +553,12 @@ async def update_user_info(
     email: Optional[str] = None,
     full_name: Optional[str] = None,
     status: Optional[str] = None,
+    status_emoji: Optional[str] = None,
 ):
-    """Обновить информацию пользователя (имя, email, статус).
+    """Обновить информацию пользователя (имя, email, статус, эмодзи статуса).
 
-    Параметры — query (как в тестах и клиенте); статус дополнительно
-    сохраняется в локальном профиле на диске.
+    Параметры — query (как в тестах и клиенте); статус/эмодзи дополнительно
+    сохраняются в локальном профиле на диске.
     """
     from backend.services import user_profile_store as profile_store
 
@@ -544,10 +566,14 @@ async def update_user_info(
         current_user["email"] = email or None
     if full_name is not None:
         current_user["full_name"] = full_name or None
+    uid = _profile_user_id(current_user)
     if status is not None:
         text = str(status).strip()[:160]
-        current_user["status"] = profile_store.set_status(
-            _profile_user_id(current_user), text
+        current_user["status"] = profile_store.set_status(uid, text)
+    if status_emoji is not None:
+        # Пустая строка сбрасывает эмодзи.
+        current_user["status_emoji"] = profile_store.set_status_emoji(
+            uid, status_emoji if str(status_emoji).strip() else None
         )
     return _enrich_user_profile(current_user)
 

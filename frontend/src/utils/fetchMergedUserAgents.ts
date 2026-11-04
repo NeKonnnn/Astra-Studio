@@ -32,7 +32,7 @@ type AgentsPageResponse = {
 };
 
 /** Загрузить все страницы /api/agents/admin/all (без потолка по числу агентов). */
-async function fetchAllAgentsForAdmin(): Promise<UserAgentListItem[]> {
+export async function fetchAllAgentsForAdmin(): Promise<UserAgentListItem[]> {
   const all: UserAgentListItem[] = [];
   let page = 1;
   let pages = 1;

@@ -834,6 +834,49 @@ class RagClient:
         )
         timer.meta["hits"] = len(hits)
         timer.log(logger)
+        try:
+            from backend.services.admin_activity import schedule_record_usage
+            from backend.settings.cef_logger.cef_audit_context import cef_audit_peek
+
+            _req, _user, _conv = cef_audit_peek()
+            _uid = ""
+            if isinstance(_user, dict):
+                _uid = str(_user.get("user_id") or _user.get("username") or "")
+            src = (settings_source or "user").strip().lower()
+            if src in ("kb", "knowledge_base"):
+                entity_type = "knowledge_base"
+                # document_ids / project_id — приближённый id сущности
+                entity_id = (
+                    f"docs:{','.join(str(x) for x in (document_ids or [])[:5])}"
+                    if document_ids
+                    else (f"doc:{document_id}" if document_id else "kb")
+                )
+            elif src == "project":
+                entity_type = "knowledge_base"
+                entity_id = f"project:{project_id or 'unknown'}"
+            elif src == "memory":
+                entity_type = "knowledge_base"
+                entity_id = "memory"
+            else:
+                entity_type = "knowledge_base"
+                entity_id = f"rag:{src or 'user'}"
+            if _uid:
+                schedule_record_usage(
+                    entity_type=entity_type,
+                    entity_id=entity_id,
+                    user_id=_uid,
+                    action="searched",
+                    entity_name=entity_id,
+                    meta={
+                        "conversation_id": _conv,
+                        "path": path,
+                        "hits": len(hits),
+                        "settings_source": src,
+                        "source": "rag_search",
+                    },
+                )
+        except Exception:
+            pass
         return hits
 
     async def health(self) -> Dict[str, Any]:

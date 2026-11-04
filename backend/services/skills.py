@@ -332,6 +332,34 @@ async def apply_skills_to_chat(
         skills_enabled=skills_enabled,
         eager_agent_fallback=True,
     )
+    try:
+        from backend.services.admin_activity import schedule_record_usage
+
+        used_ids = []
+        for key in ("manual", "always_apply"):
+            used_ids.extend(list((primed or {}).get(key) or []))
+        # уникальные skill slug/id, реально попавшие в промпт
+        seen = set()
+        for sid in used_ids:
+            key = str(sid or "").strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            schedule_record_usage(
+                entity_type="skill",
+                entity_id=key,
+                user_id=str(user_id or ""),
+                action="used",
+                entity_name=key,
+                meta={
+                    "source": "apply_skills_to_chat",
+                    "agent_id": (agent_profile or {}).get("agent_id")
+                    if isinstance(agent_profile, dict)
+                    else None,
+                },
+            )
+    except Exception:
+        logger.exception("admin usage: skill record failed")
     logger.info(
         "[chat-$skill] inject: manual=%s always=%s lazy=%s tools=%s block_chars=%s",
         list((primed or {}).get("manual") or []),

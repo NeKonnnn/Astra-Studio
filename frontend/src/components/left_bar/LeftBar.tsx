@@ -2065,13 +2065,14 @@ backgroundColor: state.currentChatId === chat.id ? 'var(--sidebar-selected-bg, r
               <Typography variant="body2" fontWeight="600" noWrap sx={{ fontSize: '0.875rem' }}>
                 {user.full_name || user.username}
               </Typography>
-              {user.status?.trim() ? (
+              {(user.status_emoji?.trim() || user.status?.trim()) ? (
                 <Typography
                   variant="caption"
                   noWrap
                   sx={{ display: 'block', opacity: 0.65, fontSize: '0.7rem', lineHeight: 1.2 }}
                 >
-                  {user.status.trim()}
+                  {user.status_emoji?.trim() ? `${user.status_emoji.trim()} ` : ''}
+                  {user.status?.trim() || ''}
                 </Typography>
               ) : null}
             </Box>

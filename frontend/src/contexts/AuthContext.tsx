@@ -42,6 +42,8 @@ interface User {
   avatar_url?: string | null;
   /** Короткий статус профиля */
   status?: string | null;
+  /** Эмодзи рядом со статусом */
+  status_emoji?: string | null;
   /** owner | editor | viewer | base */
   platform_role?: string | null;
   /** Доступ к агентам (конструктор, галерея, picker, чат) */
@@ -136,6 +138,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem('auth_token');
     localStorage.removeItem(REFRESH_TOKEN_STORAGE_KEY);
     localStorage.removeItem('auth_user');
+    try {
+      localStorage.removeItem('memo-chats');
+    } catch {
+      /* ignore */
+    }
     clearSessionTimeoutState();
     clearServerInstanceId();
     setToken(null);
@@ -579,6 +586,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem('auth_token');
     localStorage.removeItem(REFRESH_TOKEN_STORAGE_KEY);
     localStorage.removeItem('auth_user');
+    try {
+      localStorage.removeItem('memo-chats');
+    } catch {
+      /* ignore */
+    }
     clearSessionTimeoutState();
     clearServerInstanceId();
 
@@ -615,6 +627,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       localStorage.removeItem('auth_token');
       localStorage.removeItem(REFRESH_TOKEN_STORAGE_KEY);
       localStorage.removeItem('auth_user');
+      // Чаты привязаны к user_id — не оставляем чужую историю следующему логину.
+      try {
+        localStorage.removeItem('memo-chats');
+      } catch {
+        /* ignore */
+      }
       clearSessionTimeoutState();
       clearServerInstanceId();
     }

@@ -168,6 +168,24 @@ class McpPlatformService:
         session: McpServerSession,
     ) -> Any:
         raw_name = self._resolve_raw_tool_name(server_id, tool_name)
+        try:
+            from backend.services.admin_activity import schedule_record_usage
+
+            schedule_record_usage(
+                entity_type="mcp",
+                entity_id=str(server_id or ""),
+                user_id=str(getattr(context, "user_id", "") or ""),
+                action="invoked",
+                entity_name=f"{server_id}/{tool_name}",
+                meta={
+                    "tool": str(tool_name or ""),
+                    "raw_tool": str(raw_name or ""),
+                    "chat_id": getattr(context, "chat_id", None),
+                    "source": "mcp_call_tool",
+                },
+            )
+        except Exception:
+            pass
         return await session.call_tool(raw_name, arguments or {})
 
     async def get_aggregate_status(

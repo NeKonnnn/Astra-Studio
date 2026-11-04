@@ -372,6 +372,19 @@ async def use_skill(
             raise HTTPException(status_code=404, detail="Skill не найден")
         success = await repo.increment_usage(skill_id)
         if success:
+            try:
+                from backend.services.admin_activity import schedule_record_usage
+
+                schedule_record_usage(
+                    entity_type="skill",
+                    entity_id=str(skill_id),
+                    user_id=str(current_user.get("user_id") or ""),
+                    action="used",
+                    entity_name=str(skill_id),
+                    meta={"source": "api_skills.use"},
+                )
+            except Exception:
+                pass
             return {"success": True, "message": "Использование учтено"}
         raise HTTPException(status_code=404, detail="Skill не найден")
     except HTTPException:

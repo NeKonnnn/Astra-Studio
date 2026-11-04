@@ -16,6 +16,7 @@ import {
 } from '@mui/material';
 import {
   Apps as AppsIcon,
+  AdminPanelSettingsOutlined as AdminPanelSettingsOutlinedIcon,
   ChevronLeft as ChevronLeftIcon,
   ChevronRight as ChevronRightIcon,
   PushPin as PushPinIcon,
@@ -24,6 +25,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import SkillsNavIcon from '../../icons/SkillsIcon';
 import KnowledgeBaseIcon from '../../icons/KnowledgeBaseIcon';
+import { useAuth } from '../../contexts/AuthContext';
 import {
   MENU_ACTION_TEXT_SIZE,
   SIDEBAR_CHAT_ROW_LIST_ITEM_BUTTON_SX,
@@ -55,6 +57,7 @@ import { usePendingAgentConstructorOpen } from '../../hooks/usePendingAgentConst
 import { usePendingKnowledgeBaseSidebarOpen } from '../../hooks/usePendingKnowledgeBaseSidebarOpen';
 import { usePendingSkillSidebarOpen } from '../../hooks/usePendingSkillSidebarOpen';
 import AgentConstructorPanel from './AgentConstructorPanel';
+import AdminNavButton from './AdminNavButton';
 import GalleryNavButton from './GalleryNavButton';
 import KnowledgeBasesSidebarPanel from './KnowledgeBasesSidebarPanel';
 import SkillsSidebarPanel from './SkillsSidebarPanel';
@@ -97,6 +100,8 @@ export default function RightBar({
   setWidthPinned,
 }: RightBarProps) {
   const { canUseAgents } = useFeatureAccess();
+  const { user } = useAuth();
+  const isAdmin = Boolean(user?.is_admin);
   const [sidebarColorTick, setSidebarColorTick] = useState(0);
   const panelBg = useMemo(
     () => getSidebarPanelBackground(isDarkMode),
@@ -332,6 +337,7 @@ export default function RightBar({
                   </Tooltip>
                 </ListItem>
                 <GalleryNavButton variant="collapsed" isDarkMode={isDarkMode} panelIsLight={panelIsLight} />
+                <AdminNavButton variant="collapsed" isDarkMode={isDarkMode} panelIsLight={panelIsLight} />
                 <ListItem disablePadding sx={{ mb: 0.5, display: 'block' }}>
                   <Tooltip title="Skills" placement="left">
                     <Box component="span" sx={{ display: 'flex', width: '100%', justifyContent: 'center' }}>
@@ -556,6 +562,15 @@ export default function RightBar({
                       label: 'Галерея',
                       icon: <SidebarRailPromptsIcon fontSize="small" />,
                     },
+                    ...(isAdmin
+                      ? ([
+                          {
+                            id: 'admin' as const,
+                            label: 'Администрирование',
+                            icon: <AdminPanelSettingsOutlinedIcon fontSize="small" />,
+                          },
+                        ] as const)
+                      : []),
                     {
                       id: 'skills' as const,
                       label: 'Skills',
@@ -579,12 +594,17 @@ export default function RightBar({
                 ).map((item) => (
                   <MenuItem
                     key={item.id}
-                    selected={item.id !== 'gallery' && activeSection === item.id}
+                    selected={item.id !== 'gallery' && item.id !== 'admin' && activeSection === item.id}
                     onClick={() => {
                       setSectionMenuAnchor(null);
                       if (item.id === 'gallery') {
                         closeAllSections();
                         navigate('/gallery');
+                        return;
+                      }
+                      if (item.id === 'admin') {
+                        closeAllSections();
+                        navigate('/admin');
                         return;
                       }
                       if (activeSection === item.id) {
@@ -652,6 +672,7 @@ export default function RightBar({
                     </ListItemButton>
                   </ListItem>
                   <GalleryNavButton variant="expanded" isDarkMode={isDarkMode} panelIsLight={panelIsLight} />
+                  <AdminNavButton variant="expanded" isDarkMode={isDarkMode} panelIsLight={panelIsLight} />
                   <ListItem disablePadding sx={{ mb: 0.5 }}>
                     <ListItemButton
                       onClick={() => openSection('skills')}

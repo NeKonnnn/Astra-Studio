@@ -70,6 +70,9 @@ try:
     from backend.database.postgresql.entity_settings_repository import (
         EntitySettingsRepository,
     )
+    from backend.database.postgresql.admin_activity_repository import (
+        AdminActivityRepository,
+    )
 
     postgresql_available = True
     logger.debug("PostgreSQL модули импортированы успешно")
@@ -85,6 +88,7 @@ except ImportError as e:
     KnowledgeBaseRepository = None
     ProjectRepository = None
     EntitySettingsRepository = None
+    AdminActivityRepository = None
 
 # Попытка импорта MinIO модулей
 try:
@@ -110,6 +114,7 @@ knowledge_base_repo: Optional["KnowledgeBaseRepository"] = None
 user_settings_repo: Optional["UserSettingsRepository"] = None
 project_repo: Optional["ProjectRepository"] = None
 entity_settings_repo: Optional["EntitySettingsRepository"] = None
+admin_activity_repo: Optional["AdminActivityRepository"] = None
 
 
 def get_mongodb_connection_string() -> str:
@@ -207,7 +212,7 @@ async def init_postgresql(
         logger.info("PostgreSQL отключён (POSTGRESQL_ENABLED=false) — в эмуляции")
         return False
 
-    global postgresql_connection, document_repo, vector_repo, prompt_repo, tag_repo, agent_repo, skill_repo, knowledge_base_repo, user_settings_repo, project_repo, entity_settings_repo
+    global postgresql_connection, document_repo, vector_repo, prompt_repo, tag_repo, agent_repo, skill_repo, knowledge_base_repo, user_settings_repo, project_repo, entity_settings_repo, admin_activity_repo
 
     if not postgresql_available:
         logger.warning("PostgreSQL модули недоступны. Пропускаем инициализацию.")
@@ -245,6 +250,7 @@ async def init_postgresql(
             user_settings_repo = UserSettingsRepository(postgresql_connection)
             project_repo = ProjectRepository(postgresql_connection)
             entity_settings_repo = EntitySettingsRepository(postgresql_connection)
+            admin_activity_repo = AdminActivityRepository(postgresql_connection)
 
             # Создаем таблицы
             await document_repo.create_tables()
@@ -260,6 +266,7 @@ async def init_postgresql(
             await entity_settings_repo.create_tables()
             await _migrate_entity_rag_settings(entity_settings_repo)
             await entity_settings_repo.cleanup_orphans()
+            await admin_activity_repo.create_tables()
             try:
                 from backend.services.legacy_rag_to_kb import run_legacy_rag_migrations
 
@@ -277,7 +284,7 @@ async def init_postgresql(
             last_error = e
             postgresql_connection = None
             document_repo = vector_repo = agent_repo = skill_repo = knowledge_base_repo = None
-            user_settings_repo = project_repo = entity_settings_repo = None
+            user_settings_repo = project_repo = entity_settings_repo = admin_activity_repo = None
             if attempt >= max_attempts:
                 break
             delay = min(max_delay_sec, base_delay_sec * attempt)
@@ -489,6 +496,15 @@ def get_entity_settings_repository():
     if entity_settings_repo is None:
         raise RuntimeError("PostgreSQL не инициализирован. Вызовите init_postgresql() сначала.")
     return entity_settings_repo
+
+
+def get_admin_activity_repository():
+    """Получение репозитория admin activity (логины / presence)."""
+    if not postgresql_available:
+        raise RuntimeError("PostgreSQL модули недоступны.")
+    if admin_activity_repo is None:
+        raise RuntimeError("PostgreSQL не инициализирован. Вызовите init_postgresql() сначала.")
+    return admin_activity_repo
 
 
 async def _migrate_entity_rag_settings(repo) -> None:

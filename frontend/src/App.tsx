@@ -8,7 +8,10 @@ import { RightBar, RightBarProvider } from './components/right_bar';
 import GlobalKeyboardShortcuts from './components/GlobalKeyboardShortcuts';
 import SettingsModal from './components/SettingsModal';
 import { ASTRA_FOCUS_CHAT_SEARCH, ASTRA_OPEN_SETTINGS, ASTRA_OPEN_SETTINGS_SECTION } from './constants/hotkeys';
-import { useRightSidebarInsetCssVar } from './hooks/useRightSidebarInsetCssVar';
+import {
+  useLeftSidebarRailOverlapCssVar,
+  useRightSidebarInsetCssVar,
+} from './hooks/useRightSidebarInsetCssVar';
 import {
   readRightSidebarWidthPinned,
   readRightSidebarWidthPx,
@@ -23,6 +26,7 @@ import HistoryPage from './pages/HistoryPage';
 import AgentGalleryPage from './pages/AgentGalleryPage';
 import PluginGalleryPage from './pages/PluginGalleryPage';
 import GalleryHubPage from './pages/GalleryHubPage';
+import AdminHubPage from './pages/AdminHubPage';
 import SkillsPage from './pages/SkillsPage';
 import ReleaseNotesPage from './pages/ReleaseNotesPage';
 import UserGuidePage from './pages/UserGuidePage';
@@ -193,6 +197,7 @@ function App() {
   );
 
   useRightSidebarInsetCssVar(rightSidebarOpen, rightSidebarHidden, rightSidebarWidthPx);
+  useLeftSidebarRailOverlapCssVar(sidebarOpen, sidebarHidden);
 
   /** Счётчик для фокуса поля «Поиск в чатах» (в т.ч. после показа скрытого сайдбара). */
   const [searchFocusNonce, setSearchFocusNonce] = useState(0);
@@ -428,6 +433,7 @@ function App() {
                             <Route path="/search" element={<UnifiedChatPage isDarkMode={isDarkMode} sidebarOpen={sidebarOpen} sidebarHidden={sidebarHidden} />} />
                             <Route path="/creations" element={<CreationsPage />} />
                             <Route path="/gallery" element={<GalleryHubPage />} />
+                            <Route path="/admin" element={<AdminHubPage />} />
                             <Route path="/prompts" element={<Navigate to="/gallery?tab=agents" replace />} />
                             <Route path="/agents-gallery" element={<AgentGalleryPage />} />
                             <Route path="/plugins-gallery" element={<PluginGalleryPage />} />

@@ -10,6 +10,7 @@ import {
   Divider,
   IconButton,
   Tooltip,
+  Popover,
 } from '@mui/material';
 import {
   Person as PersonIcon,
@@ -18,6 +19,7 @@ import {
   PhotoCamera as PhotoCameraIcon,
   DeleteOutline as DeleteIcon,
   ChatBubbleOutline as StatusIcon,
+  EmojiEmotionsOutlined as EmojiIcon,
 } from '@mui/icons-material';
 import { useAuth } from '../../contexts/AuthContext';
 import axios from 'axios';
@@ -29,6 +31,34 @@ const getApiBaseUrl = () => {
   return process.env.REACT_APP_API_URL || settings.api.baseUrl;
 };
 
+/** Расширенный набор эмодзи для статуса профиля. */
+const STATUS_EMOJI_OPTIONS = [
+  // Статус / доступность
+  '🟢', '🟡', '🔴', '🔵', '🟣', '🟠', '⚫', '⚪', '🟤',
+  '✅', '❌', '⚠️', '⛔', '🚫', '💤', '🔔', '🔕', '⏰', '⌛', '⏳',
+  // Работа / учёба
+  '💼', '💻', '🖥️', '⌨️', '🖱️', '📱', '📞', '📧', '✉️', '📨',
+  '📊', '📈', '📉', '🗂️', '📁', '📂', '📝', '✍️', '📌', '📍',
+  '🧠', '💡', '🎯', '🚀', '🛠️', '⚙️', '🔧', '🧪', '🔬', '📚',
+  '🎓', '🏫', '📖', '🗓️', '📅', '🗒️',
+  // Настроение
+  '😀', '😁', '😂', '🤣', '😊', '😇', '🙂', '😉', '😍', '🤩',
+  '🤔', '😐', '😑', '😶', '🙄', '😏', '😴', '🥱', '😮', '🤯',
+  '😎', '🤓', '🧐', '😢', '😭', '😤', '🤬', '🤗', '🤫', '🤝',
+  '👍', '👎', '👏', '🙌', '✌️', '🤞', '💪', '🫡', '🫠', '🫥',
+  // Место / активность
+  '🏠', '🏢', '🏥', '✈️', '🚗', '🚆', '🚌', '🚲', '🚶', '🏃',
+  '🏖️', '🏝️', '⛰️', '🏕️', '🌍', '🗺️', '🧳', '🎒',
+  '☕', '🍵', '🧃', '🍕', '🍔', '🥗', '🍜', '🍣', '🍩', '🍪',
+  '🎮', '🎲', '🎬', '🎵', '🎧', '🎤', '🎸', '🎹', '🎨', '🖼️',
+  '⚽', '🏀', '🎾', '🏊', '🚴', '🏋️', '🧘', '⛷️',
+  // Разное
+  '❤️', '🧡', '💛', '💚', '💙', '💜', '🖤', '🤍', '💔', '✨',
+  '⭐', '🌟', '🔥', '💥', '🎉', '🎊', '🎁', '🏆', '🥇', '🏅',
+  '🌙', '☀️', '⛅', '🌧️', '❄️', '🌈', '🍀', '🌸', '🌺', '🌱',
+  '🐱', '🐶', '🦄', '🐼', '🦊', '🐝', '🦋', '🐧',
+];
+
 export default function ProfileSettings() {
   const { user, updateUser, token, avatarSrc } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -36,6 +66,8 @@ export default function ProfileSettings() {
   const [email, setEmail] = useState(user?.email || '');
   const [fullName, setFullName] = useState(user?.full_name || '');
   const [statusText, setStatusText] = useState(user?.status || '');
+  const [statusEmoji, setStatusEmoji] = useState(user?.status_emoji || '');
+  const [emojiAnchor, setEmojiAnchor] = useState<HTMLElement | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [avatarBusy, setAvatarBusy] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
@@ -52,6 +84,8 @@ export default function ProfileSettings() {
   }
 
   const authHeaders = { Authorization: `Bearer ${token}` };
+  const previewStatus = statusText || user.status || '';
+  const previewEmoji = statusEmoji || user.status_emoji || '';
 
   const handleSave = async () => {
     setIsLoading(true);
@@ -68,12 +102,14 @@ export default function ProfileSettings() {
             email: email || '',
             full_name: fullName || '',
             status: statusText,
+            status_emoji: statusEmoji || '',
           },
         },
       );
 
       updateUser(response.data);
       setStatusText(response.data?.status || '');
+      setStatusEmoji(response.data?.status_emoji || '');
       setSuccessMessage('Профиль успешно обновлен!');
       setTimeout(() => setSuccessMessage(''), 3000);
     } catch (err: unknown) {
@@ -150,6 +186,11 @@ export default function ProfileSettings() {
     }
   };
 
+  const pickEmoji = (emoji: string) => {
+    setStatusEmoji((prev) => (prev === emoji ? '' : emoji));
+    setEmojiAnchor(null);
+  };
+
   return (
     <Box sx={{ p: 3 }}>
       {successMessage && (
@@ -223,9 +264,10 @@ export default function ProfileSettings() {
             <Typography variant="body2" color="text.secondary">
               @{user.username}
             </Typography>
-            {(statusText || user.status) && (
+            {(previewEmoji || previewStatus) && (
               <Typography variant="body2" sx={{ mt: 0.5, opacity: 0.85 }}>
-                {statusText || user.status}
+                {previewEmoji ? `${previewEmoji} ` : ''}
+                {previewStatus}
               </Typography>
             )}
             {user.is_admin && (
@@ -290,20 +332,109 @@ export default function ProfileSettings() {
             />
           </Box>
 
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-            <StatusIcon sx={{ color: 'text.secondary' }} />
-            <TextField
-              fullWidth
-              label="Статус"
-              variant="outlined"
-              size="small"
-              value={statusText}
-              onChange={(e) => setStatusText(e.target.value.slice(0, 160))}
-              disabled={isLoading}
-              helperText={`${statusText.length}/160 — короткое сообщение в профиле`}
-              placeholder="Например: на связи / в фокусе / оффлайн"
-            />
+          <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 2 }}>
+            <StatusIcon sx={{ color: 'text.secondary', mt: 1.25 }} />
+            <Box sx={{ flex: 1, display: 'flex', gap: 1, alignItems: 'flex-start' }}>
+              <Tooltip title={statusEmoji ? 'Сменить эмодзи статуса' : 'Добавить эмодзи к статусу'}>
+                <IconButton
+                  size="small"
+                  disabled={isLoading}
+                  onClick={(e) => setEmojiAnchor(e.currentTarget)}
+                  sx={{
+                    // Как у MUI TextField size="small" outlined (~40px), без лишнего padding
+                    mt: '1px',
+                    width: 40,
+                    height: 40,
+                    minWidth: 40,
+                    minHeight: 40,
+                    maxHeight: 40,
+                    p: 0,
+                    boxSizing: 'border-box',
+                    border: '1px solid',
+                    borderColor: 'divider',
+                    borderRadius: '4px',
+                    fontSize: '1.15rem',
+                    lineHeight: 1,
+                    flexShrink: 0,
+                    '& .MuiSvgIcon-root': { fontSize: '1.15rem' },
+                  }}
+                  aria-label="Выбрать эмодзи статуса"
+                >
+                  {statusEmoji || <EmojiIcon fontSize="small" />}
+                </IconButton>
+              </Tooltip>
+              <TextField
+                fullWidth
+                label="Статус"
+                variant="outlined"
+                size="small"
+                value={statusText}
+                onChange={(e) => setStatusText(e.target.value.slice(0, 160))}
+                disabled={isLoading}
+                helperText={`${statusText.length}/160 — текст статуса; эмодзи выбирается кнопкой слева`}
+                placeholder="Например: на связи / в фокусе / оффлайн"
+                sx={{
+                  '& .MuiOutlinedInput-root': {
+                    height: 40,
+                    boxSizing: 'border-box',
+                  },
+                }}
+              />
+            </Box>
           </Box>
+
+          <Popover
+            open={Boolean(emojiAnchor)}
+            anchorEl={emojiAnchor}
+            onClose={() => setEmojiAnchor(null)}
+            anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+            transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+            slotProps={{
+              paper: {
+                sx: { maxWidth: 360 },
+              },
+            }}
+          >
+            <Box sx={{ p: 1.5, width: 340 }}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+                <Typography variant="caption" color="text.secondary">
+                  Эмодзи статуса ({STATUS_EMOJI_OPTIONS.length})
+                </Typography>
+                {statusEmoji ? (
+                  <Button size="small" onClick={() => { setStatusEmoji(''); setEmojiAnchor(null); }}>
+                    Убрать
+                  </Button>
+                ) : null}
+              </Box>
+              <Box
+                sx={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(8, 1fr)',
+                  gap: 0.25,
+                  maxHeight: 280,
+                  overflowY: 'auto',
+                  pr: 0.5,
+                }}
+              >
+                {STATUS_EMOJI_OPTIONS.map((emoji, idx) => (
+                  <IconButton
+                    key={`${emoji}-${idx}`}
+                    size="small"
+                    onClick={() => pickEmoji(emoji)}
+                    sx={{
+                      fontSize: '1.2rem',
+                      borderRadius: 1,
+                      width: 36,
+                      height: 36,
+                      bgcolor: statusEmoji === emoji ? 'action.selected' : 'transparent',
+                    }}
+                  >
+                    {emoji}
+                  </IconButton>
+                ))}
+              </Box>
+            </Box>
+          </Popover>
 
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
             <PersonIcon sx={{ color: 'text.secondary' }} />

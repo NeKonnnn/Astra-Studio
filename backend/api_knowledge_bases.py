@@ -551,6 +551,19 @@ async def use_knowledge_base(
             raise HTTPException(status_code=404, detail="База знаний не найдена")
         success = await repo.increment_usage(kb_id)
         if success:
+            try:
+                from backend.services.admin_activity import schedule_record_usage
+
+                schedule_record_usage(
+                    entity_type="knowledge_base",
+                    entity_id=str(kb_id),
+                    user_id=str(current_user.get("user_id") or ""),
+                    action="used",
+                    entity_name=str(kb_id),
+                    meta={"source": "api_knowledge_bases.use"},
+                )
+            except Exception:
+                pass
             return {"success": True, "message": "Использование учтено"}
         raise HTTPException(status_code=404, detail="База знаний не найдена")
     except HTTPException:

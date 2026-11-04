@@ -51,8 +51,16 @@ export async function fetchMcpServers(): Promise<McpServerConfigPublic[]> {
   return data.servers || [];
 }
 
-export async function fetchMcpStatus(): Promise<McpPlatformStatus> {
-  const data = await mcpFetch<{ mcp_status?: McpPlatformStatus }>(MCP_API.STATUS);
+export async function fetchMcpStatus(opts?: {
+  fetchTools?: boolean;
+  servers?: string[];
+}): Promise<McpPlatformStatus> {
+  const params = new URLSearchParams();
+  if (opts?.fetchTools) params.set('fetch_tools', 'true');
+  if (opts?.servers?.length) params.set('servers', opts.servers.join(','));
+  const qs = params.toString();
+  const endpoint = qs ? `${MCP_API.STATUS}?${qs}` : MCP_API.STATUS;
+  const data = await mcpFetch<{ mcp_status?: McpPlatformStatus }>(endpoint);
   return data.mcp_status || {};
 }
 

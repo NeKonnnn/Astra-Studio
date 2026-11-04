@@ -734,3 +734,88 @@ class ConversationRepository:
             )
             logger.exception("Ошибка при удалении последнего сообщения")
             return False
+
+    async def count_active_users_since(self, since: datetime) -> int:
+        """Число уникальных user_id с updated_at >= since."""
+        try:
+            collection = self._get_collection()
+            since_naive = since.replace(tzinfo=None) if since.tzinfo else since
+            users = await collection.distinct(
+                "user_id",
+                {
+                    "updated_at": {"$gte": since_naive},
+                    "user_id": {"$exists": True, "$nin": [None, "", "default_user"]},
+                },
+            )
+            return len([u for u in users if u])
+        except Exception:
+            logger.exception("count_active_users_since failed")
+            return 0
+
+    async def count_conversations_touched_since(self, since: datetime) -> int:
+        try:
+            collection = self._get_collection()
+            since_naive = since.replace(tzinfo=None) if since.tzinfo else since
+            return int(
+                await collection.count_documents(
+                    {"updated_at": {"$gte": since_naive}}
+                )
+            )
+        except Exception:
+            logger.exception("count_conversations_touched_since failed")
+            return 0
+
+    async def activity_by_day_since(self, since: datetime) -> Dict[str, Dict[str, int]]:
+        """Дневные бакеты: active_users (distinct) + conversation_updates.
+
+        Returns:
+            { "YYYY-MM-DD": {"active_users": N, "conversation_updates": M}, ... }
+        """
+        out: Dict[str, Dict[str, int]] = {}
+        try:
+            collection = self._get_collection()
+            since_naive = since.replace(tzinfo=None) if since.tzinfo else since
+            pipeline = [
+                {
+                    "$match": {
+                        "updated_at": {"$gte": since_naive},
+                        "user_id": {
+                            "$exists": True,
+                            "$nin": [None, "", "default_user"],
+                        },
+                    }
+                },
+                {
+                    "$group": {
+                        "_id": {
+                            "$dateToString": {
+                                "format": "%Y-%m-%d",
+                                "date": "$updated_at",
+                            }
+                        },
+                        "users": {"$addToSet": "$user_id"},
+                        "conversation_updates": {"$sum": 1},
+                    }
+                },
+                {
+                    "$project": {
+                        "date": "$_id",
+                        "active_users": {"$size": "$users"},
+                        "conversation_updates": 1,
+                        "_id": 0,
+                    }
+                },
+                {"$sort": {"date": 1}},
+            ]
+            cursor = collection.aggregate(pipeline)
+            async for doc in cursor:
+                day = str(doc.get("date") or "")
+                if not day:
+                    continue
+                out[day] = {
+                    "active_users": int(doc.get("active_users") or 0),
+                    "conversation_updates": int(doc.get("conversation_updates") or 0),
+                }
+        except Exception:
+            logger.exception("activity_by_day_since failed")
+        return out

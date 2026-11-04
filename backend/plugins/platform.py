@@ -201,6 +201,30 @@ class PluginsPlatformService:
         )
         started = monotonic()
         try:
+            from backend.services.admin_activity import schedule_record_usage
+            from backend.settings.cef_logger.cef_audit_context import cef_audit_peek
+
+            _req, _user, _conv = cef_audit_peek()
+            _uid = ""
+            if isinstance(_user, dict):
+                _uid = str(_user.get("user_id") or _user.get("username") or "")
+            schedule_record_usage(
+                entity_type="plugin",
+                entity_id=str(plugin_id or ""),
+                user_id=_uid or "anonymous",
+                action="invoked",
+                entity_name=str(
+                    getattr(plugin, "display_name", None) or plugin_id or ""
+                ),
+                meta={
+                    "conversation_id": _conv,
+                    "source": "plugin_invoke_multipart",
+                    "files": file_names[:8],
+                },
+            )
+        except Exception:
+            pass
+        try:
             async with httpx.AsyncClient(timeout=timeout, verify=True) as client:
                 resp = await client.post(url, data=data or None, files=files)
         except httpx.TimeoutException as e:

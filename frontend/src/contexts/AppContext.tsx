@@ -1,4 +1,11 @@
-import React, { createContext, useContext, useReducer, useEffect, ReactNode } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useReducer,
+  useEffect,
+  useRef,
+  ReactNode,
+} from 'react';
 import { authFetch, getApiUrl, API_ENDPOINTS } from '../config/api';
 import { initSettings } from '../settings';
 import { useAuth } from './AuthContext';
@@ -14,6 +21,9 @@ import {
   syncProjectCreate,
   syncProjectUpdate,
 } from '../utils/projectsApi';
+
+/** Offline-кэш чатов в localStorage — обязан быть привязан к user_id. */
+export const MEMO_CHATS_STORAGE_KEY = 'memo-chats';
 
 export type { MessageFeedback };
 
@@ -376,6 +386,35 @@ function seedChatMessagesCache(chats: Chat[]): void {
   }
 }
 
+function clearChatMessagesCache(): void {
+  chatMessagesCache.clear();
+}
+
+function readAuthUserIdFromStorage(): string | null {
+  try {
+    const raw = localStorage.getItem('auth_user');
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const id = parsed?.user_id || parsed?.username;
+    return id ? String(id) : null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveUserId(user: { user_id?: string; username?: string } | null | undefined): string | null {
+  if (!user) return null;
+  const id = user.user_id || user.username;
+  return id ? String(id) : null;
+}
+
+/** Локальный кэш чатов чужого пользователя нельзя показывать. */
+function isLocalChatCacheOwnedBy(parsed: any, userId: string | null): boolean {
+  if (!parsed || !userId) return false;
+  const owner = parsed.ownerUserId != null ? String(parsed.ownerUserId) : '';
+  return Boolean(owner) && owner === userId;
+}
+
 function applyCachedMessagesIfNeeded(chat: Chat): Chat {
   if (chat.messages.length > 0) return chat;
   const cached = readChatMessagesCache(chat.id);
@@ -401,12 +440,17 @@ function unloadChatPayload(chat: Chat): Chat {
 
 function readPersistedChatBootstrap(): Pick<AppState, 'chats' | 'currentChatId' | 'folders' | 'isInitialized'> {
   try {
-    const saved = localStorage.getItem('memo-chats');
+    const saved = localStorage.getItem(MEMO_CHATS_STORAGE_KEY);
     if (!saved) {
       return { chats: [], currentChatId: null, folders: [], isInitialized: false };
     }
     const parsed = JSON.parse(saved);
     if (!Array.isArray(parsed?.chats) || parsed.chats.length === 0) {
+      return { chats: [], currentChatId: null, folders: [], isInitialized: false };
+    }
+    // Не поднимаем чужой/legacy-кэш до сверки с user_id (история другого аккаунта).
+    const currentUserId = readAuthUserIdFromStorage();
+    if (!isLocalChatCacheOwnedBy(parsed, currentUserId)) {
       return { chats: [], currentChatId: null, folders: [], isInitialized: false };
     }
     return {
@@ -1101,7 +1145,27 @@ const AppContext = createContext<{
 export function AppProvider({ children }: { children: ReactNode }) {
   // Загружаем состояние из localStorage при инициализации
   const [state, dispatch] = useReducer(appReducer, initialState);
-  const { token } = useAuth();
+  const { token, user } = useAuth();
+  const userId = resolveUserId(user) || readAuthUserIdFromStorage();
+  const prevUserIdRef = useRef<string | null>(userId);
+
+  // Смена аккаунта / logout: сразу выкидываем чаты предыдущего пользователя из UI.
+  useEffect(() => {
+    const prev = prevUserIdRef.current;
+    if (prev === userId) return;
+    prevUserIdRef.current = userId;
+    if (!prev) return;
+    clearChatMessagesCache();
+    dispatch({ type: 'DELETE_ALL_CHATS' });
+    dispatch({ type: 'RESTORE_PROJECTS', payload: [] });
+    if (!userId) {
+      try {
+        localStorage.removeItem(MEMO_CHATS_STORAGE_KEY);
+      } catch {
+        /* ignore */
+      }
+    }
+  }, [userId]);
 
   // Персональные настройки модели с бэкенда (по user_id)
   useEffect(() => {
@@ -1131,18 +1195,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener(MODEL_SETTINGS_CHANGED_EVENT, onSettingsChanged);
   }, [token]);
 
-  // Инициализация/перезагрузка состояния при смене токена (LDAP login/logout)
+  // Инициализация/перезагрузка состояния при смене токена / пользователя
   useEffect(() => {
     const loadInitialState = async () => {
       let parsed: any = null;
       try {
-        const savedState = localStorage.getItem('memo-chats');
+        const savedState = localStorage.getItem(MEMO_CHATS_STORAGE_KEY);
         parsed = savedState ? JSON.parse(savedState) : null;
       } catch (error) {
         console.error('Ошибка загрузки состояния из localStorage:', error);
       }
 
-      const localProjects: Project[] = Array.isArray(parsed?.projects) ? parsed.projects : [];
+      const localCacheOwned = isLocalChatCacheOwnedBy(parsed, userId);
+      const localProjects: Project[] =
+        localCacheOwned && Array.isArray(parsed?.projects) ? parsed.projects : [];
 
       const effectiveToken = token || localStorage.getItem('auth_token');
       if (effectiveToken) {
@@ -1159,11 +1225,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
               dispatch({ type: 'RESTORE_PROJECTS', payload: serverProjects });
             } else if (localProjects.length > 0) {
               dispatch({ type: 'RESTORE_PROJECTS', payload: localProjects });
+            } else {
+              dispatch({ type: 'RESTORE_PROJECTS', payload: [] });
             }
           } catch (error) {
             console.warn('Не удалось загрузить проекты из backend, используем localStorage', error);
             if (localProjects.length > 0) {
               dispatch({ type: 'RESTORE_PROJECTS', payload: localProjects });
+            } else {
+              dispatch({ type: 'RESTORE_PROJECTS', payload: [] });
             }
           }
 
@@ -1175,46 +1245,51 @@ export function AppProvider({ children }: { children: ReactNode }) {
             const serverChats: Chat[] = Array.isArray(payload?.conversations)
               ? payload.conversations.map(mapServerConversationToChat)
               : [];
-            if (serverChats.length > 0) {
-              // Миграция: раньше архив был только в localStorage — переносим на сервер.
-              const localArchivedIds = new Set(
-                (Array.isArray(parsed?.chats) ? parsed.chats : [])
-                  .filter((c: Chat) => c?.isArchived && c?.id)
-                  .map((c: Chat) => String(c.id)),
+            // При авторизации сервер — источник правды (в т.ч. пустой список).
+            const ownedLocalChats =
+              localCacheOwned && Array.isArray(parsed?.chats) ? parsed.chats : [];
+            const localArchivedIds = new Set(
+              ownedLocalChats
+                .filter((c: Chat) => c?.isArchived && c?.id)
+                .map((c: Chat) => String(c.id)),
+            );
+            const mergedChats = serverChats.map((c) =>
+              localArchivedIds.has(c.id) && !c.isArchived ? { ...c, isArchived: true } : c,
+            );
+            const toSyncArchive = mergedChats
+              .filter((c) => c.isArchived && localArchivedIds.has(c.id))
+              .map((c) => c.id);
+            if (toSyncArchive.length) {
+              void Promise.all(
+                toSyncArchive.map((chatId) =>
+                  authFetch(getApiUrl(`/api/conversations/${chatId}/archive`), {
+                    method: 'POST',
+                    headers: { Authorization: `Bearer ${effectiveToken}` },
+                  }).catch(() => {}),
+                ),
               );
-              const mergedChats = serverChats.map((c) =>
-                localArchivedIds.has(c.id) && !c.isArchived ? { ...c, isArchived: true } : c,
-              );
-              const toSyncArchive = mergedChats
-                .filter((c) => c.isArchived && localArchivedIds.has(c.id))
-                .map((c) => c.id);
-              if (toSyncArchive.length) {
-                void Promise.all(
-                  toSyncArchive.map((chatId) =>
-                    authFetch(getApiUrl(`/api/conversations/${chatId}/archive`), {
-                      method: 'POST',
-                      headers: { Authorization: `Bearer ${effectiveToken}` },
-                    }).catch(() => {}),
-                  ),
-                );
-              }
-              const savedCurrentId =
-                typeof parsed?.currentChatId === 'string' ? parsed.currentChatId : null;
-              const restoredCurrentId =
-                savedCurrentId && mergedChats.some((c) => c.id === savedCurrentId && !c.isArchived)
+            }
+            const savedCurrentId =
+              localCacheOwned && typeof parsed?.currentChatId === 'string'
+                ? parsed.currentChatId
+                : null;
+            const restoredCurrentId =
+              mergedChats.length === 0
+                ? null
+                : savedCurrentId &&
+                    mergedChats.some((c) => c.id === savedCurrentId && !c.isArchived)
                   ? savedCurrentId
                   : mergedChats.find((c) => !c.isArchived)?.id || mergedChats[0]?.id || null;
-              dispatch({
-                type: 'RESTORE_CHATS',
-                payload: {
-                  chats: mergedChats,
-                  currentChatId: restoredCurrentId,
-                  folders: parsed?.folders || [],
-                  unloadInactive: true,
-                },
-              });
-              return;
-            }
+            dispatch({
+              type: 'RESTORE_CHATS',
+              payload: {
+                chats: mergedChats,
+                currentChatId: restoredCurrentId,
+                folders: localCacheOwned ? parsed?.folders || [] : [],
+                unloadInactive: mergedChats.length > 0,
+              },
+            });
+            return;
           }
         } catch (error) {
           console.warn('Не удалось загрузить диалоги из backend, используем localStorage', error);
@@ -1223,24 +1298,40 @@ export function AppProvider({ children }: { children: ReactNode }) {
         dispatch({ type: 'RESTORE_PROJECTS', payload: localProjects });
       }
 
-      if (parsed?.chats?.length > 0) {
+      // Offline / ошибка API: только кэш текущего пользователя.
+      if (localCacheOwned && parsed?.chats?.length > 0) {
         dispatch({
           type: 'RESTORE_CHATS',
           payload: {
             chats: parsed.chats || [],
             currentChatId: parsed.currentChatId || null,
             folders: parsed.folders || [],
-            // Offline-кэш: без API не выгружаем, иначе нечего гидратировать.
             unloadInactive: false,
           },
         });
       } else {
-        dispatch({ type: 'SET_INITIALIZED', payload: true });
+        if (!localCacheOwned && parsed?.chats?.length > 0) {
+          try {
+            localStorage.removeItem(MEMO_CHATS_STORAGE_KEY);
+          } catch {
+            /* ignore */
+          }
+        }
+        clearChatMessagesCache();
+        dispatch({
+          type: 'RESTORE_CHATS',
+          payload: {
+            chats: [],
+            currentChatId: null,
+            folders: [],
+            unloadInactive: false,
+          },
+        });
       }
     };
 
-    loadInitialState();
-  }, [token]);
+    void loadInitialState();
+  }, [token, userId]);
 
   // Подгрузка сообщений выгруженного чата при переключении.
   const currentChatNeedsHydration = Boolean(
@@ -1329,6 +1420,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return slim;
     };
 
+    const ownerUserId = resolveUserId(user) || readAuthUserIdFromStorage();
+    // Без владельца не пишем кэш — иначе после смены аккаунта всплывёт чужая история.
+    if (!ownerUserId) {
+      try {
+        localStorage.removeItem(MEMO_CHATS_STORAGE_KEY);
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+
     const buildSlimState = (maxChats: number, maxMessagesPerChat: number) => {
       const chats = (state.chats || [])
         .slice()
@@ -1339,6 +1441,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           messages: (chat.messages || []).slice(-maxMessagesPerChat).map(stripHeavyMessage),
         }));
       return {
+        ownerUserId,
         chats,
         currentChatId: state.currentChatId,
         folders: state.folders,
@@ -1348,7 +1451,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     const trySave = (payload: unknown): boolean => {
       try {
-        localStorage.setItem('memo-chats', JSON.stringify(payload));
+        localStorage.setItem(MEMO_CHATS_STORAGE_KEY, JSON.stringify(payload));
         return true;
       } catch (error) {
         if (error instanceof DOMException && error.name === 'QuotaExceededError') {
@@ -1364,6 +1467,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (trySave(buildSlimState(20, 30))) return;
     if (
       trySave({
+        ownerUserId,
         chats: (state.chats || []).slice(0, 30).map((c) => ({
           id: c.id,
           title: c.title,
@@ -1385,7 +1489,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     console.error(
       'Ошибка сохранения состояния в localStorage: QuotaExceededError — не удалось уместить даже метаданные. Очистите данные сайта для localhost:3000.',
     );
-  }, [state.chats, state.currentChatId, state.folders, state.projects]);
+  }, [state.chats, state.currentChatId, state.folders, state.projects, user]);
 
   return (
     <AppContext.Provider value={{ state, dispatch }}>

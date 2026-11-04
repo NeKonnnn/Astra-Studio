@@ -104,6 +104,12 @@ export const API_ENDPOINTS = {
 
   // Plugins (HTTP microservices gallery)
   PLUGINS: '/api/plugins',
+
+  // Admin activity dashboard
+  ADMIN_ACTIVITY: '/api/admin/activity',
+  ADMIN_AUTH_STATS: '/api/admin/auth-stats',
+  ADMIN_USAGE: '/api/admin/usage',
+  ADMIN_EXPORT: '/api/admin/export',
 };
 
 // Для обратной совместимости (deprecated - используйте getSettings())

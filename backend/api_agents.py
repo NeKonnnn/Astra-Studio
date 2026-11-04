@@ -1359,6 +1359,23 @@ async def use_agent(
                 status_code=200,
                 extra={"cs1": _disp, "cs2": str(agent_id), "cs2Label": "AgentId"},
             )
+            try:
+                from backend.services.admin_activity import schedule_record_usage
+
+                schedule_record_usage(
+                    entity_type="agent",
+                    entity_id=str(agent_id),
+                    user_id=str(
+                        (current_user or {}).get("user_id")
+                        or (current_user or {}).get("username")
+                        or "anonymous"
+                    ),
+                    action="used",
+                    entity_name=str(_disp),
+                    meta={"source": "api_agents.use"},
+                )
+            except Exception:
+                pass
             return {"success": True, "message": "Использование учтено"}
         else:
             raise HTTPException(status_code=404, detail="Агент не найден")

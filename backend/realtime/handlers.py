@@ -1357,6 +1357,26 @@ def register_handlers(sio):
                                 "cs2Label": "AgentId",
                             },
                         )
+                        try:
+                            from backend.services.admin_activity import schedule_record_usage
+
+                            schedule_record_usage(
+                                entity_type="agent",
+                                entity_id=str(_cef_aid),
+                                user_id=str(
+                                    (validated_user or {}).get("user_id")
+                                    or (validated_user or {}).get("username")
+                                    or ""
+                                ),
+                                action="used",
+                                entity_name=str(_aname),
+                                meta={
+                                    "conversation_id": conversation_id,
+                                    "source": "chat_message",
+                                },
+                            )
+                        except Exception:
+                            pass
             # project_id уже определён выше (payload или из диалога) — второй
             # запрос в MongoDB не нужен.
             project_id = _project_id_early

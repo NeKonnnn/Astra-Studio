@@ -143,11 +143,12 @@ describe('AppProvider: начальная загрузка без токена',
     expect(result.current.state.chats).toEqual([]);
   });
 
-  it('сохранённые чаты и проекты восстанавливаются без выгрузки', async () => {
+  it('без токена локальный memo-chats не поднимается (защита от чужой истории)', async () => {
     const id = uid('off');
     localStorage.setItem(
       'memo-chats',
       JSON.stringify({
+        ownerUserId: 'someone',
         chats: [chat(id, [msg('1', 'user', 'hi')]), chat(uid('off2'), [msg('2', 'user', 'yo')])],
         currentChatId: id,
         folders: [{ id: 'f', name: 'F', chatIds: [], expanded: true }],
@@ -155,10 +156,9 @@ describe('AppProvider: начальная загрузка без токена',
       }),
     );
     const { result } = renderHook(() => useAll(), { wrapper });
-    await waitFor(() => expect(result.current.state.projects).toHaveLength(1));
-    await waitFor(() => expect(result.current.state.chats.length).toBeGreaterThan(0));
-    expect(result.current.state.chats.every((c) => !c.messagesUnloaded)).toBe(true);
-    expect(result.current.state.folders).toHaveLength(1);
+    await waitFor(() => expect(result.current.state.isInitialized).toBe(true));
+    expect(result.current.state.chats).toEqual([]);
+    expect(result.current.state.projects).toEqual([]);
     expect(mockInitSettings).not.toHaveBeenCalled();
   });
 
@@ -173,7 +173,8 @@ describe('AppProvider: начальная загрузка без токена',
 });
 
 describe('AppProvider: начальная загрузка с токеном', () => {
-  const withToken = () => mockUseAuth.mockReturnValue({ token: 'tok' });
+  const withToken = () =>
+    mockUseAuth.mockReturnValue({ token: 'tok', user: { user_id: 'tok-user', username: 'tok-user' } });
   const proj = (id: string) => ({ id, name: id, memory: 'default', instructions: '', createdAt: 'c', updatedAt: 'u' });
 
   it('серверные чаты и проекты: RESTORE_CHATS, неактивные выгружаются, текущий — первый не архивный', async () => {
@@ -200,7 +201,15 @@ describe('AppProvider: начальная загрузка с токеном', (
   it('если сохранённый currentChatId есть на сервере и не в архиве — он остаётся текущим', async () => {
     withToken();
     const [a, b] = [uid('sc-a'), uid('sc-b')];
-    localStorage.setItem('memo-chats', JSON.stringify({ chats: [], currentChatId: b, folders: [{ id: 'f', name: 'F', chatIds: [], expanded: true }] }));
+    localStorage.setItem(
+      'memo-chats',
+      JSON.stringify({
+        ownerUserId: 'tok-user',
+        chats: [],
+        currentChatId: b,
+        folders: [{ id: 'f', name: 'F', chatIds: [], expanded: true }],
+      }),
+    );
     routeFetch([['/api/conversations?limit=500', () => json({ conversations: [chat(a, [msg('1', 'user', 'x')]), chat(b, [msg('2', 'user', 'y')])] })]]);
     const { result } = renderHook(() => useAll(), { wrapper });
     await waitFor(() => expect(result.current.state.chats).toHaveLength(2));
@@ -222,7 +231,14 @@ describe('AppProvider: начальная загрузка с токеном', (
   it('миграция архива: локально архивные чаты помечаются и отправляются на сервер', async () => {
     withToken();
     const [a, b] = [uid('mg-a'), uid('mg-b')];
-    localStorage.setItem('memo-chats', JSON.stringify({ chats: [chat(a, [], { isArchived: true }), { noid: true }], currentChatId: null }));
+    localStorage.setItem(
+      'memo-chats',
+      JSON.stringify({
+        ownerUserId: 'tok-user',
+        chats: [chat(a, [], { isArchived: true }), { noid: true }],
+        currentChatId: null,
+      }),
+    );
     routeFetch([
       ['/api/conversations?limit=500', () => json({ conversations: [chat(a, [msg('1', 'user', 'x')]), chat(b, [msg('2', 'user', 'y')])] })],
       [`POST http://api.test/api/conversations/${a}/archive`, () => json({})],
@@ -240,7 +256,10 @@ describe('AppProvider: начальная загрузка с токеном', (
   it('локальные проекты мигрируют на сервер, если там пусто', async () => {
     withToken();
     const local = [proj('lp')];
-    localStorage.setItem('memo-chats', JSON.stringify({ chats: [], projects: local }));
+    localStorage.setItem(
+      'memo-chats',
+      JSON.stringify({ ownerUserId: 'tok-user', chats: [], projects: local }),
+    );
     mockFetchProjects.mockResolvedValueOnce([]).mockResolvedValueOnce([proj('lp')]);
     const { result } = renderHook(() => useAll(), { wrapper });
     await waitFor(() => expect(result.current.state.projects).toHaveLength(1));
@@ -251,7 +270,10 @@ describe('AppProvider: начальная загрузка с токеном', (
   it('если после миграции на сервере всё ещё пусто — берутся локальные проекты', async () => {
     withToken();
     const local = [proj('lp2')];
-    localStorage.setItem('memo-chats', JSON.stringify({ chats: [], projects: local }));
+    localStorage.setItem(
+      'memo-chats',
+      JSON.stringify({ ownerUserId: 'tok-user', chats: [], projects: local }),
+    );
     mockFetchProjects.mockResolvedValue([]);
     const { result } = renderHook(() => useAll(), { wrapper });
     await waitFor(() => expect(result.current.state.projects).toHaveLength(1));
@@ -260,7 +282,10 @@ describe('AppProvider: начальная загрузка с токеном', (
 
   it('ошибка загрузки проектов → предупреждение и локальные проекты', async () => {
     withToken();
-    localStorage.setItem('memo-chats', JSON.stringify({ chats: [], projects: [proj('lp3')] }));
+    localStorage.setItem(
+      'memo-chats',
+      JSON.stringify({ ownerUserId: 'tok-user', chats: [], projects: [proj('lp3')] }),
+    );
     mockFetchProjects.mockRejectedValue(new Error('500'));
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
     const { result } = renderHook(() => useAll(), { wrapper });
@@ -279,24 +304,39 @@ describe('AppProvider: начальная загрузка с токеном', (
     warn.mockRestore();
   });
 
-  it('/api/conversations не OK → откат на localStorage (без выгрузки)', async () => {
+  it('/api/conversations не OK → откат на localStorage своего user (без выгрузки)', async () => {
     withToken();
     const id = uid('fb');
-    localStorage.setItem('memo-chats', JSON.stringify({ chats: [chat(id, [msg('1', 'user', 'x')])], currentChatId: id }));
+    localStorage.setItem(
+      'memo-chats',
+      JSON.stringify({
+        ownerUserId: 'tok-user',
+        chats: [chat(id, [msg('1', 'user', 'x')])],
+        currentChatId: id,
+      }),
+    );
     routeFetch([['/api/conversations?limit=500', () => json({}, false, 500)]]);
     const { result } = renderHook(() => useAll(), { wrapper });
     await waitFor(() => expect(result.current.state.chats.length).toBeGreaterThan(0));
     expect(result.current.state.chats[0].id).toBe(id);
   });
 
-  it('сервер вернул 0 чатов → используются локальные', async () => {
+  it('сервер вернул 0 чатов → UI пустой (не чужой/локальный кэш)', async () => {
     withToken();
     const id = uid('zero');
-    localStorage.setItem('memo-chats', JSON.stringify({ chats: [chat(id, [msg('1', 'user', 'x')])], currentChatId: id }));
+    localStorage.setItem(
+      'memo-chats',
+      JSON.stringify({
+        ownerUserId: 'other-user',
+        chats: [chat(id, [msg('1', 'user', 'x')])],
+        currentChatId: id,
+      }),
+    );
     routeFetch([['/api/conversations?limit=500', () => json({ conversations: [] })]]);
     const { result } = renderHook(() => useAll(), { wrapper });
-    await waitFor(() => expect(result.current.state.chats.length).toBeGreaterThan(0));
-    expect(result.current.state.currentChatId).toBe(id);
+    await waitFor(() => expect(result.current.state.isInitialized).toBe(true));
+    expect(result.current.state.chats).toEqual([]);
+    expect(result.current.state.currentChatId).toBeNull();
   });
 
   it('payload без conversations → инициализация завершается пустым состоянием', async () => {
@@ -767,8 +807,15 @@ describe('AppContext: начальная загрузка модуля из loca
     jest.dontMock('react');
   });
 
-  it('сохранённые чаты попадают в начальное состояние сразу (до эффектов), isInitialized=true', () => {
-    const mod = load(JSON.stringify({ chats: [chat('boot-1', [msg('1', 'user', 'x')]), chat('boot-2', [])], folders: [{ id: 'f', name: 'F', chatIds: [], expanded: true }] }));
+  it('сохранённые чаты своего user попадают в начальное состояние сразу (до эффектов)', () => {
+    localStorage.setItem('auth_user', JSON.stringify({ user_id: 'boot-user', username: 'boot-user' }));
+    const mod = load(
+      JSON.stringify({
+        ownerUserId: 'boot-user',
+        chats: [chat('boot-1', [msg('1', 'user', 'x')]), chat('boot-2', [])],
+        folders: [{ id: 'f', name: 'F', chatIds: [], expanded: true }],
+      }),
+    );
     const firstRender: any[] = [];
     const { result } = renderHook(
       () => {
@@ -778,7 +825,6 @@ describe('AppContext: начальная загрузка модуля из loca
       },
       { wrapper: ({ children }: any) => <mod.AppProvider>{children}</mod.AppProvider> },
     );
-    // первый рендер: состояние уже из localStorage, текущим выбран первый чат
     expect(firstRender[0].chats.map((c: any) => c.id)).toEqual(['boot-1', 'boot-2']);
     expect(firstRender[0].currentChatId).toBe('boot-1');
     expect(firstRender[0].isInitialized).toBe(true);
@@ -787,9 +833,30 @@ describe('AppContext: начальная загрузка модуля из loca
   });
 
   it('сохранённый currentChatId приоритетнее первого чата', () => {
-    const mod = load(JSON.stringify({ chats: [chat('b-1'), chat('b-2')], currentChatId: 'b-2' }));
+    localStorage.setItem('auth_user', JSON.stringify({ user_id: 'boot-user', username: 'boot-user' }));
+    const mod = load(
+      JSON.stringify({
+        ownerUserId: 'boot-user',
+        chats: [chat('b-1'), chat('b-2')],
+        currentChatId: 'b-2',
+      }),
+    );
     const { result } = renderHook(() => mod.useAppContext(), { wrapper: ({ children }: any) => <mod.AppProvider>{children}</mod.AppProvider> });
     expect(result.current.state.currentChatId).toBe('b-2');
+  });
+
+  it('кэш другого user не поднимается при bootstrap', () => {
+    localStorage.setItem('auth_user', JSON.stringify({ user_id: 'boot-user', username: 'boot-user' }));
+    const mod = load(
+      JSON.stringify({
+        ownerUserId: 'other',
+        chats: [chat('boot-1'), chat('boot-2')],
+        currentChatId: 'boot-2',
+      }),
+    );
+    const { result } = renderHook(() => mod.useAppContext(), { wrapper: ({ children }: any) => <mod.AppProvider>{children}</mod.AppProvider> });
+    expect(result.current.state.chats).toEqual([]);
+    expect(result.current.state.currentChatId).toBeNull();
   });
 
   it.each([
@@ -803,20 +870,12 @@ describe('AppContext: начальная загрузка модуля из loca
     expect(result.current.state.currentChatId).toBeNull();
   });
 
-  // Баг: bootstrap проверяет Array.isArray(chats), а loadInitialState — только chats.length > 0.
-  // Строка в chats проходит проверку и попадает в редьюсер, где падает chats.map.
-  it('(known issue) повреждённое хранилище {"chats":"x"} роняет рендер провайдера (текущее поведение)', () => {
+  it('повреждённое хранилище {"chats":"x"} игнорируется при bootstrap', () => {
     const mod = load(JSON.stringify({ chats: 'x' }));
-    const err = jest.spyOn(console, 'error').mockImplementation(() => {});
-    try {
-      // правильное поведение: игнорировать мусор и завершить инициализацию (isInitialized=true)
-      expect(() =>
-        renderHook(() => mod.useAppContext(), {
-          wrapper: ({ children }: any) => <mod.AppProvider>{children}</mod.AppProvider>,
-        }),
-      ).toThrow(/chats\.map is not a function/);
-    } finally {
-      err.mockRestore();
-    }
+    const { result } = renderHook(() => mod.useAppContext(), {
+      wrapper: ({ children }: any) => <mod.AppProvider>{children}</mod.AppProvider>,
+    });
+    expect(result.current.state.chats).toEqual([]);
+    expect(result.current.state.currentChatId).toBeNull();
   });
 });

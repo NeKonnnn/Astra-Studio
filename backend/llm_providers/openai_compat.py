@@ -1142,8 +1142,8 @@ class OpenAICompatProvider(LLMProvider):
         body = (response.text or "").strip()
         if not body:
             return {}
-        try:
-            payload = response.json()
+                    try:
+                        payload = response.json()
         except json.JSONDecodeError:
             if body.lower() in ("ok", "healthy", "up", "ready"):
                 return {"status": body.lower()}
@@ -1588,7 +1588,7 @@ class OpenAICompatProvider(LLMProvider):
                         "— в список не попадут: %s",
                         self.id,
                         missing,
-                    )
+                )
             if not items and static:
                 items.append(
                     ModelInfo(
@@ -1621,8 +1621,8 @@ class OpenAICompatProvider(LLMProvider):
                     static,
                 )
                 fallback_items = [
-                    ModelInfo(
-                        provider_id=self.id,
+                        ModelInfo(
+                            provider_id=self.id,
                         model_id=static,
                         display_name=static,
                         extra={
@@ -1827,11 +1827,11 @@ class OpenAICompatProvider(LLMProvider):
                 )
                 if fit:
                     payload["max_tokens"] = fit
-                    response = await client.post(
-                        f"{self.base_url}/v1/chat/completions",
-                        headers=self._headers(payload=payload),
-                        json=payload,
-                    )
+                response = await client.post(
+                    f"{self.base_url}/v1/chat/completions",
+                    headers=self._headers(payload=payload),
+                    json=payload,
+                )
                 response.raise_for_status()
             except httpx.HTTPStatusError as he:
                 _log_llm_http_failure(
@@ -2005,13 +2005,13 @@ class OpenAICompatProvider(LLMProvider):
             _reason_snapshot = reasoning_accumulated
             finish_reason, pass_accumulated, pass_reasoning = (
                 await self._stream_chat_once(
-                    pass_messages,
-                    model,
-                    callback,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    request_extra=request_extra,
-                    _shared=lambda: (_acc_snapshot, _reason_snapshot),
+                pass_messages,
+                model,
+                callback,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                request_extra=request_extra,
+                _shared=lambda: (_acc_snapshot, _reason_snapshot),
                     _error_box=error_box,
                 )
             )
@@ -2314,7 +2314,7 @@ class OpenAICompatProvider(LLMProvider):
                         data_str = line[6:]
                         if data_str.strip() == "[DONE]":
                             if drain_until is None:
-                                _end_reason = "done"
+                            _end_reason = "done"
                             break
                         if drain_until is not None:
                             continue
@@ -2401,7 +2401,7 @@ class OpenAICompatProvider(LLMProvider):
                                     _chunks,
                                     len(accumulated),
                                     time.monotonic() - _t0,
-                                )
+                                ) 
                                 _end_reason = "chat_template_tag"
                                 return ("stop", accumulated, reasoning_accumulated)
                             # Быстрый режим: не светим reasoning в UI (в т.ч. orphan </think>).

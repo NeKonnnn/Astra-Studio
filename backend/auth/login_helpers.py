@@ -82,6 +82,13 @@ def complete_application_login(
         jwt_token_byte_length(refresh_token),
     )
 
+    try:
+        from backend.services.admin_activity import schedule_record_login
+
+        schedule_record_login(str(user.get("user_id") or username))
+    except Exception:
+        logger.exception("admin activity: SSO login record schedule failed")
+
     extra = login_audit_cef_extra(user_with_method, auth_method)
     extra["duser"] = user.get("username")
     extra["dmail"] = user.get("email") or "-"

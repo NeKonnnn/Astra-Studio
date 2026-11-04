@@ -46,7 +46,15 @@ export default function GalleryHubPage() {
         height: '100%',
         overflow: 'auto',
         pt: 4,
-        px: { xs: 2, sm: 3 },
+        // base pad + компенсация main margin ±64px под свёрнутые rail
+        pl: {
+          xs: 'calc(16px + var(--left-sidebar-rail-overlap, 0px))',
+          sm: 'calc(24px + var(--left-sidebar-rail-overlap, 0px))',
+        },
+        pr: {
+          xs: 'calc(16px + var(--right-sidebar-rail-overlap, 0px))',
+          sm: 'calc(24px + var(--right-sidebar-rail-overlap, 0px))',
+        },
         pb: 3,
         backgroundColor: workZoneBgColor,
         color: textColor,

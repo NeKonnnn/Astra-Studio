@@ -22,6 +22,8 @@ _ALLOWED_AVATAR = {
 }
 _MAX_AVATAR_BYTES = 5 * 1024 * 1024
 _MAX_STATUS_LEN = 160
+# Несколько codepoint'ов на один эмодзи (ZWJ, skin tone) — запас до 16 символов.
+_MAX_STATUS_EMOJI_LEN = 16
 
 
 def _user_key(user_id: str) -> str:
@@ -81,6 +83,27 @@ def set_status(user_id: str, status: Optional[str]) -> Optional[str]:
     text = str(status).strip()[:_MAX_STATUS_LEN]
     save_profile(user_id, {"status": text or None})
     return text or None
+
+
+def get_status_emoji(user_id: str) -> Optional[str]:
+    emoji = load_profile(user_id).get("status_emoji")
+    if isinstance(emoji, str):
+        text = emoji.strip()
+        return text or None
+    return None
+
+
+def set_status_emoji(user_id: str, emoji: Optional[str]) -> Optional[str]:
+    if emoji is None:
+        save_profile(user_id, {"status_emoji": None})
+        return None
+    text = str(emoji).strip()[:_MAX_STATUS_EMOJI_LEN]
+    # Не принимаем «текст вместо эмодзи»: только короткий фрагмент без пробелов/переносов.
+    if not text or any(ch.isspace() for ch in text):
+        save_profile(user_id, {"status_emoji": None})
+        return None
+    save_profile(user_id, {"status_emoji": text})
+    return text
 
 
 def has_custom_avatar(user_id: str) -> bool:

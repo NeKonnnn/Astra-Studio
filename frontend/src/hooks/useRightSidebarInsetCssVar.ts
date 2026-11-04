@@ -7,9 +7,12 @@ import {
 /** Ширина правой панели в развёрнутом и rail-состоянии (как у Drawer). */
 export const RIGHT_SIDEBAR_EXPANDED_WIDTH_PX = RIGHT_SIDEBAR_DEFAULT_WIDTH_PX;
 export const RIGHT_SIDEBAR_COLLAPSED_WIDTH_PX = 64;
+export const LEFT_SIDEBAR_COLLAPSED_WIDTH_PX = 64;
 export const RIGHT_SIDEBAR_INSET_CSS_VAR = '--right-sidebar-inset';
 /** Доп. padding контента только при margin-right:-64px у main (свёрнутый rail). */
 export const RIGHT_SIDEBAR_RAIL_OVERLAP_CSS_VAR = '--right-sidebar-rail-overlap';
+/** Доп. padding контента только при margin-left:-64px у main (свёрнутый left rail). */
+export const LEFT_SIDEBAR_RAIL_OVERLAP_CSS_VAR = '--left-sidebar-rail-overlap';
 
 export function getRightSidebarInsetPx(
   open: boolean,
@@ -24,6 +27,11 @@ export function getRightSidebarInsetPx(
 export function getRightSidebarRailOverlapPx(open: boolean, hidden: boolean): number {
   if (hidden || open) return 0;
   return RIGHT_SIDEBAR_COLLAPSED_WIDTH_PX;
+}
+
+export function getLeftSidebarRailOverlapPx(open: boolean, hidden: boolean): number {
+  if (hidden || open) return 0;
+  return LEFT_SIDEBAR_COLLAPSED_WIDTH_PX;
 }
 
 /** Публикует ширину правой панели в CSS-переменную для fixed-элементов. */
@@ -47,6 +55,20 @@ export function useRightSidebarInsetCssVar(
       root.style.setProperty(RIGHT_SIDEBAR_RAIL_OVERLAP_CSS_VAR, '0px');
     };
   }, [open, hidden, expandedWidthPx]);
+}
+
+/** Публикует overlap левого свёрнутого rail (main margin-left:-64px). */
+export function useLeftSidebarRailOverlapCssVar(open: boolean, hidden: boolean) {
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty(
+      LEFT_SIDEBAR_RAIL_OVERLAP_CSS_VAR,
+      `${getLeftSidebarRailOverlapPx(open, hidden)}px`,
+    );
+    return () => {
+      root.style.setProperty(LEFT_SIDEBAR_RAIL_OVERLAP_CSS_VAR, '0px');
+    };
+  }, [open, hidden]);
 }
 
 function readDockedRightRailWidthPx(): number {

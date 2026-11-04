@@ -342,6 +342,7 @@ for _name, _import_path in [
     ("skills", "backend.api_skills"),
     ("knowledge_bases", "backend.api_knowledge_bases"),
     ("users", "backend.api_users"),
+    ("admin", "backend.api_admin"),
     ("share", "backend.routes.share"),
 ]:
     try:
