@@ -1,17 +1,36 @@
 import io
 import re
 import html
+import numpy as np
 import torch
 import scipy.io.wavfile
 from fastapi import APIRouter, HTTPException, Form
 from fastapi.responses import StreamingResponse, JSONResponse
-from app.dependencies.silero_handler import get_silero_handler
+from app.dependencies.silero_handler import get_silero_handler, reload_silero_handler
 from app.core.config import settings
 import logging
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _resample_speech_rate(audio: torch.Tensor, speech_rate: float) -> torch.Tensor:
+    """Меняет темп речи без torch.interp (его нет в части сборок PyTorch)."""
+    if abs(speech_rate - 1.0) <= 1e-6:
+        return audio
+    if len(audio.shape) > 1:
+        audio = audio.squeeze()
+    original_length = int(audio.numel())
+    new_length = int(original_length / speech_rate)
+    if new_length <= 0 or original_length <= 0:
+        return audio
+    # numpy.interp доступен всегда; возвращаем tensor того же device/dtype
+    x_old = np.arange(original_length, dtype=np.float64)
+    x_new = np.linspace(0, original_length - 1, new_length, dtype=np.float64)
+    y = audio.detach().float().cpu().numpy()
+    y_new = np.interp(x_new, x_old, y).astype(np.float32)
+    return torch.from_numpy(y_new).to(device=audio.device, dtype=audio.dtype)
 
 
 def detect_language(text: str) -> str:
@@ -179,21 +198,11 @@ async def synthesize_speech(
                 )
                 
                 # Изменяем скорость речи если нужно
-                if speech_rate != 1.0:
-                    # Простое изменение темпа через изменение длины
-                    if len(audio.shape) > 1:
-                        audio = audio.squeeze()
-                    
-                    # Интерполяция для изменения скорости
-                    original_length = len(audio)
-                    new_length = int(original_length / speech_rate)
-                    
-                    if new_length > 0:
-                        indices = torch.linspace(0, original_length - 1, new_length)
-                        audio = torch.interp(indices, torch.arange(original_length, dtype=torch.float32), audio.float())
-                
+                if abs(speech_rate - 1.0) > 1e-6:
+                    audio = _resample_speech_rate(audio, speech_rate)
+
                 all_audio.append(audio)
-                
+
             except Exception as chunk_error:
                 logger.error(f"Ошибка синтеза части {i+1}: {chunk_error}")
                 # Пытаемся с упрощенным текстом
@@ -207,16 +216,10 @@ async def synthesize_speech(
                             put_accent=False,
                             put_yo=False
                         )
-                        
-                        if speech_rate != 1.0:
-                            if len(audio.shape) > 1:
-                                audio = audio.squeeze()
-                            original_length = len(audio)
-                            new_length = int(original_length / speech_rate)
-                            if new_length > 0:
-                                indices = torch.linspace(0, original_length - 1, new_length)
-                                audio = torch.interp(indices, torch.arange(original_length, dtype=torch.float32), audio.float())
-                        
+
+                        if abs(speech_rate - 1.0) > 1e-6:
+                            audio = _resample_speech_rate(audio, speech_rate)
+
                         all_audio.append(audio)
                 except Exception as fallback_error:
                     logger.error(f"Fallback синтез тоже не удался для части {i+1}: {fallback_error}")
@@ -309,3 +312,24 @@ async def get_available_voices():
             lang: voices[0] for lang, voices in settings.silero.supported_speakers.items()
         }
     })
+
+
+@router.post("/tts/reload")
+async def reload_tts_models():
+    """Перезагрузка весов Silero TTS с диска."""
+    try:
+        if not settings.silero.enabled:
+            raise HTTPException(status_code=503, detail="Silero TTS отключен")
+        models = await reload_silero_handler()
+        if not models:
+            raise HTTPException(status_code=503, detail="Не удалось загрузить Silero TTS")
+        return JSONResponse(content={
+            "success": True,
+            "message": "Silero TTS перезагружен",
+            "models_loaded": list(models.keys()),
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("TTS reload failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))

@@ -422,6 +422,8 @@ async def run_direct_or_chain(
             knowledge_base_ids=step_entity_kb_ids,
             legacy_kb_doc_ids=step_legacy_ids,
             suppress_ui_stream=hide_seq and not is_last,
+            chain_step_index=i,
+            chain_step_total=len(chain),
         )
         if raw is None or rt._generation_stopped(sid):
             return
@@ -433,6 +435,11 @@ async def run_direct_or_chain(
         step_document_search = (
             raw.get("document_search") if isinstance(raw, dict) else None
         )
+        step_mcp = (
+            list(raw.get("mcp_tool_calls") or [])
+            if isinstance(raw, dict)
+            else []
+        )
         if step_has_docs:
             log_step_sources(step_label, step_document_search)
         steps.append(
@@ -442,6 +449,7 @@ async def run_direct_or_chain(
                 "content": step_content or "",
                 "reasoning": step_reasoning or "",
                 "document_search": step_document_search or None,
+                "mcp_tool_calls": step_mcp or None,
             }
         )
 
@@ -451,6 +459,11 @@ async def run_direct_or_chain(
     visible = format_visible_chain_content(steps, hide_sequential_outputs=hide_seq)
     last_profile = chain[-1]
     last_name = (last_profile.get("name") or "Агент").strip() or "Агент"
+    all_mcp_events: list = []
+    for step in steps:
+        for ev in step.get("mcp_tool_calls") or []:
+            if isinstance(ev, dict):
+                all_mcp_events.append(ev)
     await rt._flush_ui_stream_cb(sync_stream_cb)
     payload = rt._stream_ids_payload(
         {
@@ -464,6 +477,7 @@ async def run_direct_or_chain(
             "hide_sequential_outputs": hide_seq,
             "agent_id": last_profile.get("agent_id"),
             "agent_name": last_name,
+            **({"mcp_tool_calls": all_mcp_events} if all_mcp_events else {}),
         }
     )
     await sio.emit("chat_complete", payload, room=sid)
@@ -471,6 +485,7 @@ async def run_direct_or_chain(
         meta = {
             "chain_steps": steps,
             "hide_sequential_outputs": hide_seq,
+            **({"mcp_tool_calls": all_mcp_events} if all_mcp_events else {}),
         }
         meta = rt._with_generation_duration(meta, generation_started_at)
         regen = rt._regen_save_kwargs(data)

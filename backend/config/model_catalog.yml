@@ -1,0 +1,181 @@
+# Курируемый каталог моделей для UI-загрузки (HF + HTTP).
+# type: llm_gguf | llm_hf | rag_embed | rag_rerank | stt | tts | diarization | comfyui | ocr | omnivoice
+# apply: load_llm | select_rag | reload_stt | reload_tts | reload_diarization | reload_ocr | reload_omnivoice | none
+
+models:
+  - id: qwen35-4b-gguf-q8
+    type: llm_gguf
+    display_name: "Qwen3.5 4B GGUF Q8 (Unsloth)"
+    description: "Лёгкая чат-модель для CPU/GPU (llama.cpp)"
+    size_hint: "~4–5 GB"
+    gated: false
+    apply: load_llm
+    local_name: "Qwen3.5-4B-UD-Q8_K_XL.gguf"
+    source:
+      kind: hf
+      repo_id: "unsloth/Qwen3.5-4B-GGUF"
+      filename: "Qwen3.5-4B-UD-Q8_K_XL.gguf"
+
+  - id: frida-embed
+    type: rag_embed
+    display_name: "FRIDA (embeddings)"
+    description: "Мультиязычные эмбеддинги (dim 1536), дефолт RAG"
+    size_hint: "~1–2 GB"
+    gated: false
+    apply: select_rag
+    local_name: "FRIDA"
+    source:
+      kind: hf
+      repo_id: "ai-forever/FRIDA"
+
+  - id: minilm-l12-embed
+    type: rag_embed
+    display_name: "MiniLM-L12 multilingual (embeddings)"
+    description: "Лёгкий мультиязычный эмбеддер"
+    size_hint: "~500 MB"
+    gated: false
+    apply: select_rag
+    local_name: "paraphrase-multilingual-MiniLM-L12-v2"
+    source:
+      kind: hf
+      repo_id: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+
+  - id: ms-marco-rerank
+    type: rag_rerank
+    display_name: "ms-marco-MiniLM-L-6-v2 (reranker)"
+    description: "Лёгкий кросс-энкодер реранкер"
+    size_hint: "~100 MB"
+    gated: false
+    apply: select_rag
+    local_name: "ms-marco-MiniLM-L-6-v2"
+    source:
+      kind: hf
+      repo_id: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+  - id: bge-rerank-minicpm
+    type: rag_rerank
+    display_name: "bge-reranker-v2-minicpm-layerwise"
+    description: "Качественный реранкер BAAI"
+    size_hint: "~1–2 GB"
+    gated: false
+    apply: select_rag
+    local_name: "bge-reranker-v2-minicpm-layerwise"
+    source:
+      kind: hf
+      repo_id: "BAAI/bge-reranker-v2-minicpm-layerwise"
+
+  - id: faster-whisper-medium
+    type: stt
+    display_name: "faster-whisper medium"
+    description: "WhisperX / Systran faster-whisper medium"
+    size_hint: "~1.5 GB"
+    gated: false
+    apply: reload_stt
+    local_name: "medium"
+    stt_size: "medium"
+    source:
+      kind: hf
+      repo_id: "Systran/faster-whisper-medium"
+
+  - id: faster-whisper-large-v3
+    type: stt
+    display_name: "faster-whisper large-v3"
+    description: "WhisperX / Systran faster-whisper large-v3"
+    size_hint: "~3 GB"
+    gated: false
+    apply: reload_stt
+    local_name: "large-v3"
+    stt_size: "large-v3"
+    source:
+      kind: hf
+      repo_id: "Systran/faster-whisper-large-v3"
+
+  - id: silero-tts-ru
+    type: tts
+    display_name: "Silero TTS (ru)"
+    description: "Синтез речи RU (torch.package model.pt)"
+    size_hint: "~60 MB"
+    gated: false
+    apply: reload_tts
+    local_name: "ru"
+    source:
+      kind: http
+      url: "https://models.silero.ai/models/tts/ru/v3_1_ru.pt"
+      filename: "model.pt"
+
+  - id: silero-tts-en
+    type: tts
+    display_name: "Silero TTS (en)"
+    description: "Синтез речи EN (torch.package model.pt)"
+    size_hint: "~60 MB"
+    gated: false
+    apply: reload_tts
+    local_name: "en"
+    source:
+      kind: http
+      url: "https://models.silero.ai/models/tts/en/v3_en.pt"
+      filename: "model.pt"
+
+  - id: pyannote-diarization
+    type: diarization
+    display_name: "pyannote speaker-diarization-3.1"
+    description: "Диаризация спикеров (gated — нужен HF token)"
+    size_hint: "~500 MB"
+    gated: true
+    apply: reload_diarization
+    local_name: "pyannote"
+    source:
+      kind: hf
+      repo_id: "pyannote/speaker-diarization-3.1"
+
+  - id: flux-schnell-fp8
+    type: comfyui
+    display_name: "FLUX.1 Schnell FP8"
+    description: "Быстрая генерация изображений (ComfyUI checkpoint)"
+    size_hint: "~12 GB"
+    gated: false
+    apply: none
+    local_name: "flux1-schnell-fp8.safetensors"
+    target_subdir: "checkpoints"
+    source:
+      kind: hf
+      repo_id: "Comfy-Org/flux1-schnell"
+      filename: "flux1-schnell-fp8.safetensors"
+
+  - id: flux-dev-fp8
+    type: comfyui
+    display_name: "FLUX.1 Dev FP8"
+    description: "Качественная генерация (ComfyUI checkpoint)"
+    size_hint: "~12 GB"
+    gated: false
+    apply: none
+    local_name: "flux1-dev-fp8.safetensors"
+    target_subdir: "checkpoints"
+    source:
+      kind: hf
+      repo_id: "Comfy-Org/flux1-dev"
+      filename: "flux1-dev-fp8.safetensors"
+
+  - id: surya-ocr
+    type: ocr
+    display_name: "Surya OCR checkpoints"
+    description: "Детекция + распознавание текста (datalab/surya)"
+    size_hint: "~1–2 GB"
+    gated: false
+    apply: reload_ocr
+    local_name: "surya"
+    source:
+      kind: hf
+      repo_id: "datalab-to/surya"
+
+  - id: omnivoice
+    type: omnivoice
+    display_name: "OmniVoice (voice clone)"
+    description: "Zero-shot TTS / voice cloning (CC-BY-NC)"
+    size_hint: "~2–4 GB"
+    gated: false
+    apply: reload_omnivoice
+    local_name: "omnivoice"
+    source:
+      kind: hf
+      repo_id: "k2-fsa/OmniVoice"

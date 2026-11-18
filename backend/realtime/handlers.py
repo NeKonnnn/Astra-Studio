@@ -1197,10 +1197,18 @@ def register_handlers(sio):
             _ams_stream = _agent_ms.get("streaming") if isinstance(_agent_ms, dict) else None
             if _ams_stream is not None:
                 streaming = bool(_ams_stream)
-            if not (data.get("tool_ids") or data.get("mcp_tool_ids")):
-                _agent_mcp = agent_mcp_tool_ids(agent_profile if isinstance(agent_profile, dict) else {})
-                if _agent_mcp:
-                    data["tool_ids"] = _agent_mcp
+            # MCP из карточки агента всегда в union с выбором чата (Инструменты → MCP).
+            # Иначе при пустом/частичном chat selection агент «теряет» свои серверы.
+            _agent_mcp = agent_mcp_tool_ids(
+                agent_profile if isinstance(agent_profile, dict) else {}
+            )
+            if _agent_mcp:
+                _existing_tools = list(
+                    data.get("tool_ids") or data.get("mcp_tool_ids") or []
+                )
+                data["tool_ids"] = list(
+                    dict.fromkeys([*_existing_tools, *_agent_mcp])
+                )
             _agent_plugins = agent_plugin_ids(agent_profile if isinstance(agent_profile, dict) else {})
             if _agent_plugins:
                 data["__plugin_ids__"] = _agent_plugins
@@ -2089,6 +2097,9 @@ async def _handle_multi_llm(
     n_models = len(multi_llm_models)
     tool_ids = resolve_chat_tool_ids(data.get("tool_ids") or data.get("mcp_tool_ids"))
     _ap = agent_profile if isinstance(agent_profile, dict) else {}
+    _agent_mcp_multi = agent_mcp_tool_ids(_ap)
+    if _agent_mcp_multi:
+        tool_ids = list(dict.fromkeys([*(tool_ids or []), *_agent_mcp_multi]))
     mcp_enabled = bool((tool_ids or (_ap.get("subagents") or {}).get("enabled")) and current_user and (not inline_imgs))
     mcp_temperature = float(
         data.get("temperature") if data.get("temperature") is not None else (_ap.get("temperature") or 0.7)
@@ -2369,12 +2380,30 @@ async def _handle_direct(
     knowledge_base_ids=None,
     legacy_kb_doc_ids=None,
     search_query: Optional[str] = None,
+    chain_step_index: Optional[int] = None,
+    chain_step_total: Optional[int] = None,
 ):
+    from backend.mcp.activity_scope import (
+        activity_scope,
+        emit_scoped_activity,
+        merge_scope_into_payload,
+    )
+
     chat_timer = StageTimer(
         "CHAT",
         store="direct",
         conversation_id=conversation_id,
         strategy=rag_strategy,
+    )
+    _scope_agent_id = (
+        (agent_profile or {}).get("agent_id")
+        if isinstance(agent_profile, dict)
+        else None
+    )
+    _scope_agent_name = (
+        str((agent_profile or {}).get("name") or "").strip() or None
+        if isinstance(agent_profile, dict)
+        else None
     )
     rag_query = (rag_query if rag_query is not None else user_message) or ""
     # Текст для поиска по документам. Шаг цепочки ищет по своему запросу
@@ -2689,6 +2718,52 @@ async def _handle_direct(
             "sourceFiles": sorted(files_used),
             "hits": hits_out,
         }
+    # События активности шага (skills/KB/MCP/субагенты) — общий список для UI.
+    mcp_tool_events: list = []
+
+    async def _push_tool_event(payload):
+        event = merge_scope_into_payload(dict(payload or {}))
+        if chain_step_index is not None and event.get("chain_step_index") is None:
+            event["chain_step_index"] = int(chain_step_index)
+        if chain_step_total is not None and event.get("chain_step_total") is None:
+            event["chain_step_total"] = int(chain_step_total)
+        if _scope_agent_id is not None and event.get("agent_id") is None:
+            event["agent_id"] = _scope_agent_id
+        if _scope_agent_name and not event.get("agent_name"):
+            event["agent_name"] = _scope_agent_name
+        mcp_tool_events.append(event)
+        # Tools всегда в UI (даже при suppress content у промежуточных шагов цепочки).
+        await sio.emit("chat_mcp_event", _stream_ids_payload(event), room=sid)
+
+    if document_search_trace and (
+        (document_search_trace.get("hits") or [])
+        or (document_search_trace.get("sourceFiles") or [])
+        or str(document_search_trace.get("query") or "").strip()
+    ):
+        with activity_scope(
+            agent_id=_scope_agent_id,
+            agent_name=_scope_agent_name,
+            chain_step_index=chain_step_index,
+            chain_step_total=chain_step_total,
+            activity_kind="knowledge_base",
+        ):
+            await emit_scoped_activity(
+                _push_tool_event,
+                tool="document_search",
+                activity_kind="knowledge_base",
+                arguments={
+                    "query": document_search_trace.get("query"),
+                    "strategy": document_search_trace.get("strategy"),
+                    "files": len(document_search_trace.get("sourceFiles") or []),
+                    "hits": len(document_search_trace.get("hits") or []),
+                },
+                success=True,
+                result_preview=(
+                    f"Найдено файлов: {len(document_search_trace.get('sourceFiles') or [])}, "
+                    f"фрагментов: {len(document_search_trace.get('hits') or [])}"
+                ),
+                document_search=document_search_trace,
+            )
     for hits_list, prefix, idnm, store_lbl, hit_scope in [
         (kb_hits, "База Знаний (постоянные документы)", kb_id_name, "kb (direct)", "agent"),
         (mem_hits, "Документы из настроек (библиотека памяти)", mem_id_name, "memory (direct)", "memory"),
@@ -2895,6 +2970,32 @@ async def _handle_direct(
                 f"(инструменты из навыков попадут в цикл; сам навык ≠ шаг)"
             ),
         )
+        skill_names = list(
+            dict.fromkeys(
+                [
+                    *[str(x) for x in ((_primed or {}).get("manual") or []) if x],
+                    *[str(x) for x in ((_primed or {}).get("always_apply") or []) if x],
+                    *[str(x) for x in (lazy_skill_ids or []) if x],
+                ]
+            )
+        )
+        for skill_name in skill_names:
+            with activity_scope(
+                agent_id=_scope_agent_id,
+                agent_name=_scope_agent_name,
+                chain_step_index=chain_step_index,
+                chain_step_total=chain_step_total,
+                activity_kind="skill",
+            ):
+                await emit_scoped_activity(
+                    _push_tool_event,
+                    tool="skill",
+                    activity_kind="skill",
+                    arguments={"skill": skill_name},
+                    success=True,
+                    result_preview=f"Навык «{skill_name}» подключён к промпту",
+                    result=f"skill:{skill_name}",
+                )
     except Exception:
         logger.exception("[direct] skills injection failed")
     try:
@@ -2906,6 +3007,21 @@ async def _handle_direct(
         )
         if artifacts_block:
             eff_system_prompt = append_to_system_prompt(eff_system_prompt, artifacts_block)
+            with activity_scope(
+                agent_id=_scope_agent_id,
+                agent_name=_scope_agent_name,
+                chain_step_index=chain_step_index,
+                chain_step_total=chain_step_total,
+                activity_kind="artifacts",
+            ):
+                await emit_scoped_activity(
+                    _push_tool_event,
+                    tool="artifacts",
+                    activity_kind="artifacts",
+                    arguments={"enabled": True, "chars": len(artifacts_block)},
+                    success=True,
+                    result_preview="Режим артефактов включён",
+                )
         log_pre_loop(
             phase="artifacts",
             chat_id=conversation_id,
@@ -2991,31 +3107,59 @@ async def _handle_direct(
             if plugin_note:
                 eff_system_prompt = _append_plugin_note(eff_system_prompt, plugin_note)
             if direct_plugin_run:
-                await sio.emit(
-                    "chat_thinking",
-                    _stream_ids_payload(
-                        {
-                            "status": "processing",
-                            "message": (
-                                f"Плагин «{direct_plugin_run.label}»: файл "
-                                f"«{direct_plugin_run.file_name}» отправлен в сервис. "
-                                "Полный аудит модели занимает до нескольких десятков минут."
-                            ),
-                        }
-                    ),
-                    room=sid,
-                )
-                logger.info(
-                    "[direct plugin] %s: запускаю для «%s» object=%s bucket=%s",
-                    direct_plugin_run.plugin_id,
-                    direct_plugin_run.file_name,
-                    direct_plugin_run.minio_object,
-                    direct_plugin_run.minio_bucket,
-                )
-                _t_plugin0 = time.perf_counter()
-                outcome = await run_plugin_direct(direct_plugin_run, chat_mode="direct")
-                chat_timer.mark("plugin_direct", time.perf_counter() - _t_plugin0)
-                plugin_direct_ran = True
+                import uuid as _uuid_plugin
+
+                from backend.agents.subagents.settings import NATIVE_SERVER_ID as _NATIVE_SID
+                from backend.mcp.events import emit_mcp_tool_end, emit_mcp_tool_start
+
+                plugin_tool = f"plugin:{direct_plugin_run.plugin_id}"
+                plugin_call_id = _uuid_plugin.uuid4().hex
+                plugin_args = {
+                    "file": direct_plugin_run.file_name,
+                    "label": direct_plugin_run.label,
+                    "agent_id": _scope_agent_id,
+                }
+                with activity_scope(
+                    agent_id=_scope_agent_id,
+                    agent_name=_scope_agent_name,
+                    chain_step_index=chain_step_index,
+                    chain_step_total=chain_step_total,
+                    activity_kind="plugin",
+                ):
+                    await emit_mcp_tool_start(
+                        _push_tool_event,
+                        server_id=_NATIVE_SID,
+                        tool=plugin_tool,
+                        qualified_name=plugin_tool,
+                        call_id=plugin_call_id,
+                        arguments=plugin_args,
+                    )
+                    logger.info(
+                        "[direct plugin] %s: запускаю для «%s» object=%s bucket=%s",
+                        direct_plugin_run.plugin_id,
+                        direct_plugin_run.file_name,
+                        direct_plugin_run.minio_object,
+                        direct_plugin_run.minio_bucket,
+                    )
+                    _t_plugin0 = time.perf_counter()
+                    outcome = await run_plugin_direct(direct_plugin_run, chat_mode="direct")
+                    chat_timer.mark("plugin_direct", time.perf_counter() - _t_plugin0)
+                    plugin_direct_ran = True
+                    duration_ms = int((time.perf_counter() - _t_plugin0) * 1000)
+                    verdict = (outcome.verdict_markdown or "").strip()
+                    await emit_mcp_tool_end(
+                        _push_tool_event,
+                        server_id=_NATIVE_SID,
+                        tool=plugin_tool,
+                        qualified_name=plugin_tool,
+                        success=bool(outcome.ok),
+                        duration_ms=duration_ms,
+                        error=None if outcome.ok else (outcome.error or "plugin failed"),
+                        result_preview=verdict[:500] if outcome.ok else None,
+                        call_id=plugin_call_id,
+                        arguments=plugin_args,
+                        result=verdict if outcome.ok else (outcome.error or ""),
+                    )
                 log_pre_loop(
                     phase="plugin_direct",
                     chat_id=conversation_id,
@@ -3106,7 +3250,6 @@ async def _handle_direct(
         + (" [RAG: ответ без LLM — нет релевантных фрагментов]" if canned else ""),
         enable_thinking=enable_thinking,
     )
-    mcp_tool_events: list = []
     if not canned and current_user:
         # Обязательные субагенты по тегам карточки - кодом, до ответа родителя.
         # Возвращает сообщение с их ответами и профиль для цикла инструментов
@@ -3114,34 +3257,38 @@ async def _handle_direct(
         try:
             from backend.agents.subagents.required import run_required_for_chat
 
-            async def _required_event_cb(payload):
-                mcp_tool_events.append(dict(payload))
-                if not suppress_ui_stream:
-                    await sio.emit(
-                        "chat_mcp_event", _stream_ids_payload(payload), room=sid
-                    )
-
-            (
-                final_message,
-                agent_profile,
-                _required_called,
-                mention_direct_answer,
-            ) = await run_required_for_chat(
-                data=data,
-                final_message=final_message,
-                agent_profile=agent_profile,
-                history=history,
-                current_user=current_user,
-                enable_thinking=enable_thinking,
-                emit_event=_required_event_cb,
-                stopped=lambda: _generation_stopped(sid),
-            )
+            with activity_scope(
+                agent_id=_scope_agent_id,
+                agent_name=_scope_agent_name,
+                chain_step_index=chain_step_index,
+                chain_step_total=chain_step_total,
+            ):
+                (
+                    final_message,
+                    agent_profile,
+                    _required_called,
+                    mention_direct_answer,
+                ) = await run_required_for_chat(
+                    data=data,
+                    final_message=final_message,
+                    agent_profile=agent_profile,
+                    history=history,
+                    current_user=current_user,
+                    enable_thinking=enable_thinking,
+                    emit_event=_push_tool_event,
+                    stopped=lambda: _generation_stopped(sid),
+                )
             if mention_direct_answer:
                 # #тег без выбранного агента → ответ вызванных агентов сразу в UI.
                 canned = mention_direct_answer
         except Exception:
             logger.exception("[chat-#tag] предвызов не удался, отвечаю без него")
     tool_ids = resolve_chat_tool_ids(data.get("tool_ids") or data.get("mcp_tool_ids"))
+    # Ещё раз подмешиваем MCP агента: к этому месту data мог пройти skills/etc.
+    if isinstance(agent_profile, dict):
+        _agent_mcp_ids = agent_mcp_tool_ids(agent_profile)
+        if _agent_mcp_ids:
+            tool_ids = list(dict.fromkeys([*(tool_ids or []), *_agent_mcp_ids]))
     mcp_result = None
     _subagents_on = bool(
         agent_profile and (agent_profile.get("subagents") or {}).get("enabled")
@@ -3178,9 +3325,18 @@ async def _handle_direct(
             from backend.coding_agent.chat_integration import run_coding_for_chat
 
             async def _coding_event_cb(payload):
-                coding_tool_events.append(dict(payload))
+                event = merge_scope_into_payload(dict(payload or {}))
+                if chain_step_index is not None and event.get("chain_step_index") is None:
+                    event["chain_step_index"] = int(chain_step_index)
+                if _scope_agent_id is not None and event.get("agent_id") is None:
+                    event["agent_id"] = _scope_agent_id
+                coding_tool_events.append(event)
+                # В общий UI tools (иерархия по scope), плюс coding-канал.
+                await sio.emit("chat_mcp_event", _stream_ids_payload(event), room=sid)
                 if not suppress_ui_stream:
-                    await sio.emit("chat_coding_event", _stream_ids_payload(payload), room=sid)
+                    await sio.emit(
+                        "chat_coding_event", _stream_ids_payload(event), room=sid
+                    )
 
             logger.info(
                 "Coding agent: start sid=%s conversation_id=%s workspace_path=%s plan_mode=%s model_path=%s",
@@ -3230,11 +3386,6 @@ async def _handle_direct(
         try:
             from backend.mcp.chat_integration import run_mcp_for_chat
 
-            async def _mcp_event_cb(payload):
-                mcp_tool_events.append(dict(payload))
-                if not suppress_ui_stream:
-                    await sio.emit("chat_mcp_event", _stream_ids_payload(payload), room=sid)
-
             _mcp_base_mt = agent_profile.get("max_tokens") or 1024
             _mcp_direct_max_tokens = _effective_max_tokens(
                 _mcp_base_mt,
@@ -3250,28 +3401,34 @@ async def _handle_direct(
                     _system_output_tokens_floor(),
                 )
 
-            mcp_result = await run_mcp_for_chat(
-                tool_ids=tool_ids,
-                user_message=final_message,
-                history=history,
-                system_prompt=eff_system_prompt,
-                model_path=eff_model_path,
-                user=current_user,
-                chat_id=conversation_id,
-                message_id=data.get("message_id"),
-                temperature=agent_profile.get("temperature") or 0.7,
-                max_tokens=_mcp_direct_max_tokens,
-                enable_thinking=enable_thinking,
-                emit_event=_mcp_event_cb,
-                agent_profile=agent_profile,
-                inline_attachments=(
-                    data.get("inline_attachments") if isinstance(data, dict) else None
-                ),
-                # Вопрос дословно, без RAG-контекста final_message: субагент
-                # получает его рядом с заданием родителя.
-                user_question=user_message,
-                should_stop=lambda: _generation_stopped(sid),
-            )
+            with activity_scope(
+                agent_id=_scope_agent_id,
+                agent_name=_scope_agent_name,
+                chain_step_index=chain_step_index,
+                chain_step_total=chain_step_total,
+            ):
+                mcp_result = await run_mcp_for_chat(
+                    tool_ids=tool_ids,
+                    user_message=final_message,
+                    history=history,
+                    system_prompt=eff_system_prompt,
+                    model_path=eff_model_path,
+                    user=current_user,
+                    chat_id=conversation_id,
+                    message_id=data.get("message_id"),
+                    temperature=agent_profile.get("temperature") or 0.7,
+                    max_tokens=_mcp_direct_max_tokens,
+                    enable_thinking=enable_thinking,
+                    emit_event=_push_tool_event,
+                    agent_profile=agent_profile,
+                    inline_attachments=(
+                        data.get("inline_attachments") if isinstance(data, dict) else None
+                    ),
+                    # Вопрос дословно, без RAG-контекста final_message: субагент
+                    # получает его рядом с заданием родителя.
+                    user_question=user_message,
+                    should_stop=lambda: _generation_stopped(sid),
+                )
             if _generation_stopped(sid):
                 await sio.emit(
                     "generation_stopped",
@@ -3652,4 +3809,5 @@ async def _handle_direct(
         "content": response if isinstance(response, str) else (str(response) if response is not None else ""),
         "reasoning": (reasoning_trace_accumulated or "").strip(),
         "document_search": document_search_trace,
+        "mcp_tool_calls": list(mcp_tool_events),
     }

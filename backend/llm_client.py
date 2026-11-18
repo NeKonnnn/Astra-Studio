@@ -753,6 +753,7 @@ class LLMClient:
         language: str = "auto",
         compute_type: str = "float16",
         batch_size: int = 16,
+        initial_prompt: str = "",
     ) -> Dict[str, Any]:
         """Транскрибация аудио файла через WhisperX."""
         require_service("stt")
@@ -773,6 +774,8 @@ class LLMClient:
                 "compute_type": compute_type,
                 "batch_size": batch_size,
             }
+            if (initial_prompt or "").strip():
+                data["initial_prompt"] = (initial_prompt or "").strip()[:800]
             whisperx_timeout = httpx.Timeout(
                 18000.0, connect=10.0, read=18000.0, write=60.0
             )
@@ -804,12 +807,18 @@ class LLMClient:
             logger.exception("Ошибка транскрибации WhisperX")
             raise
 
-    async def reload_whisperx_models(self) -> Dict[str, Any]:
-        """Принудительная перезагрузка моделей WhisperX"""
+    async def reload_whisperx_models(
+        self, model_size: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Принудительная перезагрузка моделей WhisperX (опционально сменить size)."""
         try:
-            async with httpx.AsyncClient(verify=self._verify, timeout=60.0) as client:
+            payload = {}
+            if model_size:
+                payload["model_size"] = str(model_size).strip()
+            async with httpx.AsyncClient(verify=self._verify, timeout=180.0) as client:
                 response = await client.post(
                     f"{self.stt_url}/v1/whisperx/reload",
+                    json=payload or None,
                     headers={"Accept": "application/json"},
                 )
                 response.raise_for_status()
@@ -2005,13 +2014,27 @@ def ask_agent_llm_svc(
 
 
 def _wrap_sync(coro):
-    """Универсальный синхронный запуск"""
+    """Универсальный синхронный запуск корутины из sync-кода.
+
+    На uvloop/working threads ``get_event_loop()`` часто бросает RuntimeError
+    («no current event loop»), даже когда мы уже внутри async-воркера.
+    """
+    import concurrent.futures
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop is not None and loop.is_running():
+        # Уже в async-контексте: нельзя блокировать тот же loop через run_until_complete
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            return ex.submit(asyncio.run, coro).result()
+
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor() as ex:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
                 return ex.submit(asyncio.run, coro).result()
         return loop.run_until_complete(coro)
     except RuntimeError:
@@ -2034,6 +2057,7 @@ def transcribe_audio_whisperx_llm_svc(audio_file: bytes, **kwargs) -> str:
         r = await s.transcribe_audio_whisperx(audio_file, **kwargs)
         return r.get("text", "") if isinstance(r, dict) else ""
 
+    # kwargs: filename, language, compute_type, batch_size, initial_prompt
     return _wrap_sync(_call())
 
 

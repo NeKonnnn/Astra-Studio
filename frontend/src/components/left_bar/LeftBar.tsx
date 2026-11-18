@@ -88,7 +88,11 @@ import {
   getSidebarPanelHoverBackground,
   isSidebarPanelLight,
 } from '../../constants/sidebarPanelColor';
-import { ASTRA_REQUEST_DELETE_CURRENT_CHAT, ASTRA_OPEN_SETTINGS } from '../../constants/hotkeys';
+import {
+  ASTRA_REQUEST_DELETE_CURRENT_CHAT,
+  ASTRA_OPEN_SETTINGS,
+  ASTRA_OPEN_CREATE_PROJECT,
+} from '../../constants/hotkeys';
 import { useHotkeyBindings } from '../../hooks/useHotkeyBindings';
 import HotkeysSettingsDialog from '../HotkeysSettingsDialog';
 import { SidebarRailAddIcon, SidebarRailSearchIcon } from '../../constants/sidebarRailIcons';
@@ -286,6 +290,18 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
   }, []);
 
   React.useEffect(() => {
+    const onCreateProject = () => {
+      if (!open) onToggle();
+      setProjectsExpanded(true);
+      setProjectIdToEdit(null);
+      setPendingChatIdForProject(null);
+      setShowNewProjectModal(true);
+    };
+    window.addEventListener(ASTRA_OPEN_CREATE_PROJECT, onCreateProject);
+    return () => window.removeEventListener(ASTRA_OPEN_CREATE_PROJECT, onCreateProject);
+  }, [open, onToggle]);
+
+  React.useEffect(() => {
     // Нормализуем залипшие дефолтные HEX (#F7F7F9 / #212128) → пустая строка.
     const raw = (localStorage.getItem(SIDEBAR_PANEL_COLOR_KEY) || '').trim();
     if (
@@ -331,7 +347,23 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
     };
   }, []);
 
+  const goChatHome = React.useCallback(() => {
+    // Уход с живых сессий: полный переход — вложенный Routes иногда не снимает экран
+    if (window.location.pathname.startsWith('/live-sessions')) {
+      window.location.assign('/');
+      return;
+    }
+    navigate('/');
+  }, [navigate]);
+
   const handleNavigation = (path: string) => {
+    if (
+      window.location.pathname.startsWith('/live-sessions') &&
+      (path === '/' || path.startsWith('/project'))
+    ) {
+      window.location.assign(path);
+      return;
+    }
     navigate(path);
   };
 
@@ -349,12 +381,12 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
     const chatId = createChat();
     prepareNewChatSettings(cur?.id, chatId);
     setCurrentChat(chatId);
-    navigate('/');
+    goChatHome();
   };
 
   const handleSelectChat = (chatId: string) => {
     setCurrentChat(chatId);
-    navigate('/');
+    goChatHome();
   };
 
 

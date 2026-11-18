@@ -1142,8 +1142,8 @@ class OpenAICompatProvider(LLMProvider):
         body = (response.text or "").strip()
         if not body:
             return {}
-                    try:
-                        payload = response.json()
+        try:
+            payload = response.json()
         except json.JSONDecodeError:
             if body.lower() in ("ok", "healthy", "up", "ready"):
                 return {"status": body.lower()}
@@ -2314,7 +2314,7 @@ class OpenAICompatProvider(LLMProvider):
                         data_str = line[6:]
                         if data_str.strip() == "[DONE]":
                             if drain_until is None:
-                            _end_reason = "done"
+                                _end_reason = "done"
                             break
                         if drain_until is not None:
                             continue

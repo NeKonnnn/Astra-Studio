@@ -1,7 +1,7 @@
 import os
 import logging
 import torch
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -76,8 +76,9 @@ async def get_whisperx_handler() -> Dict[str, Any]:
                     print(f"[WhisperX] >>> Загрузка модели для '{lang}'...", flush=True)
                     print(f"[WhisperX] Параметры: device={device}, compute_type={compute_type}, download_root={settings.whisperx.models_dir}", flush=True)
                     
+                    model_size = getattr(settings.whisperx, "model_size", None) or "medium"
                     model = whisperx.load_model(
-                        "medium",
+                        model_size,
                         device=device,
                         compute_type=compute_type,
                         language=lang,
@@ -108,12 +109,18 @@ async def get_whisperx_handler() -> Dict[str, Any]:
     return whisperx_models
 
 
-async def reload_whisperx_handler() -> Dict[str, Any]:
-    """Принудительная перезагрузка моделей WhisperX"""
+async def reload_whisperx_handler(model_size: Optional[str] = None) -> Dict[str, Any]:
+    """Принудительная перезагрузка моделей WhisperX (опционально сменить size)."""
     global whisperx_models
-    
+
+    if model_size:
+        size = str(model_size).strip()
+        if size:
+            settings.whisperx.model_size = size
+            logger.info("WhisperX model_size → %s", size)
+
     logger.info("Принудительная перезагрузка моделей WhisperX")
-    
+
     # Очищаем существующие модели
     if whisperx_models:
         logger.info("Освобождение ресурсов существующих моделей WhisperX")
@@ -124,11 +131,11 @@ async def reload_whisperx_handler() -> Dict[str, Any]:
                 except Exception as e:
                     logger.warning(f"Ошибка при удалении модели {lang}: {e}")
         whisperx_models.clear()
-        
+
         # Очищаем кэш CUDA если используется
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-    
+
     # Загружаем модели заново
     return await get_whisperx_handler()
 

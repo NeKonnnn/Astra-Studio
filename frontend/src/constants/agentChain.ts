@@ -1,5 +1,6 @@
 import { getApiUrl, getAuthFetchHeaders } from '../config/api';
 import type { Message } from '../contexts/AppContext';
+import { normalizeMcpToolCallList } from '../mcp/utils/normalizeToolCall';
 
 /** Дефолт, если ConfigMap ещё не подтянулся. */
 export const DEFAULT_MAX_CHAIN_AGENTS = 10;
@@ -12,6 +13,7 @@ export interface AgentChainStep {
   content: string;
   reasoning?: string;
   documentSearch?: Message['documentSearch'];
+  mcpToolCalls?: Message['mcpToolCalls'];
 }
 
 export interface AgentChainCurrent {
@@ -131,13 +133,21 @@ export function mapChainStepsFromMeta(raw: unknown): AgentChainStep[] | undefine
   if (!Array.isArray(raw) || raw.length === 0) return undefined;
   const steps = raw
     .filter((s): s is Record<string, unknown> => Boolean(s) && typeof s === 'object')
-    .map((s) => ({
-      agentId: Number(s.agent_id ?? s.agentId ?? 0),
-      agentName: String(s.agent_name ?? s.agentName ?? 'Агент'),
-      content: String(s.content ?? ''),
-      reasoning: String(s.reasoning ?? s.reasoning_content ?? '').trim() || undefined,
-      documentSearch: mapDocumentSearchTrace(s.document_search ?? s.documentSearch),
-    }));
+    .map((s) => {
+      const mcpRaw = s.mcp_tool_calls ?? s.mcpToolCalls;
+      const mcpToolCalls =
+        Array.isArray(mcpRaw) && mcpRaw.length
+          ? normalizeMcpToolCallList(mcpRaw)
+          : undefined;
+      return {
+        agentId: Number(s.agent_id ?? s.agentId ?? 0),
+        agentName: String(s.agent_name ?? s.agentName ?? 'Агент'),
+        content: String(s.content ?? ''),
+        reasoning: String(s.reasoning ?? s.reasoning_content ?? '').trim() || undefined,
+        documentSearch: mapDocumentSearchTrace(s.document_search ?? s.documentSearch),
+        mcpToolCalls,
+      };
+    });
   return steps.length ? steps : undefined;
 }
 
@@ -187,6 +197,9 @@ export interface ChainRenderSegment {
   content: string;
   reasoning?: string;
   documentSearch?: Message['documentSearch'];
+  mcpToolCalls?: Message['mcpToolCalls'];
+  /** Индекс шага в цепочке (для фильтра tools). */
+  stepIndex?: number;
   /** Текущий шаг ещё стримится. */
   running?: boolean;
 }
@@ -248,6 +261,7 @@ export function resolveChainRenderSegments(
       agentId: 0,
       agentName: p.agentName,
       content: p.content,
+      stepIndex: i,
       running: streaming && i === parsed.length - 1,
     }));
   }
@@ -255,17 +269,20 @@ export function resolveChainRenderSegments(
   // Скрывать промежуточные: только текущий (стрим) или последний завершённый шаг.
   if (hide) {
     if (streaming && hasCurrent) {
+      const idx = Number(chainCurrent?.index);
       return [
         {
           agentId: Number(chainCurrent?.agentId) || 0,
           agentName: String(chainCurrent?.agentName || 'Агент'),
           content: visibleBody,
+          stepIndex: Number.isFinite(idx) ? idx : undefined,
           running: true,
         },
       ];
     }
     if (steps.length) {
       const last = steps[steps.length - 1];
+      const lastIdx = steps.length - 1;
       return [
         {
           agentId: Number(last.agentId) || 0,
@@ -273,6 +290,8 @@ export function resolveChainRenderSegments(
           content: last.content || '',
           reasoning: last.reasoning,
           documentSearch: last.documentSearch,
+          mcpToolCalls: last.mcpToolCalls,
+          stepIndex: lastIdx,
           running: false,
         },
       ];
@@ -290,6 +309,8 @@ export function resolveChainRenderSegments(
         content: s.content || '',
         reasoning: s.reasoning,
         documentSearch: s.documentSearch,
+        mcpToolCalls: s.mcpToolCalls,
+        stepIndex: i,
         running: Boolean(streaming && hasCurrent && i === steps.length - 1),
       }));
     }
@@ -297,12 +318,14 @@ export function resolveChainRenderSegments(
 
   // Стрим: завершённые шаги + текущий running.
   if (streaming && hasCurrent) {
-    const completed = steps.map((s) => ({
+    const completed: ChainRenderSegment[] = steps.map((s, i) => ({
       agentId: Number(s.agentId) || 0,
       agentName: String(s.agentName || 'Агент'),
       content: s.content || '',
       reasoning: s.reasoning,
       documentSearch: s.documentSearch,
+      mcpToolCalls: s.mcpToolCalls,
+      stepIndex: i,
       running: false,
     }));
 
@@ -320,6 +343,7 @@ export function resolveChainRenderSegments(
     }
 
     const curId = Number(chainCurrent?.agentId) || 0;
+    const curIdx = Number(chainCurrent?.index);
     const already = completed.some(
       (s) =>
         (curId > 0 && s.agentId === curId) ||
@@ -332,23 +356,27 @@ export function resolveChainRenderSegments(
         content: currentContent,
         reasoning: undefined,
         documentSearch: undefined,
+        stepIndex: Number.isFinite(curIdx) ? curIdx : completed.length,
         running: true,
       });
     } else {
       const last = completed[completed.length - 1];
       last.content = currentContent || last.content;
       last.running = true;
+      if (last.stepIndex == null && Number.isFinite(curIdx)) last.stepIndex = curIdx;
     }
     return completed.length ? completed : null;
   }
 
   if (steps.length) {
-    return steps.map((s) => ({
+    return steps.map((s, i) => ({
       agentId: Number(s.agentId) || 0,
       agentName: String(s.agentName || 'Агент'),
       content: s.content || '',
       reasoning: s.reasoning,
       documentSearch: s.documentSearch,
+      mcpToolCalls: s.mcpToolCalls,
+      stepIndex: i,
       running: false,
     }));
   }

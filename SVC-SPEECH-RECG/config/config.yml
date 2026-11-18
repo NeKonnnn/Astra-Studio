@@ -34,6 +34,7 @@ app:
 whisperx:
   enabled: true
   models_dir: "/app/models/whisperx_models" # Путь внутри контейнера
+  model_size: "medium"  # medium | large-v3 | путь к локальной модели
   device: "cpu"  # cpu - PyTorch 2.1.2 не поддерживает RTX 5070 Ti (sm_120)
   compute_type: "int8"  # int8 для CPU
   language: "ru"

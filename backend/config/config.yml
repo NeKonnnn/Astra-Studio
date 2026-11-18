@@ -320,8 +320,15 @@ video_generation:
 paths:
   whisperx_models_dir: "whisperx_models"
   diarize_models_dir: "diarize_models"
+  silero_models_dir: "silero_models"
+  surya_models_dir: "surya_models"
   model_path: "models"
+  llm_models_dir: "models/llm"
+  rag_models_dir: "models/rag"
+  comfyui_models_dir: "models/comfyui"
+  omnivoice_models_dir: "models/omnivoice"
   memory_path: "memory"
+  model_catalog_path: "config/model_catalog.yml"
 
 logging:
   level: "INFO"

@@ -269,19 +269,28 @@ async def run_required_subagents(
             ok = True
             doc_search = None
             try:
-                outcome = await run_isolated_subagent(
-                    target_agent_id=aid,
-                    prompt=user_message,
-                    parent_profile=prof,
-                    user=user,
-                    user_id=user_id,
+                from backend.mcp.activity_scope import activity_scope
+
+                with activity_scope(
+                    parent_call_id=call_id,
+                    agent_id=int(aid),
+                    agent_name=display_name,
                     depth=1,
-                    remaining_steps=remaining,
-                    history=child_history,
-                    enable_thinking=enable_thinking,
-                    emit_event=emit_event,
-                    inline_attachments=inline_attachments,
-                )
+                    activity_kind="subagent",
+                ):
+                    outcome = await run_isolated_subagent(
+                        target_agent_id=aid,
+                        prompt=user_message,
+                        parent_profile=prof,
+                        user=user,
+                        user_id=user_id,
+                        depth=1,
+                        remaining_steps=remaining,
+                        history=child_history,
+                        enable_thinking=enable_thinking,
+                        emit_event=emit_event,
+                        inline_attachments=inline_attachments,
+                    )
                 from backend.agents.subagents.tool import SubagentOutcome
 
                 if isinstance(outcome, SubagentOutcome):

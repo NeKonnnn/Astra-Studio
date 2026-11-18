@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useCallback, startTransition } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { CssBaseline, Box, IconButton, Tooltip } from '@mui/material';
 import { ChevronRight as ChevronRightIcon } from '@mui/icons-material';
 import { LeftBar } from './components/left_bar';
 import { RightBar, RightBarProvider } from './components/right_bar';
 import GlobalKeyboardShortcuts from './components/GlobalKeyboardShortcuts';
+import { VoiceAssistantController } from './voiceAssistant';
 import SettingsModal from './components/SettingsModal';
 import { ASTRA_FOCUS_CHAT_SEARCH, ASTRA_OPEN_SETTINGS, ASTRA_OPEN_SETTINGS_SECTION } from './constants/hotkeys';
 import {
@@ -53,6 +54,7 @@ import PluginRunBanner from './components/PluginRunBanner';
 import { PluginRunProvider } from './contexts/PluginRunContext';
 import TabNotificationWatcher from './components/TabNotificationWatcher';
 import SupportAssistantWidget from './support_assistant';
+import LiveSessionsPage from './liveSessions/LiveSessionsPage';
 import './App.css';
 import { MENU_ITEM_HOVER_DARK, MENU_ITEM_HOVER_LIGHT, MENU_BORDER_RADIUS_PX, MENU_ITEM_HOVER_RADIUS_PX, MENU_ITEM_HOVER_MARGIN_PX, MENU_MIN_WIDTH_PX, MENU_ICON_MIN_WIDTH, MENU_ICON_TO_TEXT_GAP_PX, MENU_ICON_FONT_SIZE_PX } from './constants/menuStyles';
 
@@ -147,6 +149,48 @@ const createAppTheme = (isDark: boolean) => createTheme({
   },
 });
 
+/**
+ * Вложенный <Routes> под path="/*" иногда не перерисовывает экран при смене
+ * pathname (URL уже /live-sessions или /, а UI остаётся прежним до F5).
+ * key+location по pathname принудительно стыкует дерево с адресом.
+ */
+function AppMainRoutes({
+  isDarkMode,
+  sidebarOpen,
+  sidebarHidden,
+}: {
+  isDarkMode: boolean;
+  sidebarOpen: boolean;
+  sidebarHidden: boolean;
+}) {
+  const location = useLocation();
+  return (
+    <Routes location={location} key={location.pathname}>
+      <Route path="/" element={<UnifiedChatPage isDarkMode={isDarkMode} sidebarOpen={sidebarOpen} sidebarHidden={sidebarHidden} />} />
+      <Route path="/project" element={<UnifiedChatPage isDarkMode={isDarkMode} sidebarOpen={sidebarOpen} sidebarHidden={sidebarHidden} />} />
+      <Route path="/project/:projectId" element={<ProjectPage sidebarOpen={sidebarOpen} sidebarHidden={sidebarHidden} />} />
+      <Route path="/voice" element={<UnifiedChatPage isDarkMode={isDarkMode} sidebarOpen={sidebarOpen} sidebarHidden={sidebarHidden} />} />
+      <Route path="/documents" element={<UnifiedChatPage isDarkMode={isDarkMode} sidebarOpen={sidebarOpen} sidebarHidden={sidebarHidden} />} />
+      <Route path="/search" element={<UnifiedChatPage isDarkMode={isDarkMode} sidebarOpen={sidebarOpen} sidebarHidden={sidebarHidden} />} />
+      <Route path="/creations" element={<CreationsPage />} />
+      <Route path="/gallery" element={<GalleryHubPage />} />
+      <Route path="/admin" element={<AdminHubPage />} />
+      <Route path="/prompts" element={<Navigate to="/gallery?tab=agents" replace />} />
+      <Route path="/agents-gallery" element={<AgentGalleryPage />} />
+      <Route path="/plugins-gallery" element={<PluginGalleryPage />} />
+      <Route path="/skills" element={<SkillsPage />} />
+      <Route path="/docs/astrachat-release-1.0" element={<ReleaseNotesPage version="1.0" />} />
+      <Route path="/docs/astrachat-release-2.0" element={<ReleaseNotesPage version="2.0" />} />
+      <Route path="/docs/astrachat-release-1.0.html" element={<ReleaseNotesPage version="1.0" />} />
+      <Route path="/docs/user-guide" element={<UserGuidePage />} />
+      <Route path="/profile" element={<ProfilePage />} />
+      <Route path="/history" element={<HistoryPage />} />
+      <Route path="/live-sessions" element={<LiveSessionsPage />} />
+      <Route path="/live-sessions/:sessionId" element={<LiveSessionsPage />} />
+    </Routes>
+  );
+}
+
 function App() {
   // Инициализация конфигурации при загрузке приложения
   useEffect(() => {
@@ -204,7 +248,7 @@ function App() {
   /** Настройки по Alt+S — в App, чтобы работало даже при скрытой левой панели. */
   const [settingsFromHotkeyOpen, setSettingsFromHotkeyOpen] = useState(false);
   const [settingsInitialSection, setSettingsInitialSection] = useState<
-    'general' | 'profile' | 'interface' | 'models' | 'rag' | 'transcription' | 'chats' | 'about' | undefined
+    'general' | 'profile' | 'interface' | 'models' | 'rag' | 'transcription' | 'voiceAssistant' | 'chats' | 'about' | undefined
   >(undefined);
 
   useEffect(() => {
@@ -358,6 +402,7 @@ function App() {
                           />
                         )}
                         <GlobalKeyboardShortcuts />
+                        <VoiceAssistantController />
                         <SettingsModal
                           open={settingsFromHotkeyOpen}
                           onClose={() => {
@@ -424,36 +469,11 @@ function App() {
                             </Box>
                           )}
                           
-                          <Routes>
-                            <Route path="/" element={<UnifiedChatPage isDarkMode={isDarkMode} sidebarOpen={sidebarOpen} sidebarHidden={sidebarHidden} />} />
-                            <Route path="/project" element={<UnifiedChatPage isDarkMode={isDarkMode} sidebarOpen={sidebarOpen} sidebarHidden={sidebarHidden} />} />
-                            <Route path="/project/:projectId" element={<ProjectPage sidebarOpen={sidebarOpen} sidebarHidden={sidebarHidden} />} />
-                            <Route path="/voice" element={<UnifiedChatPage isDarkMode={isDarkMode} sidebarOpen={sidebarOpen} sidebarHidden={sidebarHidden} />} />
-                            <Route path="/documents" element={<UnifiedChatPage isDarkMode={isDarkMode} sidebarOpen={sidebarOpen} sidebarHidden={sidebarHidden} />} />
-                            <Route path="/search" element={<UnifiedChatPage isDarkMode={isDarkMode} sidebarOpen={sidebarOpen} sidebarHidden={sidebarHidden} />} />
-                            <Route path="/creations" element={<CreationsPage />} />
-                            <Route path="/gallery" element={<GalleryHubPage />} />
-                            <Route path="/admin" element={<AdminHubPage />} />
-                            <Route path="/prompts" element={<Navigate to="/gallery?tab=agents" replace />} />
-                            <Route path="/agents-gallery" element={<AgentGalleryPage />} />
-                            <Route path="/plugins-gallery" element={<PluginGalleryPage />} />
-                            <Route path="/skills" element={<SkillsPage />} />
-                            <Route
-                              path="/docs/astrachat-release-1.0"
-                              element={<ReleaseNotesPage version="1.0" />}
-                            />
-                            <Route
-                              path="/docs/astrachat-release-2.0"
-                              element={<ReleaseNotesPage version="2.0" />}
-                            />
-                            <Route
-                              path="/docs/astrachat-release-1.0.html"
-                              element={<ReleaseNotesPage version="1.0" />}
-                            />
-                            <Route path="/docs/user-guide" element={<UserGuidePage />} />
-                            <Route path="/profile" element={<ProfilePage />} />
-                            <Route path="/history" element={<HistoryPage />} />
-                          </Routes>
+                          <AppMainRoutes
+                            isDarkMode={isDarkMode}
+                            sidebarOpen={sidebarOpen}
+                            sidebarHidden={sidebarHidden}
+                          />
                           {/* Прототип: плавающий помощник поддержки (LLM/RAG — следующий этап) */}
                           <SupportAssistantWidget />
                         </Box>

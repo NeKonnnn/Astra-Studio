@@ -1,15 +1,17 @@
-# Оверрайд для запуска llm-service с GPU (NVIDIA, RTX 50xx / Blackwell sm_120).
+# GPU override — NVIDIA + Container Toolkit.
 # Использование:
-#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml build llm-service
-#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d llm-service
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile speech --profile vision up -d
 # В llm-svc/config/config.yml: gpu_layers: -1
-# Требуется: NVIDIA GPU, драйвер 560+, NVIDIA Container Toolkit.
+# Требуется: NVIDIA GPU, драйвер, NVIDIA Container Toolkit.
 
 services:
   llm-service:
+    image: ghcr.io/nekonnnn/astrastudio-llm-cuda:${ASTRA_VERSION:-latest}
+    pull_policy: ${ASTRA_PULL_POLICY:-never}
     build:
       context: ./llm-svc
       dockerfile: Dockerfile.cuda
+    gpus: all
     deploy:
       resources:
         limits:
@@ -22,3 +24,66 @@ services:
               capabilities: [gpu]
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
+      - LLM_MODEL_LOAD_TIMEOUT=${LLM_MODEL_LOAD_TIMEOUT:-1800}
+      - LLM_INFERENCE_REPLICAS=${LLM_INFERENCE_REPLICAS:-2}
+
+  comfyui:
+    gpus: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - COMFYUI_FORCE_CPU=${COMFYUI_FORCE_CPU:-0}
+      - COMFYUI_ENABLE_CORS_HEADER=${COMFYUI_ENABLE_CORS_HEADER:-1}
+      - COMFYUI_CORS_HEADER=${COMFYUI_CORS_HEADER:-*}
+
+  stt-service:
+    gpus: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  ocr-service:
+    gpus: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  diarization-service:
+    gpus: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  omnivoice-service:
+    gpus: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - OMNIVOICE_MODEL=/app/models/omnivoice
+      - OMNIVOICE_DEVICE=${OMNIVOICE_DEVICE:-cuda:0}
+      - HF_HOME=/tmp/hf
+      - HF_HUB_CACHE=/tmp/hf
+      - HF_HUB_OFFLINE=${OMNIVOICE_HF_OFFLINE:-0}

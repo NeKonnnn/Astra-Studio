@@ -56,7 +56,11 @@ export default function ChatGearMcpPanel({ isDarkMode, chatId }: ChatGearMcpPane
     }
     setLoading(true);
     try {
-      const [srv, st] = await Promise.all([fetchMcpServers(), fetchMcpStatus()]);
+      // fetch_tools=true — иначе tools всегда 0 (кэш пуст до первого list_tools).
+      const [srv, st] = await Promise.all([
+        fetchMcpServers(),
+        fetchMcpStatus({ fetchTools: true }),
+      ]);
       setServers(srv.filter((s) => s.enabled));
       const map = new Map<string, McpServerStatus>();
       for (const s of st.servers || []) {
@@ -84,6 +88,19 @@ export default function ChatGearMcpPanel({ isDarkMode, chatId }: ChatGearMcpPane
     try {
       const tools = await fetchMcpTools(serverId);
       setToolsByServer((prev) => ({ ...prev, [serverId]: tools }));
+      setStatusMap((prev) => {
+        const next = new Map(prev);
+        const cur = next.get(serverId);
+        next.set(serverId, {
+          ...(cur || { id: serverId, display_name: serverId, enabled: true, connected: true }),
+          id: serverId,
+          display_name: cur?.display_name || serverId,
+          enabled: cur?.enabled ?? true,
+          connected: cur?.connected ?? true,
+          tools: tools.length,
+        });
+        return next;
+      });
     } catch {
       setToolsErrorByServer((prev) => ({
         ...prev,
@@ -244,14 +261,18 @@ export default function ChatGearMcpPanel({ isDarkMode, chatId }: ChatGearMcpPane
                           Transport: {st?.transport || srv.transport || '—'}
                         </Typography>
                       </Box>
-                      {st?.tools != null ? (
-                        <Chip
-                          label={`${st.tools}`}
-                          size="small"
-                          variant="outlined"
-                          sx={{ height: 20, fontSize: '0.65rem', flexShrink: 0 }}
-                        />
-                      ) : null}
+                      {(() => {
+                        const toolsCount =
+                          toolsByServer[srv.id]?.length ?? st?.tools;
+                        return toolsCount != null ? (
+                          <Chip
+                            label={`${toolsCount}`}
+                            size="small"
+                            variant="outlined"
+                            sx={{ height: 20, fontSize: '0.65rem', flexShrink: 0 }}
+                          />
+                        ) : null;
+                      })()}
                       {st?.connected === false ? (
                         <Chip label="offline" size="small" color="error" variant="outlined" sx={{ height: 20, fontSize: '0.65rem' }} />
                       ) : st?.connected ? (

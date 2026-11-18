@@ -4,7 +4,9 @@ import wave
 import json
 import subprocess
 import numpy as np
-from fastapi import APIRouter, UploadFile, File, HTTPException, Form
+from typing import Any, Dict, Optional
+
+from fastapi import APIRouter, UploadFile, File, HTTPException, Form, Body
 from fastapi.responses import JSONResponse
 from app.dependencies.whisperx_handler import get_whisperx_handler, reload_whisperx_handler
 from app.core.config import settings
@@ -69,7 +71,8 @@ async def transcribe_audio_whisperx(
     file: UploadFile = File(...),
     language: str = Form("auto"),
     compute_type: str = Form("float16"),
-    batch_size: int = Form(16)
+    batch_size: int = Form(16),
+    initial_prompt: str = Form(""),
 ):
     """
     Транскрибация аудио файла с помощью WhisperX
@@ -78,6 +81,7 @@ async def transcribe_audio_whisperx(
     - **language**: Язык для распознавания (ru, en, auto)
     - **compute_type**: Тип вычислений (float16, int8, int8_float16)
     - **batch_size**: Размер батча для обработки
+    - **initial_prompt**: подсказка словаря/терминов для Whisper (jargon)
     """
     try:
         # Проверяем, включен ли WhisperX
@@ -133,11 +137,20 @@ async def transcribe_audio_whisperx(
             # Транскрибируем.
             # Вариант 1: faster-whisper (tuple: (segments, info)).
             # Вариант 2: whisperx pipeline (dict c ключом "segments" и без "text").
-            raw = model_info["model"].transcribe(
-                audio,
-                batch_size=batch_size,
-                language=language
-            )
+            prompt = (initial_prompt or "").strip()[:800]
+            transcribe_kwargs = {
+                "batch_size": batch_size,
+                "language": language,
+            }
+            if prompt:
+                # faster-whisper / whisperx: initial_prompt влияет на словарь и имена
+                transcribe_kwargs["initial_prompt"] = prompt
+            try:
+                raw = model_info["model"].transcribe(audio, **transcribe_kwargs)
+            except TypeError:
+                # Старые обёртки без initial_prompt
+                transcribe_kwargs.pop("initial_prompt", None)
+                raw = model_info["model"].transcribe(audio, **transcribe_kwargs)
 
             text = ""
             detected_lang = language
@@ -262,24 +275,29 @@ async def get_whisperx_info():
 
 
 @router.post("/whisperx/reload")
-async def reload_whisperx_models():
-    """Принудительная перезагрузка моделей WhisperX"""
+async def reload_whisperx_models(payload: Optional[Dict[str, Any]] = Body(default=None)):
+    """Принудительная перезагрузка моделей WhisperX (body: {model_size?})."""
     try:
         if not settings.whisperx.enabled:
             raise HTTPException(status_code=503, detail="WhisperX отключен в конфигурации")
-        
-        logger.info("Запрос на перезагрузку моделей WhisperX")
-        models = await reload_whisperx_handler()
-        
+
+        model_size = None
+        if isinstance(payload, dict):
+            model_size = payload.get("model_size")
+
+        logger.info("Запрос на перезагрузку моделей WhisperX (size=%s)", model_size)
+        models = await reload_whisperx_handler(model_size=model_size)
+
         if not models:
             raise HTTPException(
-                status_code=503, 
+                status_code=503,
                 detail="Не удалось загрузить модели WhisperX. Проверьте логи для деталей."
             )
-        
+
         return JSONResponse(content={
             "success": True,
             "message": "Модели WhisperX успешно перезагружены",
+            "model_size": getattr(settings.whisperx, "model_size", None),
             "loaded_models": list(models.keys()),
             "total_models": len(models)
         })
@@ -288,7 +306,7 @@ async def reload_whisperx_models():
     except Exception as e:
         logger.error(f"Ошибка при перезагрузке моделей WhisperX: {str(e)}", exc_info=True)
         raise HTTPException(
-            status_code=500, 
+            status_code=500,
             detail=f"Ошибка при перезагрузке моделей WhisperX: {str(e)}"
         )
 

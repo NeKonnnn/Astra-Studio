@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Dialog,
   DialogTitle,
@@ -18,25 +18,30 @@ import {
   Close as CloseIcon,
   SettingsOutlined as SettingsIcon,
   MicOutlined as MicIcon,
+  RecordVoiceOver as VoiceAssistantIcon,
   InfoOutlined as InfoIcon,
   PaletteOutlined as PaletteIcon,
   PersonOutlined as PersonIcon,
   ChatOutlined as ChatIcon,
   ComputerOutlined as ComputerIcon,
   SearchOutlined as SearchIcon,
+  CloudDownloadOutlined as CloudDownloadIcon,
 } from '@mui/icons-material';
 import { MENU_ICON_MIN_WIDTH, MENU_ICON_TO_TEXT_GAP_PX, MENU_ICON_FONT_SIZE_PX } from '../constants/menuStyles';
 import {
   GeneralSettings,
   ProfileSettings,
   ModelsSettings,
+  ModelDownloadsSettings,
   RAGSettings,
   TranscriptionSettings,
+  VoiceAssistantSettings,
   AboutSettings,
   ChatSettings,
   InterfaceSettings
 } from './settings';
 import { ASTRA_OPEN_SETTINGS_SECTION } from '../constants/hotkeys';
+import { useAuth } from '../contexts/AuthContext';
 
 interface SettingsModalProps {
   open: boolean;
@@ -46,7 +51,17 @@ interface SettingsModalProps {
   initialSection?: SettingsSection;
 }
 
-type SettingsSection = 'general' | 'profile' | 'interface' | 'models' | 'rag' | 'transcription' | 'chats' | 'about';
+type SettingsSection =
+  | 'general'
+  | 'profile'
+  | 'interface'
+  | 'models'
+  | 'modelDownloads'
+  | 'rag'
+  | 'transcription'
+  | 'voiceAssistant'
+  | 'chats'
+  | 'about';
 
 const settingsSections = [
   {
@@ -80,6 +95,13 @@ const settingsSections = [
     description: 'Управление моделями и промпты'
   },
   {
+    id: 'modelDownloads' as SettingsSection,
+    title: 'Manage Models',
+    icon: <CloudDownloadIcon />,
+    description: 'Pull из Hugging Face · каталог',
+    adminOnly: true,
+  },
+  {
     id: 'rag' as SettingsSection,
     title: 'RAG',
     icon: <SearchIcon />,
@@ -90,6 +112,12 @@ const settingsSections = [
     title: 'Транскрибация',
     icon: <MicIcon />,
     description: 'Настройки распознавания речи'
+  },
+  {
+    id: 'voiceAssistant' as SettingsSection,
+    title: 'Голосовой помощник',
+    icon: <VoiceAssistantIcon />,
+    description: 'Wake-word и голосовые команды'
   },
   {
     id: 'about' as SettingsSection,
@@ -103,23 +131,35 @@ export default function SettingsModal({ open, onClose, isDarkMode, onToggleTheme
   const [activeSection, setActiveSection] = useState<SettingsSection>('general');
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+  const { user } = useAuth();
+  const isAdmin = Boolean(user?.is_admin);
+  const visibleSections = useMemo(
+    () => settingsSections.filter((s) => !('adminOnly' in s && s.adminOnly) || isAdmin),
+    [isAdmin],
+  );
 
   useEffect(() => {
-    if (open && initialSection && settingsSections.some((s) => s.id === initialSection)) {
+    if (open && initialSection && visibleSections.some((s) => s.id === initialSection)) {
       setActiveSection(initialSection);
     }
-  }, [open, initialSection]);
+  }, [open, initialSection, visibleSections]);
 
   useEffect(() => {
     const onSection = (e: Event) => {
       const section = (e as CustomEvent<{ section?: SettingsSection }>).detail?.section;
-      if (section && settingsSections.some((s) => s.id === section)) {
+      if (section && visibleSections.some((s) => s.id === section)) {
         setActiveSection(section);
       }
     };
     window.addEventListener(ASTRA_OPEN_SETTINGS_SECTION, onSection);
     return () => window.removeEventListener(ASTRA_OPEN_SETTINGS_SECTION, onSection);
-  }, []);
+  }, [visibleSections]);
+
+  useEffect(() => {
+    if (!visibleSections.some((s) => s.id === activeSection)) {
+      setActiveSection('general');
+    }
+  }, [visibleSections, activeSection]);
 
   const handleSectionChange = (section: SettingsSection) => {
     setActiveSection(section);
@@ -135,10 +175,14 @@ export default function SettingsModal({ open, onClose, isDarkMode, onToggleTheme
         return <InterfaceSettings isDarkMode={isDarkMode} />;
       case 'models':
         return <ModelsSettings />;
+      case 'modelDownloads':
+        return <ModelDownloadsSettings />;
       case 'rag':
         return <RAGSettings isDarkMode={isDarkMode} />;
       case 'transcription':
         return <TranscriptionSettings />;
+      case 'voiceAssistant':
+        return <VoiceAssistantSettings />;
       case 'chats':
         return <ChatSettings isDarkMode={isDarkMode} />;
       case 'about':
@@ -203,7 +247,7 @@ export default function SettingsModal({ open, onClose, isDarkMode, onToggleTheme
           }}
         >
           <List sx={{ p: 1 }}>
-            {settingsSections.map((section, index) => (
+            {visibleSections.map((section, index) => (
               <React.Fragment key={section.id}>
                 <ListItem disablePadding>
                   <ListItemButton

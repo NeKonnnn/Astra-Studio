@@ -1,5 +1,17 @@
 import type { McpToolCallRecord } from '../types';
 
+function optInt(raw: unknown): number | null | undefined {
+  if (raw == null || raw === '') return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) ? Math.trunc(n) : undefined;
+}
+
+function optStr(raw: unknown): string | undefined {
+  if (raw == null) return undefined;
+  const s = String(raw).trim();
+  return s || undefined;
+}
+
 /** Нормализует событие MCP с backend/socket к формату UI. */
 export function normalizeMcpToolCallRecord(raw: Record<string, unknown>): McpToolCallRecord {
   const eventType = String(raw.type || '');
@@ -37,6 +49,14 @@ export function normalizeMcpToolCallRecord(raw: Record<string, unknown>): McpToo
       raw.document_search && typeof raw.document_search === 'object'
         ? (raw.document_search as McpToolCallRecord['document_search'])
         : undefined,
+    agent_id: optInt(raw.agent_id ?? raw.agentId),
+    agent_name: optStr(raw.agent_name ?? raw.agentName),
+    chain_step_index: optInt(raw.chain_step_index ?? raw.chainStepIndex),
+    chain_step_total: optInt(raw.chain_step_total ?? raw.chainStepTotal),
+    parent_call_id: optStr(raw.parent_call_id ?? raw.parentCallId) ?? null,
+    depth: optInt(raw.depth) ?? undefined,
+    activity_kind: optStr(raw.activity_kind ?? raw.activityKind),
+    llm_iteration: optInt(raw.llm_iteration ?? raw.llmIteration),
   };
 }
 

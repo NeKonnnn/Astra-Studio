@@ -37,12 +37,15 @@ from backend.routes.mcp import router as mcp_router
 from backend.routes.memory import router as memory_router
 from backend.routes.model_comparison import router as model_comparison_router
 from backend.routes.models import router as models_router
+from backend.routes.model_downloads import router as model_downloads_router
 from backend.routes.project_rag import router as project_rag_router
 from backend.routes.projects import router as projects_router
 from backend.routes.rag import router as rag_router
 from backend.routes.system import router as system_router
 from backend.routes.transcription import router as transcription_router
+from backend.routes.live_sessions import router as live_sessions_router
 from backend.routes.voice import router as voice_router
+from backend.routes.voice_assistant import router as voice_assistant_router
 from backend.routes.internal_rag import router as internal_rag_router
 from backend.routes.image_generation import router as image_generation_router
 from backend.routes.coding_agent import router as coding_agent_router
@@ -309,12 +312,15 @@ for _r in (
     system_router,
     chat_router,
     models_router,
+    model_downloads_router,
     llm_router,
     llm_providers_router,
     memory_router,
     voice_router,
+    voice_assistant_router,
     documents_router,
     transcription_router,
+    live_sessions_router,
     rag_router,
     internal_rag_router,
     agents_router,

@@ -5,7 +5,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Form
 from fastapi.responses import JSONResponse
 from PIL import Image
 from io import BytesIO
-from app.dependencies.surya_handler import get_surya_handler
+from app.dependencies.surya_handler import get_surya_handler, reload_surya_handler
 from app.core.config import settings
 import logging
 
@@ -163,6 +163,28 @@ async def recognize_text_from_image(
     except Exception as e:
         logger.error(f"Ошибка при обработке OCR запроса: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Ошибка при обработке запроса: {str(e)}")
+
+
+@router.post("/ocr/reload")
+async def reload_ocr_models():
+    """Перезагрузка Surya OCR с диска."""
+    try:
+        if not settings.surya.enabled:
+            raise HTTPException(status_code=503, detail="Surya OCR отключен")
+        surya = await reload_surya_handler()
+        if surya is None:
+            raise HTTPException(status_code=503, detail="Не удалось загрузить Surya OCR")
+        return JSONResponse(content={
+            "success": True,
+            "message": "Surya OCR перезагружен",
+            "model_loaded": True,
+            "device": surya.get("device"),
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("OCR reload failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/ocr/health")

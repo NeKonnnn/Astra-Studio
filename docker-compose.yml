@@ -1,26 +1,30 @@
+# Prebuilt images: ghcr.io/nekonnnn/astrastudio-* (see .github/workflows/publish-images.yml).
+# Install pull path: docker compose pull && docker compose --profile speech --profile vision up -d
+# Local rebuild: docker compose build <service>
+# CPU host: add -f docker-compose.cpu.yml
+# ASTRA_VERSION=latest|vX.Y.Z
+#
+# pull_policy default never — локальный `up`/`build` не ходит в GHCR (иначе denied → лишний rebuild).
+# One-liner после успешного pull: ASTRA_PULL_POLICY=missing (или always).
+
 services:
   # LLM Service (только LLM модели)
   llm-service:
+    image: ghcr.io/nekonnnn/astrastudio-llm-cuda:${ASTRA_VERSION:-latest}
+    pull_policy: ${ASTRA_PULL_POLICY:-never}
     build:
       context: ./llm-svc
       dockerfile: Dockerfile.cuda
     ports:
       - "8002:8000"
-    gpus: all
+    # GPU: docker-compose.gpu.yml (gpus + deploy devices). CPU: docker-compose.cpu.yml (llm-cpu image).
     environment:
-      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-}
       # 27B Q8 (~30 ГБ) на CPU: дефолт 600с не хватает; backend httpx = 2400с.
       - LLM_MODEL_LOAD_TIMEOUT=${LLM_MODEL_LOAD_TIMEOUT:-1800}
       # Параллельные стримы в разных чатах: независимые Llama-реплики одной модели.
       # При нехватке VRAM поставьте LLM_INFERENCE_REPLICAS=1.
       - LLM_INFERENCE_REPLICAS=${LLM_INFERENCE_REPLICAS:-2}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     volumes:
       # Только основной набор весов (на хосте: ./models/llm/… → в контейнере /app/models/llm/…)
       - ./models/llm:/app/models/llm:ro
@@ -31,22 +35,19 @@ services:
 
   # ComfyUI — генерация изображений (GGUF Unet через ComfyUI-GGUF). Модели: ./models/comfyui → /app/ComfyUI/models
   # UI/API: http://localhost:8188 ; из astrachat-backend: http://comfyui:8188 (переменная IMAGE_GEN_COMFYUI_URL)
+  # Profile vision: включается one-liner'ом (ASTRA_PROFILE=full) или --profile vision
   comfyui:
+    image: ghcr.io/nekonnnn/astrastudio-comfyui:${ASTRA_VERSION:-latest}
+    pull_policy: ${ASTRA_PULL_POLICY:-never}
     build:
       context: ./docker/comfyui
       dockerfile: Dockerfile
     container_name: astrachat-comfyui
+    profiles: ["vision"]
     ports:
       - "8188:8188"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     environment:
-      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-}
       # RTX 50xx: образ на PyTorch 2.7 + CUDA 12.8. Временный обход без GPU: COMFYUI_FORCE_CPU=1
       - COMFYUI_FORCE_CPU=${COMFYUI_FORCE_CPU:-0}
       # Разрешить UI/iframe из AstraChat (иначе ComfyUI → HTTP 403 при несовпадении Origin/Host)
@@ -65,20 +66,16 @@ services:
     networks:
       - astrachat-network
 
-  # STT Service (WhisperX)
+  # STT Service (WhisperX) — profile speech
   stt-service:
+    image: ghcr.io/nekonnnn/astrastudio-stt:${ASTRA_VERSION:-latest}
+    pull_policy: ${ASTRA_PULL_POLICY:-never}
     build:
       context: ./SVC-SPEECH-RECG
       dockerfile: Dockerfile
+    profiles: ["speech"]
     ports:
       - "8001:8000"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     volumes:
       - ./whisperx_models:/app/models/whisperx_models
       - ./SVC-SPEECH-RECG/config:/app/config:ro
@@ -86,11 +83,14 @@ services:
     networks:
       - astrachat-network
 
-  # TTS Service (Silero)
+  # TTS Service (Silero) — profile speech
   tts-service:
+    image: ghcr.io/nekonnnn/astrastudio-tts:${ASTRA_VERSION:-latest}
+    pull_policy: ${ASTRA_PULL_POLICY:-never}
     build:
       context: ./SVC-SPEECH-SYNT
       dockerfile: Dockerfile
+    profiles: ["speech"]
     ports:
       - "8005:8000"
     volumes:
@@ -100,20 +100,49 @@ services:
     networks:
       - astrachat-network
 
+  # OmniVoice — zero-shot voice cloning (CC-BY-NC). Опционально для VA «мой голос».
+  # Веса: ./models/omnivoice (локально, без скачивания с HF).
+  # Порт хоста 8014 — 8010 занят rag-models.
+  omnivoice-service:
+    image: ghcr.io/nekonnnn/astrastudio-omnivoice:${ASTRA_VERSION:-latest}
+    pull_policy: ${ASTRA_PULL_POLICY:-never}
+    build:
+      context: ./SVC-OMNIVOICE
+      dockerfile: Dockerfile
+    container_name: astrachat-omnivoice
+    profiles: ["speech"]
+    ports:
+      - "8014:8000"
+    volumes:
+      - ./models/omnivoice:/app/models/omnivoice:ro
+      # Кэш HF: audio_tokenizer / Whisper ASR (если нет локально в models/omnivoice)
+      - ./models/omnivoice_cache:/tmp/hf
+    environment:
+      - OMNIVOICE_MODEL=/app/models/omnivoice
+      - OMNIVOICE_DEVICE=${OMNIVOICE_DEVICE:-cuda:0}
+      - HF_HOME=/tmp/hf
+      - HF_HUB_CACHE=/tmp/hf
+      # Нужен интернет при первом старте, если нет audio_tokenizer/
+      - HF_HUB_OFFLINE=${OMNIVOICE_HF_OFFLINE:-0}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/v1/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 120s
+    restart: unless-stopped
+    networks:
+      - astrachat-network
+
   # OCR Service (Surya). Backend вызывает его по http://ocr-service:8000 (SVC_OCR_URL) для извлечения текста из изображений при загрузке документов.
   ocr-service:
+    image: ghcr.io/nekonnnn/astrastudio-ocr:${ASTRA_VERSION:-latest}
+    pull_policy: ${ASTRA_PULL_POLICY:-never}
     build:
       context: ./SVC-OCR
       dockerfile: Dockerfile
     ports:
       - "8004:8000"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     volumes:
       - ./SVC-OCR/config:/app/config:ro
       - ./surya_models:/app/models/surya
@@ -126,20 +155,16 @@ services:
     networks:
       - astrachat-network
 
-  # Diarization Service
+  # Diarization Service — profile speech
   diarization-service:
+    image: ghcr.io/nekonnnn/astrastudio-diarization:${ASTRA_VERSION:-latest}
+    pull_policy: ${ASTRA_PULL_POLICY:-never}
     build:
       context: ./SVC-SPEECH-DIAR
       dockerfile: Dockerfile
+    profiles: ["speech"]
     ports:
       - "8003:8000"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     volumes:
       - ./diarize_models:/app/models/diarization:ro
       - ./SVC-SPEECH-DIAR/config:/app/config:ro
@@ -151,6 +176,8 @@ services:
 
   # Backend - FastAPI (теперь зависит от llm-svc, MongoDB и PostgreSQL)
   astrachat-backend:
+    image: ghcr.io/nekonnnn/astrastudio-backend:${ASTRA_VERSION:-latest}
+    pull_policy: ${ASTRA_PULL_POLICY:-never}
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -158,12 +185,22 @@ services:
       - "8000:8000"
     volumes:
       - ./memory:/app/memory
-      - F:/test_CLI:/workspaces/test_CLI
       - ./uploads:/app/uploads  # Директория для загруженных документов
       - ./backend:/app  # Полное монтирование для работы импортов
-      - ./models:/app/models:ro  # Монтирование локальных моделей (эмбеддинги и др.)
+      # RW: UI/API скачивания моделей пишут веса на хост
+      - ./models:/app/models
+      - ./whisperx_models:/app/whisperx_models
+      - ./silero_models:/app/silero_models
+      - ./diarize_models:/app/diarize_models
+      - ./surya_models:/app/surya_models
     environment:
       - PYTHONPATH=/app
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HF_HOME=${HF_HOME:-/app/models/.hf_home}
+      # Быстрая закачка моделей: parallel Range + опционально hf_transfer
+      - HF_HUB_ENABLE_HF_TRANSFER=${HF_HUB_ENABLE_HF_TRANSFER:-1}
+      - MODEL_DOWNLOAD_CONNECTIONS=${MODEL_DOWNLOAD_CONNECTIONS:-8}
+      - MODEL_DOWNLOAD_TMP=/tmp/astra-model-dl
       # Старые переменные (для обратной совместимости)
       - LLM_SERVICE_URL=${LLM_SVC_INTERNAL_URL:-http://llm-service:8000}
       - USE_LLM_SVC=${USE_LLM_SVC:-true}
@@ -182,6 +219,7 @@ services:
       - SVC_LLM_URL=http://llm-service:8000
       - SVC_STT_URL=http://stt-service:8000
       - SVC_TTS_URL=http://tts-service:8000
+      - SVC_OMNIVOICE_URL=${SVC_OMNIVOICE_URL:-http://omnivoice-service:8000}
       - SVC_OCR_URL=http://ocr-service:8000
       - SVC_DIARIZATION_URL=http://diarization-service:8000
       - DOCKER_ENV=${DOCKER_ENV:-true}
@@ -227,6 +265,7 @@ services:
       - RAG_ENTITY_RERANKING_ENABLED=${RAG_ENTITY_RERANKING_ENABLED:-false}
       - MINIO_SERVICE_ENABLED=${MINIO_SERVICE_ENABLED:-true}
       - AGENTS_SERVICE_ENABLED=${AGENTS_SERVICE_ENABLED:-true}
+      # Speech/vision profiles: install.sh выставляет true для full, false для minimal
       - STT_SERVICE_ENABLED=${STT_SERVICE_ENABLED:-true}
       - TTS_SERVICE_ENABLED=${TTS_SERVICE_ENABLED:-true}
       - DIARIZATION_SERVICE_ENABLED=${DIARIZATION_SERVICE_ENABLED:-true}
@@ -238,25 +277,18 @@ services:
       # Дефолт эмбеддинга для entity RAG (агент/БЗ/проект): FRIDA легче и быстрее Giga
       - RAG_ENTITY_EMBEDDING_MODEL=${RAG_ENTITY_EMBEDDING_MODEL:-local/FRIDA}
       # ComfyUI в compose: бэкенд ходит на сервис comfyui (перекрывает comfyui_base_url из YAML при генерации картинок)
-      - IMAGE_GEN_COMFYUI_URL=http://comfyui:8188
+      - IMAGE_GEN_COMFYUI_URL=${IMAGE_GEN_COMFYUI_URL:-http://comfyui:8188}
       # MCP Open-WebSearch: в Docker — HTTP к контейнеру mcp-websearch (stdio/npx только для локальной разработки).
       # Поля сервера читаются из MCP_SERVER_<ID>_* (см. McpPlatformConfig._apply_per_server_env).
       - MCP_SERVER_WEBSEARCH_ENABLED=${MCP_SERVER_WEBSEARCH_ENABLED:-true}
       - MCP_SERVER_WEBSEARCH_TRANSPORT=${MCP_SERVER_WEBSEARCH_TRANSPORT:-streamable-http}
       - MCP_SERVER_WEBSEARCH_BASE_PATH=${MCP_SERVER_WEBSEARCH_BASE_PATH:-/mcp}
       - MCP_SERVER_WEBSEARCH_HEALTH_PATH=${MCP_SERVER_WEBSEARCH_HEALTH_PATH:-/mcp}
+    # Hard depends только на core (speech/vision — compose profiles, не блокируют backend)
     depends_on:
-      comfyui:
-        condition: service_started
       llm-service:
         condition: service_started
-      stt-service:
-        condition: service_started
-      tts-service:
-        condition: service_started
       ocr-service:
-        condition: service_started
-      diarization-service:
         condition: service_started
       mongodb:
         condition: service_healthy
@@ -289,6 +321,8 @@ services:
 
   # RAG Models Service (эмбеддинги + реранкер для SVC-RAG)
   rag-models:
+    image: ghcr.io/nekonnnn/astrastudio-rag-models:${ASTRA_VERSION:-latest}
+    pull_policy: ${ASTRA_PULL_POLICY:-never}
     build:
       context: ./SVC-RAG-MODELS
       dockerfile: Dockerfile
@@ -312,6 +346,8 @@ services:
 
   # RAG Logic Service (SVC-RAG) — парсинг, pgvector, BM25, иерархия
   svc-rag:
+    image: ghcr.io/nekonnnn/astrastudio-svc-rag:${ASTRA_VERSION:-latest}
+    pull_policy: ${ASTRA_PULL_POLICY:-never}
     build:
       context: ./SVC-RAG
       dockerfile: Dockerfile
@@ -365,12 +401,14 @@ services:
 
   # Frontend - React
   astrachat-frontend:
+    image: ghcr.io/nekonnnn/astrastudio-frontend:${ASTRA_VERSION:-latest}
+    pull_policy: ${ASTRA_PULL_POLICY:-never}
     build:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        - REACT_APP_API_URL=http://localhost:8000
-        - REACT_APP_WS_URL=ws://localhost:8000
+        - REACT_APP_API_URL=${REACT_APP_API_URL:-http://localhost:8000}
+        - REACT_APP_WS_URL=${REACT_APP_WS_URL:-ws://localhost:8000}
     ports:
       - "3000:3000"
     depends_on:

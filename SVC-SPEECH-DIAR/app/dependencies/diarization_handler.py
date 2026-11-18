@@ -128,3 +128,9 @@ async def cleanup_diarization_handler():
         # Очищаем кэш CUDA если используется
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+
+async def reload_diarization_handler():
+    """Сброс и повторная загрузка пайплайна диаризации."""
+    await cleanup_diarization_handler()
+    return await get_diarization_handler()

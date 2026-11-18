@@ -1,0 +1,33 @@
+# CPU override — без NVIDIA GPU / Container Toolkit.
+# Использование:
+#   docker compose -f docker-compose.yml -f docker-compose.cpu.yml --profile speech --profile vision up -d
+# Или через install.sh / install.ps1 (автодетект).
+#
+# LLM: CPU-образ (Dockerfile, не Dockerfile.cuda).
+
+services:
+  llm-service:
+    image: ghcr.io/nekonnnn/astrastudio-llm-cpu:${ASTRA_VERSION:-latest}
+    pull_policy: ${ASTRA_PULL_POLICY:-never}
+    build:
+      context: ./llm-svc
+      dockerfile: Dockerfile
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=
+      - LLM_MODEL_LOAD_TIMEOUT=${LLM_MODEL_LOAD_TIMEOUT:-1800}
+      - LLM_INFERENCE_REPLICAS=${LLM_INFERENCE_REPLICAS:-1}
+
+  comfyui:
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=
+      - COMFYUI_FORCE_CPU=1
+      - COMFYUI_ENABLE_CORS_HEADER=${COMFYUI_ENABLE_CORS_HEADER:-1}
+      - COMFYUI_CORS_HEADER=${COMFYUI_CORS_HEADER:-*}
+
+  omnivoice-service:
+    environment:
+      - OMNIVOICE_MODEL=/app/models/omnivoice
+      - OMNIVOICE_DEVICE=cpu
+      - HF_HOME=/tmp/hf
+      - HF_HUB_CACHE=/tmp/hf
+      - HF_HUB_OFFLINE=${OMNIVOICE_HF_OFFLINE:-0}

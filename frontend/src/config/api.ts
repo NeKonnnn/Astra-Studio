@@ -23,11 +23,26 @@ export const API_ENDPOINTS = {
   VOICE_SETTINGS: '/api/voice/settings',
   VOICE_WS: '/ws/voice',
   VOICE_DICTATION_WS: '/ws/dictation',
+  VOICE_ASSISTANT_PARSE: '/api/voice-assistant/parse',
+  VOICE_ASSISTANT_ASK: '/api/voice-assistant/ask',
+  VOICE_ASSISTANT_ASK_STREAM: '/api/voice-assistant/ask/stream',
+  VOICE_ASSISTANT_TTS_STATUS: '/api/voice-assistant/tts-status',
+  VOICE_ASSISTANT_VOICE_PROFILE: '/api/voice-assistant/voice-profile',
+  VOICE_ASSISTANT_OMNIVOICE_STATUS: '/api/voice-assistant/omnivoice/status',
+  VOICE_ASSISTANT_OMNIVOICE_SYNTH: '/api/voice-assistant/omnivoice/synthesize',
   
   // Транскрибация
   TRANSCRIBE_UPLOAD: '/api/transcribe/upload',
   TRANSCRIBE_YOUTUBE: '/api/transcribe/youtube',
   TRANSCRIPTION_SETTINGS: '/api/transcription/settings',
+
+  // Живые сессии (dual-track запись без join-бота)
+  LIVE_SESSIONS: '/api/live-sessions',
+  LIVE_SESSION: (id: string) => `/api/live-sessions/${encodeURIComponent(id)}`,
+  LIVE_SESSION_START: (id: string) => `/api/live-sessions/${encodeURIComponent(id)}/start`,
+  LIVE_SESSION_CHUNKS: (id: string) => `/api/live-sessions/${encodeURIComponent(id)}/chunks`,
+  LIVE_SESSION_FINALIZE: (id: string) => `/api/live-sessions/${encodeURIComponent(id)}/finalize`,
+  LIVE_SESSION_COLLECTIONS: '/api/live-sessions/collections',
   
   // Документы
   DOCUMENTS_UPLOAD: '/api/documents/upload',
@@ -66,6 +81,19 @@ export const API_ENDPOINTS = {
   MODELS_CURRENT: '/api/models/current',
   MODELS_SETTINGS: '/api/models/settings',
   MODELS_LOAD: '/api/models/load',
+
+  // Загрузка моделей (HF / HTTP)
+  MODEL_DOWNLOADS: '/api/model-downloads',
+  MODEL_DOWNLOADS_CATALOG: '/api/model-downloads/catalog',
+  MODEL_DOWNLOADS_START: '/api/model-downloads/start',
+  MODEL_DOWNLOADS_HF_TOKEN: '/api/model-downloads/hf-token',
+  MODEL_DOWNLOADS_HF_FILES: '/api/model-downloads/hf-files',
+  MODEL_DOWNLOADS_JOB: (jobId: string) =>
+    `/api/model-downloads/${encodeURIComponent(jobId)}`,
+  MODEL_DOWNLOADS_CANCEL: (jobId: string) =>
+    `/api/model-downloads/${encodeURIComponent(jobId)}/cancel`,
+  MODEL_DOWNLOADS_APPLY: (catalogId: string) =>
+    `/api/model-downloads/apply/${encodeURIComponent(catalogId)}`,
   
   // История
   HISTORY: '/api/history',

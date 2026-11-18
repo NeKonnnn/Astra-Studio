@@ -269,6 +269,7 @@ async def _apply_child_skills_and_artifacts(
     system_prompt: str,
     user: Optional[dict],
     target_agent_id: int,
+    emit_event=None,
 ) -> Tuple[str, str, List[str]]:
     """Навыки и артефакты ребёнка - как в его собственном чате.
 
@@ -279,10 +280,11 @@ async def _apply_child_skills_and_artifacts(
     """
     extra_tools: List[str] = []
     lazy_ids: List[str] = []
+    primed: Dict[str, Any] = {}
     try:
         from backend.services.skills import apply_skills_to_chat, strip_skill_mentions
 
-        new_system, _stripped, lazy_ids, extra_tools, _primed = await apply_skills_to_chat(
+        new_system, _stripped, lazy_ids, extra_tools, primed = await apply_skills_to_chat(
             system_prompt=system_prompt or None,
             user_message=prompt,
             data={},
@@ -324,6 +326,43 @@ async def _apply_child_skills_and_artifacts(
             artifacts_on = True
     except Exception:
         log.exception("subagent agent_id=%s: артефакты не применились, иду без них", target_agent_id)
+    if emit_event:
+        try:
+            from backend.mcp.activity_scope import emit_scoped_activity
+
+            skill_names = list(
+                dict.fromkeys(
+                    [
+                        *[str(x) for x in ((primed or {}).get("manual") or []) if x],
+                        *[str(x) for x in ((primed or {}).get("always_apply") or []) if x],
+                        *[str(x) for x in (lazy_ids or []) if x],
+                    ]
+                )
+            )
+            for skill_name in skill_names:
+                await emit_scoped_activity(
+                    emit_event,
+                    tool="skill",
+                    activity_kind="skill",
+                    arguments={"skill": skill_name, "agent_id": int(target_agent_id)},
+                    success=True,
+                    result_preview=f"Навык «{skill_name}» подключён",
+                    result=f"skill:{skill_name}",
+                )
+            if artifacts_on:
+                await emit_scoped_activity(
+                    emit_event,
+                    tool="artifacts",
+                    activity_kind="artifacts",
+                    arguments={"enabled": True, "agent_id": int(target_agent_id)},
+                    success=True,
+                    result_preview="Режим артефактов включён",
+                )
+        except Exception:
+            log.exception(
+                "subagent agent_id=%s: не удалось эмитить skills/artifacts",
+                target_agent_id,
+            )
     log.debug(
         "subagent agent_id=%s: навыки отложенные=%s инструменты=%s артефакты=%s",
         target_agent_id,

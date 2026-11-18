@@ -156,7 +156,8 @@ describe('ModelsSettings: loading', () => {
     mockUseAuth.mockReturnValue({ token: null });
     await renderSettings();
 
-    expect(callsTo('GET', '/api/models/settings')[0][1]).toEqual({ headers: {} });
+    // authFetch без токена и без init вызывает fetch(url) без второго аргумента
+    expect(callsTo('GET', '/api/models/settings')[0][1]).toBeUndefined();
   });
 
   it('loads the model list, current model and recommended settings with auth headers (BUG-FE-35)', async () => {

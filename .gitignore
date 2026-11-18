@@ -1,8 +1,12 @@
 # Environment files
 .env
 .env.*
-env.example
+!env.example
 env_1.example
+
+# Hugging Face token (UI model downloads)
+backend/hf_token.txt
+**/hf_token.txt
 
 # Virtual environments
 venv/

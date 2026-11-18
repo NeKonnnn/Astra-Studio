@@ -83,6 +83,16 @@ Backend ходит к сервисам по внутренним именам с
 2. Режим CPU/GPU задаётся в YAML-конфиге сервиса (`device`, `gpu_layers`) и/или Dockerfile / compose override.
 3. Для GPU на Linux/WSL нужен [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) и драйвер NVIDIA.
 
+### Скачать модели через UI (Hugging Face)
+
+В настройках (раздел **«Загрузка моделей»**, только admin) можно:
+
+1. Скачать модель из **курируемого каталога** (те же рекомендации, что в таблице ниже) — вес попадёт в нужную папку (`models/llm`, `models/rag`, `whisperx_models`, …) и при возможности сразу применится (`load` / `select` / `reload`).
+2. Указать **свой HF repo** (`org/name`) или прямой URL (Silero) и тип модели.
+3. Сохранить **HF token** для gated-моделей (pyannote).
+
+Ручная укладка весов в каталоги на хосте **по-прежнему поддерживается** — UI лишь помечает уже установленные модели и умеет их «Применить». Нужно свободное место на диске; для диаризации — принятые условия на Hugging Face + token.
+
 ### Рекомендуемые модели и откуда скачать
 
 | Сервис | Рекомендация | Куда положить | Источник |
@@ -110,8 +120,8 @@ Backend ходит к сервисам по внутренним именам с
 | **GPU** | `model.gpu_layers: -1` (все слои). Сборка: `Dockerfile.cuda`. Override: `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d llm-service`. Для vLLM — `backend: vllm`, HF-папка модели, `gpu_memory_utilization` и т.д. |
 
 ```bash
-# GPU override
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml build llm-service
+# GPU override (после publish — pull вместо build)
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml pull llm-service
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d llm-service
 ```
 
@@ -147,6 +157,53 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d llm-service
 |-------|-----|
 | **CPU** | `COMFYUI_FORCE_CPU=1` в env |
 | **GPU** | дефолт в `docker-compose.yml` (`gpus` / NVIDIA devices), `COMFYUI_FORCE_CPU=0` |
+
+---
+
+## Установка одной командой
+
+Нужен только **Docker** (и на Windows — **Docker Desktop** + **git**). Скрипт клонирует репозиторий, готовит `.env`, тянет готовые образы из GHCR (`ghcr.io/nekonnnn/astrastudio-*`) и поднимает стек. Если образы ещё не опубликованы — автоматически соберёт локально (дольше).
+
+### Linux / WSL2
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NeKonnnn/AstraChat_AI_System/main/scripts/install.sh | sh
+```
+
+Опции через переменные окружения (флаги после `|` нельзя — их съест `sh`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NeKonnnn/AstraChat_AI_System/main/scripts/install.sh \
+  | ASTRA_PROFILE=minimal ASTRA_DEVICE=cpu ASTRA_HF_TOKEN=hf_xxx sh
+```
+
+### Windows (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/NeKonnnn/AstraChat_AI_System/main/scripts/install.ps1 | iex
+```
+
+```powershell
+$env:ASTRA_PROFILE = "full"
+$env:ASTRA_DEVICE = "auto"   # auto | gpu | cpu
+$env:ASTRA_HF_TOKEN = "hf_xxx"
+irm https://raw.githubusercontent.com/NeKonnnn/AstraChat_AI_System/main/scripts/install.ps1 | iex
+```
+
+| Переменная | Значения | По умолчанию |
+|------------|----------|--------------|
+| `ASTRA_HOME` | каталог установки | `~/astrastudio` |
+| `ASTRA_VERSION` | тег образов GHCR | `latest` |
+| `ASTRA_PROFILE` | `full` (speech+vision) / `minimal` (чат+RAG+OCR) | `full` |
+| `ASTRA_DEVICE` | `auto` / `gpu` / `cpu` | `auto` |
+| `ASTRA_HF_TOKEN` | токен HF для gated-моделей | пусто |
+| `ASTRA_FORCE_BUILD` | `1` — всегда локальный build | `0` |
+
+После установки: UI **http://localhost:3000**, логин **`admin` / `admin123`**. Модели скачайте в UI (**Загрузка моделей**) или положите GGUF в `models/llm/`.
+
+> **Важно для быстрой установки:** образы публикуются workflow [`.github/workflows/publish-images.yml`](.github/workflows/publish-images.yml) в GHCR. Владельцу репозитория нужно один раз разрешить GitHub Actions писать в Packages и сделать пакеты публичными (или `docker login ghcr.io`). Пока образов нет, installer уйдёт в локальный `build`.
+
+Подробная ручная установка Docker и `docker compose` — ниже.
 
 ---
 
@@ -237,7 +294,9 @@ sudo systemctl status docker  # Для Linux
 
 ---
 
-## Быстрый старт с Docker
+## Быстрый старт с Docker (вручную)
+
+Предпочтительный путь для новых пользователей — [установка одной командой](#установка-одной-командой). Ниже — ручной сценарий для разработки.
 
 > **Примечание**
 > 
@@ -249,15 +308,15 @@ sudo systemctl status docker  # Для Linux
 
 > **Совет**
 > 
-> Для GPU (CUDA) установите Nvidia CUDA Container Toolkit. Без toolkit контейнеры с `deploy...capabilities: [gpu]` не получат доступ к видеокарте.
+> Для GPU (CUDA) установите Nvidia CUDA Container Toolkit и добавляйте `-f docker-compose.gpu.yml`. На CPU: `-f docker-compose.cpu.yml`.
 
 ### Подготовка каталогов
 
 ```bash
-cd /path/to/memo_new_api
+cd /path/to/AstraChat_AI_System
 
-mkdir -p models/llm models/rag models/comfyui \
-  diarize_models model_small silero_models whisperx_models surya_models \
+mkdir -p models/llm models/rag models/comfyui models/omnivoice \
+  diarize_models silero_models whisperx_models surya_models \
   uploads memory
 ```
 
@@ -268,7 +327,10 @@ mkdir -p models/llm models/rag models/comfyui \
 - `diarize_models`, `silero_models`, `whisperx_models`, `surya_models` — speech/OCR
 - `uploads`, `memory` — пользовательские данные backend
 
-Скопируйте env-шаблон (если есть `env.example` / `localhost.env`) в `.env` в корне и задайте пароли БД, JWT, при необходимости LDAP/Keycloak.
+```bash
+cp env.example .env
+# задайте пароли БД, JWT, при необходимости HF_TOKEN / LDAP / Keycloak
+```
 
 ---
 
@@ -277,11 +339,20 @@ mkdir -p models/llm models/rag models/comfyui \
 ### Все сервисы сразу
 
 ```bash
-cd /path/to/memo_new_api
-docker compose up -d
+cd /path/to/AstraChat_AI_System
+
+# GPU (рекомендуется при наличии NVIDIA):
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml pull
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile speech --profile vision up -d
+
+# CPU:
+# docker compose -f docker-compose.yml -f docker-compose.cpu.yml --profile speech --profile vision up -d
+
+# Minimal (без speech/ComfyUI):
+# docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 ```
 
-Поднимутся LLM, speech/OCR, ComfyUI, RAG, backend, frontend, MongoDB, PostgreSQL, MinIO, MCP websearch.
+Профили: `speech` (STT/TTS/diarization/omnivoice), `vision` (ComfyUI). OCR, LLM, RAG, backend/frontend — в core.
 
 UI: **http://localhost:3000**  
 API: **http://localhost:8000**

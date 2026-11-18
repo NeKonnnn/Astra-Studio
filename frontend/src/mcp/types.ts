@@ -54,6 +54,18 @@ export interface McpVerifyResult {
   tools?: string[];
 }
 
+export type McpActivityKind =
+  | 'mcp'
+  | 'native'
+  | 'plugin'
+  | 'subagent'
+  | 'skill'
+  | 'artifacts'
+  | 'knowledge_base'
+  | 'required'
+  | 'coding'
+  | string;
+
 export interface McpToolCallRecord {
   type: 'mcp_tool_start' | 'mcp_tool_end';
   server_id: string;
@@ -86,6 +98,15 @@ export interface McpToolCallRecord {
       store: string;
     }>;
   };
+  /** Scope: агент / шаг цепочки / родительский tool (субагент). */
+  agent_id?: number | null;
+  agent_name?: string;
+  chain_step_index?: number | null;
+  chain_step_total?: number | null;
+  parent_call_id?: string | null;
+  depth?: number;
+  activity_kind?: McpActivityKind;
+  llm_iteration?: number | null;
 }
 
 /** Объединённая карточка tool start + end для UI. */
@@ -108,6 +129,14 @@ export interface McpToolExecution {
   started_at?: number;
   ended_at?: number;
   document_search?: McpToolCallRecord['document_search'];
+  agent_id?: number | null;
+  agent_name?: string;
+  chain_step_index?: number | null;
+  chain_step_total?: number | null;
+  parent_call_id?: string | null;
+  depth?: number;
+  activity_kind?: McpActivityKind;
+  children?: McpToolExecution[];
 }
 
 export interface McpCredentialsMetadata {

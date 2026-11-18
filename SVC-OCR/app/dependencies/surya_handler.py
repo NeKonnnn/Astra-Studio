@@ -98,3 +98,9 @@ async def cleanup_surya_handler():
     if surya_ocr is not None:
         logger.info("Освобождение ресурсов Surya OCR")
         surya_ocr = None
+
+
+async def reload_surya_handler():
+    """Сброс и повторная инициализация Surya OCR."""
+    await cleanup_surya_handler()
+    return await get_surya_handler()

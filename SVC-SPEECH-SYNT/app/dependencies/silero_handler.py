@@ -88,3 +88,10 @@ async def cleanup_silero_handler():
     if silero_models is not None:
         logger.info("Освобождение ресурсов моделей Silero TTS")
         silero_models = None
+
+
+async def reload_silero_handler():
+    """Сброс и повторная загрузка Silero TTS."""
+    global silero_models
+    await cleanup_silero_handler()
+    return await get_silero_handler()

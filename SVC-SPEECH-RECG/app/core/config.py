@@ -118,6 +118,7 @@ class SileroConfig(BaseModel):
 class WhisperXConfig(BaseModel):
     enabled: bool = True
     models_dir: str = os.environ.get("WHISPERX_MODELS_DIR", "/app/models/whisperx")
+    model_size: str = os.environ.get("WHISPERX_MODEL_SIZE", "medium")
     device: str = "cpu"  # cpu, cuda, auto
     compute_type: str = "float16"  # float16, int8, int8_float16
     language: str = "ru"

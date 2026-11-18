@@ -11,6 +11,10 @@ export const ASTRA_OPEN_SKILLS_SIDEBAR = 'astrachat:open-skills-sidebar';
 export const ASTRA_OPEN_KNOWLEDGE_BASES_SIDEBAR = 'astrachat:open-knowledge-bases-sidebar';
 /** Закрыть popover «Инструменты» в чате (после перехода в настройки сущности). */
 export const ASTRA_CLOSE_CHAT_GEAR = 'astrachat:close-chat-gear';
+/** Открыть popover «Инструменты»; detail.panel — раздел (agents, mcp, …) или main. */
+export const ASTRA_OPEN_CHAT_GEAR = 'astrachat:open-chat-gear';
+/** Открыть модалку создания проекта в левой панели. */
+export const ASTRA_OPEN_CREATE_PROJECT = 'astrachat:open-create-project';
 
 /** sessionStorage: id агента, которого нужно открыть в конструкторе после перехода в чат */
 export const ASTRA_OPEN_AGENT_CONSTRUCTOR_ID_KEY = 'astrachat_open_agent_constructor_id';

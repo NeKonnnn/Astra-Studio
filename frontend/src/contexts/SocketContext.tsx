@@ -1958,13 +1958,19 @@ export function SocketProvider({ children }: { children: ReactNode }) {
         if (completedMessageId && Array.isArray(data.chain_steps) && data.chain_steps.length) {
           // document_search шага оставляем как пришло с сервера (без пустых hits/sourceFiles).
           patchMessageFields(chatId, completedMessageId, {
-            chainSteps: data.chain_steps.map((s: any) => ({
-              agentId: Number(s?.agent_id ?? s?.agentId ?? 0),
-              agentName: String(s?.agent_name ?? s?.agentName ?? 'Агент'),
-              content: String(s?.content ?? ''),
-              reasoning: String(s?.reasoning ?? s?.reasoning_content ?? '').trim() || undefined,
-              documentSearch: s?.document_search ?? s?.documentSearch ?? undefined,
-            })),
+            chainSteps: data.chain_steps.map((s: any) => {
+              const mcpRaw = s?.mcp_tool_calls ?? s?.mcpToolCalls;
+              return {
+                agentId: Number(s?.agent_id ?? s?.agentId ?? 0),
+                agentName: String(s?.agent_name ?? s?.agentName ?? 'Агент'),
+                content: String(s?.content ?? ''),
+                reasoning: String(s?.reasoning ?? s?.reasoning_content ?? '').trim() || undefined,
+                documentSearch: s?.document_search ?? s?.documentSearch ?? undefined,
+                mcpToolCalls: Array.isArray(mcpRaw) && mcpRaw.length
+                  ? normalizeMcpToolCallList(mcpRaw)
+                  : undefined,
+              };
+            }),
             chainCurrentAgent: undefined,
             hideSequentialOutputs: Boolean(data.hide_sequential_outputs),
           });

@@ -188,6 +188,59 @@ async def run_isolated_subagent(
     prompt, system_prompt, child_kb_trace = await _apply_child_kb_context(
         child_profile, prompt, system_prompt, int(target_agent_id)
     )
+    if emit_event and child_kb_trace:
+        try:
+            from backend.mcp.activity_scope import emit_scoped_activity
+
+            await emit_scoped_activity(
+                emit_event,
+                tool="document_search",
+                activity_kind="knowledge_base",
+                arguments={
+                    "query": child_kb_trace.get("query"),
+                    "agent_id": int(target_agent_id),
+                    "files": len(child_kb_trace.get("sourceFiles") or []),
+                    "hits": len(child_kb_trace.get("hits") or []),
+                },
+                success=True,
+                result_preview=(
+                    f"KB субагента: файлов {len(child_kb_trace.get('sourceFiles') or [])}, "
+                    f"фрагментов {len(child_kb_trace.get('hits') or [])}"
+                ),
+                document_search=child_kb_trace,
+            )
+        except Exception:
+            log.exception(
+                "subagent agent_id=%s: не удалось эмитить KB activity",
+                target_agent_id,
+            )
+    if emit_event and shared_trace:
+        try:
+            from backend.mcp.activity_scope import emit_scoped_activity
+
+            await emit_scoped_activity(
+                emit_event,
+                tool="document_search",
+                activity_kind="knowledge_base",
+                arguments={
+                    "query": shared_trace.get("query"),
+                    "agent_id": int(target_agent_id),
+                    "shared": True,
+                    "files": len(shared_trace.get("sourceFiles") or []),
+                    "hits": len(shared_trace.get("hits") or []),
+                },
+                success=True,
+                result_preview=(
+                    f"Общий RAG: файлов {len(shared_trace.get('sourceFiles') or [])}, "
+                    f"фрагментов {len(shared_trace.get('hits') or [])}"
+                ),
+                document_search=shared_trace,
+            )
+        except Exception:
+            log.exception(
+                "subagent agent_id=%s: не удалось эмитить shared RAG activity",
+                target_agent_id,
+            )
     # После поиска: подсказка не должна менять поисковый запрос.
     scope_note = _card_scope_note(child_profile)
     if scope_note:
@@ -220,7 +273,12 @@ async def run_isolated_subagent(
     )
 
     prompt, system_prompt, _skill_tool_ids = await _apply_child_skills_and_artifacts(
-        child_profile, prompt, system_prompt, user, int(target_agent_id)
+        child_profile,
+        prompt,
+        system_prompt,
+        user,
+        int(target_agent_id),
+        emit_event=emit_event,
     )
     # Инструменты навыков - в цикл ребёнка, как у родителя в _handle_direct.
     tool_ids = list(dict.fromkeys([*agent_mcp_tool_ids(child_profile), *_skill_tool_ids]))

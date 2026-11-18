@@ -6,7 +6,7 @@ import subprocess
 import numpy as np
 from fastapi import APIRouter, UploadFile, File, HTTPException, Form
 from fastapi.responses import JSONResponse
-from app.dependencies.diarization_handler import get_diarization_handler
+from app.dependencies.diarization_handler import get_diarization_handler, reload_diarization_handler
 # УДАЛЕНО: импорт whisperx_handler
 from app.core.config import settings
 import logging
@@ -114,7 +114,13 @@ async def diarize_audio(
                 if duration < min_duration:
                     continue
                 
-                speaker_id = f"SPEAKER_{speaker}"
+                # pyannote уже отдаёт SPEAKER_00 — не префиксуем повторно
+                # (иначе получается SPEAKER_SPEAKER_00)
+                label = str(speaker or "").strip()
+                if label.upper().startswith("SPEAKER_"):
+                    speaker_id = label
+                else:
+                    speaker_id = f"SPEAKER_{label}" if label else "SPEAKER_00"
                 
                 segment = {
                     "start": round(start_time, 2),
@@ -190,5 +196,26 @@ async def diarization_health_check():
                 "error": str(e)
             }
         )
+
+@router.post("/diarization/reload")
+async def reload_diarization_models():
+    """Перезагрузка пайплайна диаризации с диска."""
+    try:
+        if not settings.diarization.enabled:
+            raise HTTPException(status_code=503, detail="Диаризация отключена")
+        pipeline = await reload_diarization_handler()
+        if pipeline is None:
+            raise HTTPException(status_code=503, detail="Не удалось загрузить пайплайн диаризации")
+        return JSONResponse(content={
+            "success": True,
+            "message": "Диаризация перезагружена",
+            "pipeline_loaded": True,
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Diarization reload failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # УДАЛЕНО: transcribe_with_diarization (так как требует whisperx)

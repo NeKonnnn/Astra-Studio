@@ -1,6 +1,6 @@
 /** Подготовка сегмента MediaRecorder для WhisperX STT. */
 
-function encodeWavPcm16(samples: Float32Array, sampleRate: number): Blob {
+export function encodeWavPcm16(samples: Float32Array, sampleRate: number): Blob {
   const buffer = new ArrayBuffer(44 + samples.length * 2);
   const view = new DataView(buffer);
 
@@ -34,7 +34,7 @@ function encodeWavPcm16(samples: Float32Array, sampleRate: number): Blob {
   return new Blob([buffer], { type: 'audio/wav' });
 }
 
-function resampleLinear(input: Float32Array, fromRate: number, toRate: number): Float32Array {
+export function resampleLinear(input: Float32Array, fromRate: number, toRate: number): Float32Array {
   if (fromRate === toRate || input.length === 0) return input;
   const outLength = Math.max(1, Math.round((input.length * toRate) / fromRate));
   const output = new Float32Array(outLength);
@@ -94,4 +94,15 @@ export async function prepareSegmentForStt(segment: Blob): Promise<Blob | null> 
   const wav = await segmentBlobToWav16k(segment);
   if (wav && wav.size >= 100) return wav;
   return segment;
+}
+
+/** Сырой PCM (float32) → WAV mono 16 kHz для живых чанков STT. */
+export function pcmFloat32ToWav16k(samples: Float32Array, fromRate: number): Blob | null {
+  if (!samples.length || fromRate <= 0) return null;
+  const targetRate = 16000;
+  const resampled =
+    fromRate === targetRate ? samples : resampleLinear(samples, fromRate, targetRate);
+  // меньше ~0.1 c — шум для Whisper
+  if (resampled.length < 1600) return null;
+  return encodeWavPcm16(resampled, targetRate);
 }

@@ -13,7 +13,7 @@ const mockFetchStatus = jest.fn();
 const mockFetchTools = jest.fn();
 jest.mock('@/mcp/api', () => ({
   fetchMcpServers: () => mockFetchServers(),
-  fetchMcpStatus: () => mockFetchStatus(),
+  fetchMcpStatus: (opts?: unknown) => mockFetchStatus(opts),
   fetchMcpTools: (id: string) => mockFetchTools(id),
 }));
 
@@ -86,6 +86,7 @@ describe('ChatGearMcpPanel', () => {
     render(<ChatGearMcpPanel isDarkMode chatId="c1" />);
     expect(screen.getByRole('progressbar')).toBeInTheDocument();
     await flush();
+    expect(mockFetchStatus).toHaveBeenCalledWith({ fetchTools: true });
     expect(screen.getByText('Atlassian')).toBeInTheDocument();
     expect(screen.getByText('web')).toBeInTheDocument(); // имя пустое -> id
     expect(screen.queryByText('Disabled')).toBeNull();

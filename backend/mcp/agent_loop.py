@@ -80,6 +80,8 @@ async def emit_mcp_tool_start(
 ) -> None:
     if not callback:
         return
+    from backend.mcp.activity_scope import merge_scope_into_payload
+
     payload: Dict[str, Any] = {
         "type": "mcp_tool_start",
         "server_id": server_id,
@@ -90,6 +92,16 @@ async def emit_mcp_tool_start(
     }
     if arguments is not None:
         payload["arguments"] = arguments
+    merge_scope_into_payload(payload)
+    if not payload.get("activity_kind"):
+        if tool == "subagent":
+            payload["activity_kind"] = "subagent"
+        elif str(tool).startswith("plugin:"):
+            payload["activity_kind"] = "plugin"
+        elif server_id == NATIVE_SERVER_ID:
+            payload["activity_kind"] = "native"
+        else:
+            payload["activity_kind"] = "mcp"
     await callback(payload)
 
 
@@ -114,6 +126,8 @@ async def emit_mcp_tool_end(
 ) -> None:
     if not callback:
         return
+    from backend.mcp.activity_scope import merge_scope_into_payload
+
     payload: Dict[str, Any] = {
         "type": "mcp_tool_end",
         "server_id": server_id,
@@ -142,6 +156,16 @@ async def emit_mcp_tool_end(
         payload["download_urls"] = download_urls
     if document_search:
         payload["document_search"] = document_search
+    merge_scope_into_payload(payload)
+    if not payload.get("activity_kind"):
+        if tool == "subagent":
+            payload["activity_kind"] = "subagent"
+        elif str(tool).startswith("plugin:"):
+            payload["activity_kind"] = "plugin"
+        elif server_id == NATIVE_SERVER_ID:
+            payload["activity_kind"] = "native"
+        else:
+            payload["activity_kind"] = "mcp"
     await callback(payload)
 
 
@@ -387,9 +411,22 @@ class McpAgentLoop:
                 return fallback
             llm_ms = int((time.perf_counter() - t_llm) * 1000)
             if not result.tool_calls:
-                if iteration == 0 and content_has_text_tool_calls(result.content or ""):
+                # Модель положила FC в content (OWUI JSON / XML) — исполняем, не в чат.
+                from backend.mcp.text_tool_calls import extract_tool_calls_from_content
+
+                cleaned_content, text_calls = extract_tool_calls_from_content(
+                    result.content or ""
+                )
+                if text_calls:
                     log.warning(
-                        "Native MCP: model returned text <tool_call> instead of structured tool_calls; fallback to prompt_json_fc"
+                        "Native MCP: tool calls in content (%s) — execute as structured",
+                        [tc.name for tc in text_calls],
+                    )
+                    result.tool_calls = text_calls
+                    result.content = cleaned_content
+                elif iteration == 0 and content_has_text_tool_calls(result.content or ""):
+                    log.warning(
+                        "Native MCP: model returned text tool calls; fallback to prompt_json_fc"
                     )
                     return await _run_prompt_json_fc(
                         messages=messages,
@@ -406,28 +443,29 @@ class McpAgentLoop:
                         subagent_ctx=subagent_ctx,
                         subagent_config=subagent_config,
                     )
-                log_llm_result(
-                    step=step,
-                    limit=limit,
-                    has_tool_calls=False,
-                    content_preview=result.content or "",
-                    duration_ms=llm_ms,
-                )
-                log_run_end(
-                    mode="native_openai_tools",
-                    steps_used=step,
-                    limit=limit,
-                    tool_calls_executed=tool_calls_executed,
-                    reason="final_answer",
-                    content_preview=result.content or "",
-                )
-                return AgentLoopResult(
-                    content=result.content or "",
-                    tool_calls_executed=tool_calls_executed,
-                    mode="native_openai_tools",
-                    iterations=step,
-                    new_messages=working[len(messages) :],
-                )
+                else:
+                    log_llm_result(
+                        step=step,
+                        limit=limit,
+                        has_tool_calls=False,
+                        content_preview=result.content or "",
+                        duration_ms=llm_ms,
+                    )
+                    log_run_end(
+                        mode="native_openai_tools",
+                        steps_used=step,
+                        limit=limit,
+                        tool_calls_executed=tool_calls_executed,
+                        reason="final_answer",
+                        content_preview=result.content or "",
+                    )
+                    return AgentLoopResult(
+                        content=result.content or "",
+                        tool_calls_executed=tool_calls_executed,
+                        mode="native_openai_tools",
+                        iterations=step,
+                        new_messages=working[len(messages) :],
+                    )
             tc_names = [tc.name for tc in result.tool_calls]
             log_llm_result(
                 step=step,
@@ -475,6 +513,7 @@ class McpAgentLoop:
             
             # Один вызов шага -> tool-сообщение для модели. Вызовы subagent
             # шага идут одновременно (run_tool_calls), остальные - по очереди.
+            # Как OWUI: весь батч сразу pending в UI (emit start до исполнения).
             async def _run_call(item) -> Dict[str, Any]:
                 nonlocal tool_calls_executed
                 tc, tool_info, sub_call, call_id, tool_args = item
@@ -485,6 +524,18 @@ class McpAgentLoop:
                         tool=tc.name,
                         success=False,
                         error="Unknown tool",
+                    )
+                    await emit_mcp_tool_end(
+                        event_callback,
+                        server_id="unknown",
+                        tool=tc.name,
+                        qualified_name=tc.name,
+                        success=False,
+                        duration_ms=0,
+                        error="Unknown tool",
+                        call_id=call_id,
+                        arguments=tool_args,
+                        result=f"Unknown tool: {tc.name}",
                     )
                     return {
                         "role": "tool",
@@ -505,25 +556,41 @@ class McpAgentLoop:
                     kind=tool_kind,
                     arguments=tool_args,
                 )
-                await emit_mcp_tool_start(
-                    event_callback,
-                    server_id=tool_info.server_id,
-                    tool=tool_info.name,
-                    qualified_name=tool_info.qualified_name,
-                    call_id=call_id,
-                    arguments=tool_args,
-                )
                 if tool_info.server_id == NATIVE_SERVER_ID:
                     native_doc_search = None
                     try:
+                        from backend.mcp.activity_scope import activity_scope
+
+                        # Вложенные tools ребёнка получают parent_call_id = этот вызов.
+                        child_agent_id = None
+                        child_agent_name = None
+                        if tool_info.name == "subagent" and isinstance(tool_args, dict):
+                            raw_aid = tool_args.get("agent_id")
+                            try:
+                                child_agent_id = int(raw_aid) if raw_aid is not None else None
+                            except (TypeError, ValueError):
+                                child_agent_id = None
+                            child_agent_name = (
+                                str(tool_args.get("agent_name") or "").strip() or None
+                            )
                         # Модели - с меткой [[ОТВЕТ N]], в UI (result_ui) - без.
-                        content, result_ui, native_doc_search = await run_native_tool_call(
-                            tool_info,
-                            tool_args,
-                            subagent_ctx=subagent_ctx,
-                            subagent_config=subagent_config,
-                            call=sub_call,
-                        )
+                        scope_kwargs: Dict[str, Any] = {}
+                        if tool_info.name == "subagent":
+                            scope_kwargs = {
+                                "parent_call_id": call_id,
+                                "agent_id": child_agent_id,
+                                "agent_name": child_agent_name,
+                                "depth": (getattr(subagent_ctx, "depth", 0) or 0) + 1,
+                                "activity_kind": "subagent",
+                            }
+                        with activity_scope(**scope_kwargs):
+                            content, result_ui, native_doc_search = await run_native_tool_call(
+                                tool_info,
+                                tool_args,
+                                subagent_ctx=subagent_ctx,
+                                subagent_config=subagent_config,
+                                call=sub_call,
+                            )
                         outcome = "success"
                         preview = (result_ui or "")[:500] or None
                         has_image = has_audio = has_resource = False
@@ -538,17 +605,30 @@ class McpAgentLoop:
                         result_ui = content
                         native_doc_search = None
                 elif not session:
+                    err = f"MCP session unavailable: {tool_info.server_id}"
                     log_tool_result(
                         step=step,
                         limit=limit,
                         tool=tool_info.qualified_name or tool_info.name,
                         success=False,
-                        error=f"MCP session unavailable: {tool_info.server_id}",
+                        error=err,
+                    )
+                    await emit_mcp_tool_end(
+                        event_callback,
+                        server_id=tool_info.server_id,
+                        tool=tool_info.name,
+                        qualified_name=tool_info.qualified_name,
+                        success=False,
+                        duration_ms=0,
+                        error=err,
+                        call_id=call_id,
+                        arguments=tool_args,
+                        result=err,
                     )
                     return {
                         "role": "tool",
                         "tool_call_id": tc.id,
-                        "content": f"MCP session unavailable: {tool_info.server_id}",
+                        "content": err,
                     }
                 else:
                     log_cef_event(
@@ -649,6 +729,17 @@ class McpAgentLoop:
                         tool_info, tool_args, subagent_ctx, subagent_config
                     )
                 calls.append((tc, tool_info, sub_call, call_id, tool_args))
+            for tc, tool_info, _sub, call_id, tool_args in calls:
+                await emit_mcp_tool_start(
+                    event_callback,
+                    server_id=tool_info.server_id if tool_info else "unknown",
+                    tool=tool_info.name if tool_info else tc.name,
+                    qualified_name=(
+                        tool_info.qualified_name if tool_info else tc.name
+                    ),
+                    call_id=call_id,
+                    arguments=tool_args,
+                )
             working.extend(
                 await run_tool_calls(
                     calls,

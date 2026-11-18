@@ -128,7 +128,10 @@ import { useChatContextUsage } from '../hooks/useChatContextUsage';
 import { useChatInputMcpIndicators } from '../mcp/hooks/useChatInputMcpIndicators';
 import { useMcpStreamingTools } from '../mcp/hooks/useMcpStreamingTools';
 import McpToolCallsPanel from '../mcp/components/McpToolCallsPanel';
-import { mergeMcpToolCalls } from '../mcp/utils/mergeToolCalls';
+import {
+  filterToolCallsForChainStep,
+  mergeMcpToolCalls,
+} from '../mcp/utils/mergeToolCalls';
 import McpLiveToolsIndicator from '../mcp/components/McpLiveToolsIndicator';
 import ChatInputSuggestions from '../components/ChatInputSuggestions';
 import MessageFollowUpSuggestions from '../components/MessageFollowUpSuggestions';
@@ -151,7 +154,7 @@ import {
   KNOWLEDGE_RAG_STORAGE_EVENT,
 } from '../utils/knowledgeRagStorage';
 import { estimateTokens } from '../utils/contextTokens';
-import { ASTRA_CLOSE_CHAT_GEAR, ASTRA_TRIGGER_ATTACH } from '../constants/hotkeys';
+import { ASTRA_CLOSE_CHAT_GEAR, ASTRA_OPEN_CHAT_GEAR, ASTRA_TRIGGER_ATTACH } from '../constants/hotkeys';
 import {
   getDropdownPanelSx,
   getDropdownItemSx,
@@ -957,6 +960,23 @@ const MessageCardComponent = ({
       : null;
   const inlineAwaitingLabel = formatGenerationDuration(inlineAwaitingSec ?? 0);
 
+  // Как в Open WebUI: пока крутится tool — не «думает», а имя инструмента.
+  const runningToolLabel = useMemo(() => {
+    if (isUser || !message.mcpToolCalls?.length) return null;
+    const running = mergeMcpToolCalls(message.mcpToolCalls).filter((x) => x.status === 'running');
+    if (!running.length) return null;
+    const last = running[running.length - 1];
+    const agentName =
+      last.tool === 'subagent' &&
+      typeof last.arguments?.agent_name === 'string' &&
+      last.arguments.agent_name.trim()
+        ? last.arguments.agent_name.trim()
+        : '';
+    const name = agentName || last.tool || last.qualified_name || 'tool';
+    if (running.length === 1) return name;
+    return `${name} (+${running.length - 1})`;
+  }, [isUser, message.mcpToolCalls]);
+
   const messageContent = (
     <>
       <Box sx={{ display: 'flex', alignItems: 'center', mb: 0.3 }}>
@@ -978,15 +998,17 @@ const MessageCardComponent = ({
               || message.chainSteps?.[message.chainSteps.length - 1]?.agentName?.trim()
               || 'AstraChat')}
         </Typography>
-        {!isUser && generationLabel ? (
+        {!isUser && (runningToolLabel || generationLabel) ? (
           message.isStreaming ? (
             <ThinkingShimmerText
               isDarkMode={isDarkMode}
               fontSize="0.7rem"
               fontWeight={500}
-              sx={{ ml: 1, whiteSpace: 'nowrap' }}
+              sx={{ ml: 1, whiteSpace: 'nowrap', maxWidth: 280 }}
             >
-              {`думает ${generationLabel}`}
+              {runningToolLabel
+                ? `выполняется ${runningToolLabel}${generationLabel ? `\u00A0${generationLabel}` : ''}`
+                : `думает ${generationLabel}`}
             </ThinkingShimmerText>
           ) : (
             <Typography
@@ -1019,13 +1041,20 @@ const MessageCardComponent = ({
           </Box>
         ) : null}
 
-        {!isUser && message.documentSearch && (
+        {!isUser &&
+          message.documentSearch &&
+          !chainSegments &&
+          !message.mcpToolCalls?.some((t) => t.tool === 'document_search') && (
           <DocumentSearchPanel trace={message.documentSearch} />
         )}
 
-        {!isUser && message.mcpToolCalls && message.mcpToolCalls.length > 0 && !message.multiLLMResponses?.length && (
-          <McpToolCallsPanel toolCalls={message.mcpToolCalls} />
-        )}
+        {!isUser &&
+          !chainSegments &&
+          message.mcpToolCalls &&
+          message.mcpToolCalls.length > 0 &&
+          !message.multiLLMResponses?.length && (
+            <McpToolCallsPanel toolCalls={message.mcpToolCalls} nested />
+          )}
 
         {showImageGenerationPlaceholder ? (
           <Box sx={{ mb: parsedMessage.visibleContent.trim() ? 1 : 0 }}>
@@ -1357,9 +1386,27 @@ const MessageCardComponent = ({
                     isDarkMode={isDarkMode}
                     thinking={waiting}
                   />
-                  {seg.documentSearch ? (
-                    <DocumentSearchPanel trace={seg.documentSearch} />
-                  ) : null}
+                  {(() => {
+                    const stepTools =
+                      seg.mcpToolCalls && seg.mcpToolCalls.length
+                        ? seg.mcpToolCalls
+                        : filterToolCallsForChainStep(
+                            message.mcpToolCalls,
+                            seg.stepIndex ?? segIdx,
+                            seg.agentId,
+                          );
+                    const hasKbTool = stepTools.some((t) => t.tool === 'document_search');
+                    return (
+                      <>
+                        {stepTools.length ? (
+                          <McpToolCallsPanel toolCalls={stepTools} nested />
+                        ) : null}
+                        {seg.documentSearch && !hasKbTool ? (
+                          <DocumentSearchPanel trace={seg.documentSearch} />
+                        ) : null}
+                      </>
+                    );
+                  })()}
                   {segReasoning ? (
                     <ReasoningBlock
                       reasoningContent={segReasoning}
@@ -2542,12 +2589,13 @@ export default function UnifiedChatPage({
   const artifactsIndicator = useChatInputArtifactsIndicator(currentChat?.id);
   const activeSkills = useActiveSkillIndicators(currentChat?.id);
   const activeKnowledgeBases = useActiveKnowledgeBaseIndicators(currentChat?.id);
-  const { activeMcpTools } = useMcpStreamingTools();
+  const { activeMcpTools } = useMcpStreamingTools(currentChat?.id);
 
+  // Чипы у инпута только как fallback, пока пузырь ещё не получил running-карточки.
   const mcpInputSuggestions = useMemo(() => {
-    if (!activeMcpTools.length) return null;
+    if (!activeMcpTools.length || hasRunningMcpTools) return null;
     return <McpLiveToolsIndicator tools={activeMcpTools} />;
-  }, [activeMcpTools]);
+  }, [activeMcpTools, hasRunningMcpTools]);
 
   const enabledMcpServerIds = useMemo(
     () => activeMcpServers.map((s) => s.id),
@@ -4297,8 +4345,22 @@ export default function UnifiedChatPage({
 
   useEffect(() => {
     const onCloseGear = () => handleMenuClose();
+    const onOpenGear = (e: Event) => {
+      const panel = (e as CustomEvent<{ panel?: typeof gearToolsPanel }>).detail?.panel || 'main';
+      const shell = chatInputToolsAnchorRef.current;
+      if (!shell) return;
+      setGearToolsPanel(panel);
+      setAnchorEl(shell);
+      const rect = shell.getBoundingClientRect();
+      setGearToolsMenuWidthPx(Math.round(rect.width));
+      setGearToolsPaperHeightPx(getChatGearMenuPaperHeightPx(rect.top));
+    };
     window.addEventListener(ASTRA_CLOSE_CHAT_GEAR, onCloseGear);
-    return () => window.removeEventListener(ASTRA_CLOSE_CHAT_GEAR, onCloseGear);
+    window.addEventListener(ASTRA_OPEN_CHAT_GEAR, onOpenGear);
+    return () => {
+      window.removeEventListener(ASTRA_CLOSE_CHAT_GEAR, onCloseGear);
+      window.removeEventListener(ASTRA_OPEN_CHAT_GEAR, onOpenGear);
+    };
   }, []);
 
   const handleStopGeneration = (): void => {

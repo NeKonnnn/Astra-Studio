@@ -33,7 +33,7 @@ import { useAppActions } from '../../contexts/AppContext';
 import ModelSelector from '../ModelSelector';
 import ModelSettingsFields from '../ModelSettingsFields';
 import { useTheme } from '@mui/material';
-import { getApiUrl, getAuthFetchHeaders } from '../../config/api';
+import { authFetch, getApiUrl } from '../../config/api';
 import { MODEL_SETTINGS_SECTION_TITLE_SX, MODEL_SETTINGS_CARD_SX, MODEL_SETTINGS_RESET_BUTTON_SX, MODEL_SETTINGS_DEFAULT, MODEL_SETTINGS_MAX_DEFAULT } from '../../constants/modelSettingsStyles';
 import { MODEL_SETTINGS_CHANGED_EVENT } from '../../utils/contextTokens';
 import ImageGenerationSettingsSection from './ImageGenerationSettingsSection';
@@ -133,9 +133,7 @@ export default function ModelsSettings() {
   const loadSettings = async () => {
     try {
       // Загружаем настройки модели
-      const modelResponse = await fetch(getApiUrl('/api/models/settings'), {
-        headers: getAuthFetchHeaders(),
-      });
+      const modelResponse = await authFetch(getApiUrl('/api/models/settings'));
       if (modelResponse.ok) {
         const modelData = await modelResponse.json();
         skipNextAutosaveRef.current = true;
@@ -153,9 +151,7 @@ export default function ModelsSettings() {
       }
       
       // Заводские + максимальные (API: recommended, max_values)
-      const maxResponse = await fetch(getApiUrl('/api/models/settings/recommended'), {
-        headers: getAuthFetchHeaders(),
-      });
+      const maxResponse = await authFetch(getApiUrl('/api/models/settings/recommended'));
       if (maxResponse.ok) {
         const maxData = await maxResponse.json();
         if (maxData.max_values) {
@@ -178,9 +174,9 @@ export default function ModelsSettings() {
 
   const saveModelSettings = async () => {
     try {
-      const response = await fetch(getApiUrl('/api/models/settings'), {
+      const response = await authFetch(getApiUrl('/api/models/settings'), {
         method: 'PUT',
-        headers: getAuthFetchHeaders({ 'Content-Type': 'application/json' }),
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(modelSettings),
       });
       
@@ -213,9 +209,7 @@ export default function ModelsSettings() {
 
   const loadModels = async () => {
     try {
-      const response = await fetch(getApiUrl('/api/models'), {
-        headers: getAuthFetchHeaders(),
-      });
+      const response = await authFetch(getApiUrl('/api/models'));
       if (response.ok) {
         const data = await response.json();
         setAvailableModels(data.models || []);
@@ -227,9 +221,7 @@ export default function ModelsSettings() {
 
   const loadCurrentModel = async () => {
     try {
-      const response = await fetch(getApiUrl('/api/models/current'), {
-        headers: getAuthFetchHeaders(),
-      });
+      const response = await authFetch(getApiUrl('/api/models/current'));
       if (response.ok) {
         const data = await response.json();
         setCurrentModel(data);
@@ -245,16 +237,15 @@ export default function ModelsSettings() {
 
   const loadContextPrompts = async () => {
     try {
-      const authHeaders = getAuthFetchHeaders();
       // Загружаем глобальную инструкцию
-      const globalResponse = await fetch(getApiUrl('/api/context-prompts/global'), { headers: authHeaders });
+      const globalResponse = await authFetch(getApiUrl('/api/context-prompts/global'));
       if (globalResponse.ok) {
         const globalData = await globalResponse.json();
         setContextPrompts(prev => ({ ...prev, globalPrompt: globalData.prompt }));
       }
 
       // Загружаем модели с инструкциями
-      const modelsResponse = await fetch(getApiUrl('/api/context-prompts/models'), { headers: authHeaders });
+      const modelsResponse = await authFetch(getApiUrl('/api/context-prompts/models'));
       if (modelsResponse.ok) {
         const modelsData = await modelsResponse.json();
         setModelsWithPrompts(modelsData.models || []);
@@ -270,7 +261,7 @@ export default function ModelsSettings() {
       }
 
       // Загружаем пользовательские инструкции
-      const customResponse = await fetch(getApiUrl('/api/context-prompts/custom'), { headers: authHeaders });
+      const customResponse = await authFetch(getApiUrl('/api/context-prompts/custom'));
       if (customResponse.ok) {
         const customData = await customResponse.json();
         setContextPrompts(prev => ({ ...prev, customPrompts: customData.prompts || {} }));
@@ -283,9 +274,9 @@ export default function ModelsSettings() {
 
   const saveGlobalPrompt = async (prompt: string) => {
     try {
-      const response = await fetch(getApiUrl('/api/context-prompts/global'), {
+      const response = await authFetch(getApiUrl('/api/context-prompts/global'), {
         method: 'PUT',
-        headers: getAuthFetchHeaders({ 'Content-Type': 'application/json' }),
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt }),
       });
       
@@ -305,9 +296,9 @@ export default function ModelsSettings() {
 
   const saveModelPrompt = async (modelPath: string, prompt: string) => {
     try {
-      const response = await fetch(getApiUrl(`/api/context-prompts/model/${encodeURIComponent(modelPath)}`), {
+      const response = await authFetch(getApiUrl(`/api/context-prompts/model/${encodeURIComponent(modelPath)}`), {
         method: 'PUT',
-        headers: getAuthFetchHeaders({ 'Content-Type': 'application/json' }),
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt }),
       });
       
@@ -332,9 +323,9 @@ export default function ModelsSettings() {
     try {
       setIsLoadingModel(true);
       
-      const response = await fetch(getApiUrl('/api/models/load'), {
+      const response = await authFetch(getApiUrl('/api/models/load'), {
         method: 'POST',
-        headers: getAuthFetchHeaders({ 'Content-Type': 'application/json' }),
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model_path: modelPath }),
       });
       

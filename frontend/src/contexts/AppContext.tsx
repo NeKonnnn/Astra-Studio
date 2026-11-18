@@ -107,6 +107,13 @@ export interface Message {
     has_audio?: boolean;
     has_resource?: boolean;
     download_urls?: Array<{ url: string; label?: string; mime?: string }>;
+    agent_id?: number | null;
+    agent_name?: string;
+    chain_step_index?: number | null;
+    chain_step_total?: number | null;
+    parent_call_id?: string | null;
+    depth?: number;
+    activity_kind?: string;
   }>;
   /** Динамические follow-up подсказки (генерируются фоновым LLM-запросом) */
   followUpSuggestions?: ChatInputSuggestion[];
@@ -131,6 +138,7 @@ export interface Message {
     content: string;
     reasoning?: string;
     documentSearch?: Message['documentSearch'];
+    mcpToolCalls?: Message['mcpToolCalls'];
   }>;
   hideSequentialOutputs?: boolean;
   /** Alias для hideSequentialOutputs (тесты / legacy GPB). */

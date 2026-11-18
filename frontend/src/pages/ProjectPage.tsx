@@ -77,8 +77,6 @@ import {
 import { getChatInputSuggestions } from '../chat/getChatInputSuggestions';
 import { loadFollowUpSettings } from '../chat/followUpSettings';
 import { useChatInputMcpIndicators } from '../mcp/hooks/useChatInputMcpIndicators';
-import { useMcpStreamingTools } from '../mcp/hooks/useMcpStreamingTools';
-import McpLiveToolsIndicator from '../mcp/components/McpLiveToolsIndicator';
 import { copyMcpToolIds, projectMcpChatKey } from '../mcp/selectionStorage';
 import { useTheme } from '@mui/material/styles';
 import ModelSelector from '../components/ModelSelector';
@@ -125,7 +123,7 @@ import {
   setKnowledgeRagEnabled,
   KNOWLEDGE_RAG_STORAGE_EVENT,
 } from '../utils/knowledgeRagStorage';
-import { ASTRA_CLOSE_CHAT_GEAR, ASTRA_TRIGGER_ATTACH } from '../constants/hotkeys';
+import { ASTRA_CLOSE_CHAT_GEAR, ASTRA_OPEN_CHAT_GEAR, ASTRA_TRIGGER_ATTACH } from '../constants/hotkeys';
 import {
   MODEL_THINKING_MODE_STORAGE_KEY,
   ModelThinkingMode,
@@ -312,7 +310,6 @@ export default function ProjectPage({ sidebarOpen = true, sidebarHidden = false 
   const activeMcpServers = useChatInputMcpIndicators(mcpScopeChatId);
   const artifactsIndicator = useChatInputArtifactsIndicator(mcpScopeChatId);
   const activeSkills = useActiveSkillIndicators(mcpScopeChatId);
-  const { activeMcpTools } = useMcpStreamingTools();
   const isDarkMode = theme.palette.mode === 'dark';
 
   const handleOpenMcpGearPanel = useCallback(() => {
@@ -375,10 +372,8 @@ export default function ProjectPage({ sidebarOpen = true, sidebarHidden = false 
     ],
   );
 
-  const mcpInputSuggestions = useMemo(() => {
-    if (!activeMcpTools.length) return null;
-    return <McpLiveToolsIndicator tools={activeMcpTools} />;
-  }, [activeMcpTools]);
+  // Ход tools уже в пузыре (McpToolCallsPanel) — чипы у инпута не дублируем.
+  const mcpInputSuggestions = null;
 
   const enabledMcpServerIds = useMemo(
     () => activeMcpServers.map((s) => s.id),
@@ -620,8 +615,32 @@ export default function ProjectPage({ sidebarOpen = true, sidebarHidden = false 
 
   useEffect(() => {
     const onCloseGear = () => handleMenuClose();
+    const onOpenGear = (e: Event) => {
+      const raw = (e as CustomEvent<{ panel?: string }>).detail?.panel || 'main';
+      const allowed = new Set([
+        'main',
+        'agents',
+        'artifacts',
+        'skills',
+        'mcp',
+        'coding',
+        'model-mode',
+      ]);
+      const panel = (allowed.has(raw) ? raw : 'main') as typeof gearToolsPanel;
+      const shell = chatInputToolsAnchorRef.current;
+      if (!shell) return;
+      setGearToolsPanel(panel);
+      setAnchorEl(shell);
+      const rect = shell.getBoundingClientRect();
+      setGearToolsMenuWidthPx(Math.round(rect.width));
+      setGearToolsPaperHeightPx(getChatGearMenuPaperHeightPx(rect.top));
+    };
     window.addEventListener(ASTRA_CLOSE_CHAT_GEAR, onCloseGear);
-    return () => window.removeEventListener(ASTRA_CLOSE_CHAT_GEAR, onCloseGear);
+    window.addEventListener(ASTRA_OPEN_CHAT_GEAR, onOpenGear);
+    return () => {
+      window.removeEventListener(ASTRA_CLOSE_CHAT_GEAR, onCloseGear);
+      window.removeEventListener(ASTRA_OPEN_CHAT_GEAR, onOpenGear);
+    };
   }, []);
 
   const handleChatMenuClick = (event: React.MouseEvent<HTMLElement>, chatId: string) => {

@@ -7,6 +7,7 @@ import {
   Typography,
 } from '@mui/material';
 import {
+  FiberManualRecord as LiveIcon,
   Stop as SquareIcon,
   Upload as UploadIcon,
   YouTube as YouTubeIcon,
@@ -255,6 +256,33 @@ export default function TranscriptionSidebarSection({ open }: TranscriptionSideb
             <br />
             Максимальный размер: 5GB
           </Typography>
+          <Button
+            size="small"
+            fullWidth
+            startIcon={<LiveIcon sx={{ fontSize: '0.85rem !important' }} />}
+            onClick={() => {
+              if (window.location.pathname.startsWith('/live-sessions')) {
+                window.dispatchEvent(new CustomEvent('astrachat:live-session-start'));
+                return;
+              }
+              // Полный переход: вложенный SPA-Routes здесь часто не монтирует экран до F5
+              window.location.assign('/live-sessions?start=1');
+            }}
+            disabled={isTranscribing}
+            sx={{
+              fontSize: '0.72rem',
+              textTransform: 'none',
+              color: 'rgba(255,255,255,0.9)',
+              bgcolor: 'rgba(244,67,54,0.18)',
+              border: '1px solid rgba(244,67,54,0.35)',
+              py: 0.75,
+              justifyContent: 'flex-start',
+              '&:hover': { bgcolor: 'rgba(244,67,54,0.28)' },
+              '&:disabled': { color: 'rgba(255,255,255,0.35)' },
+            }}
+          >
+            Живая запись звонка
+          </Button>
           <Button
             size="small"
             fullWidth
