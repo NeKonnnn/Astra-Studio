@@ -1,6 +1,6 @@
 # AstraStudio
 
-[![GitHub Stars](https://img.shields.io/github/stars/NeKonnnn/AstraChat_AI_System?style=social&label=Stars)](https://github.com/NeKonnnn/AstraChat_AI_System) [![GitHub Forks](https://img.shields.io/github/forks/NeKonnnn/AstraChat_AI_System?style=social&label=Forks)](https://github.com/NeKonnnn/AstraChat_AI_System) [![GitHub Watchers](https://img.shields.io/github/watchers/NeKonnnn/AstraChat_AI_System?style=social&label=Watchers)](https://github.com/NeKonnnn/AstraChat_AI_System) [![Repo Size](https://img.shields.io/github/repo-size/NeKonnnn/AstraChat_AI_System?label=repo%20size)](https://github.com/NeKonnnn/AstraChat_AI_System) [![Languages](https://img.shields.io/github/languages/count/NeKonnnn/AstraChat_AI_System?label=languages)](https://github.com/NeKonnnn/AstraChat_AI_System) [![Python](https://img.shields.io/github/languages/top/NeKonnnn/AstraChat_AI_System?label=python)](https://github.com/NeKonnnn/AstraChat_AI_System) [![Last Commit](https://img.shields.io/github/last-commit/NeKonnnn/AstraChat_AI_System?label=last%20commit)](https://github.com/NeKonnnn/AstraChat_AI_System)
+[![GitHub Stars](https://img.shields.io/github/stars/NeKonnnn/Astra-Studio?style=social&label=Stars)](https://github.com/NeKonnnn/Astra-Studio) [![GitHub Forks](https://img.shields.io/github/forks/NeKonnnn/Astra-Studio?style=social&label=Forks)](https://github.com/NeKonnnn/Astra-Studio) [![GitHub Watchers](https://img.shields.io/github/watchers/NeKonnnn/Astra-Studio?style=social&label=Watchers)](https://github.com/NeKonnnn/Astra-Studio) [![Repo Size](https://img.shields.io/github/repo-size/NeKonnnn/Astra-Studio?label=repo%20size)](https://github.com/NeKonnnn/Astra-Studio) [![Languages](https://img.shields.io/github/languages/count/NeKonnnn/Astra-Studio?label=languages)](https://github.com/NeKonnnn/Astra-Studio) [![Python](https://img.shields.io/github/languages/top/NeKonnnn/Astra-Studio?label=python)](https://github.com/NeKonnnn/Astra-Studio) [![Last Commit](https://img.shields.io/github/last-commit/NeKonnnn/Astra-Studio?label=last%20commit)](https://github.com/NeKonnnn/Astra-Studio)
 
 ![Astra Studio Logo](assets/Astra_logo.png)
 
@@ -167,27 +167,27 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d llm-service
 ### Linux / WSL2
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NeKonnnn/AstraChat_AI_System/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/NeKonnnn/Astra-Studio/main/scripts/install.sh | sh
 ```
 
 Опции через переменные окружения (флаги после `|` нельзя — их съест `sh`):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NeKonnnn/AstraChat_AI_System/main/scripts/install.sh \
+curl -fsSL https://raw.githubusercontent.com/NeKonnnn/Astra-Studio/main/scripts/install.sh \
   | ASTRA_PROFILE=minimal ASTRA_DEVICE=cpu ASTRA_HF_TOKEN=hf_xxx sh
 ```
 
 ### Windows (PowerShell)
 
 ```powershell
-irm https://raw.githubusercontent.com/NeKonnnn/AstraChat_AI_System/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/NeKonnnn/Astra-Studio/main/scripts/install.ps1 | iex
 ```
 
 ```powershell
 $env:ASTRA_PROFILE = "full"
 $env:ASTRA_DEVICE = "auto"   # auto | gpu | cpu
 $env:ASTRA_HF_TOKEN = "hf_xxx"
-irm https://raw.githubusercontent.com/NeKonnnn/AstraChat_AI_System/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/NeKonnnn/Astra-Studio/main/scripts/install.ps1 | iex
 ```
 
 | Переменная | Значения | По умолчанию |
@@ -313,7 +313,7 @@ sudo systemctl status docker  # Для Linux
 ### Подготовка каталогов
 
 ```bash
-cd /path/to/AstraChat_AI_System
+cd /path/to/Astra-Studio
 
 mkdir -p models/llm models/rag models/comfyui models/omnivoice \
   diarize_models silero_models whisperx_models surya_models \
@@ -339,7 +339,7 @@ cp env.example .env
 ### Все сервисы сразу
 
 ```bash
-cd /path/to/AstraChat_AI_System
+cd /path/to/Astra-Studio
 
 # GPU (рекомендуется при наличии NVIDIA):
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml pull
@@ -597,7 +597,7 @@ curl http://localhost:8010/v1/health   # rag-models
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=NeKonnnn/AstraChat_AI_System&type=date&legend=top-left)](https://www.star-history.com/#NeKonnnn/AstraChat_AI_System&type=date&legend=top-left)
+[![Star History Chart](https://api.star-history.com/svg?repos=NeKonnnn/Astra-Studio&type=date&legend=top-left)](https://www.star-history.com/#NeKonnnn/Astra-Studio&type=date&legend=top-left)
 
 ---
 

@@ -1,0 +1,130 @@
+name: Publish AstraStudio images to GHCR
+
+on:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag (default: latest or git tag)"
+        required: false
+        default: ""
+
+env:
+  REGISTRY: ghcr.io
+  # lowercase required by GHCR
+  IMAGE_OWNER: nekonnnn
+  IMAGE_PREFIX: astrastudio
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: backend
+            context: ./backend
+            dockerfile: Dockerfile
+            image: astrastudio-backend
+          - name: frontend
+            context: ./frontend
+            dockerfile: Dockerfile
+            image: astrastudio-frontend
+            build_args: |
+              REACT_APP_API_URL=http://localhost:8000
+              REACT_APP_WS_URL=ws://localhost:8000
+          - name: llm-cuda
+            context: ./llm-svc
+            dockerfile: Dockerfile.cuda
+            image: astrastudio-llm-cuda
+          - name: llm-cpu
+            context: ./llm-svc
+            dockerfile: Dockerfile
+            image: astrastudio-llm-cpu
+          - name: rag-models
+            context: ./SVC-RAG-MODELS
+            dockerfile: Dockerfile
+            image: astrastudio-rag-models
+          - name: svc-rag
+            context: ./SVC-RAG
+            dockerfile: Dockerfile
+            image: astrastudio-svc-rag
+          - name: stt
+            context: ./SVC-SPEECH-RECG
+            dockerfile: Dockerfile
+            image: astrastudio-stt
+          - name: tts
+            context: ./SVC-SPEECH-SYNT
+            dockerfile: Dockerfile
+            image: astrastudio-tts
+          - name: ocr
+            context: ./SVC-OCR
+            dockerfile: Dockerfile
+            image: astrastudio-ocr
+          - name: diarization
+            context: ./SVC-SPEECH-DIAR
+            dockerfile: Dockerfile
+            image: astrastudio-diarization
+          - name: omnivoice
+            context: ./SVC-OMNIVOICE
+            dockerfile: Dockerfile
+            image: astrastudio-omnivoice
+          - name: comfyui
+            context: ./docker/comfyui
+            dockerfile: Dockerfile
+            image: astrastudio-comfyui
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve tags
+        id: meta
+        shell: bash
+        run: |
+          OWNER="${{ env.IMAGE_OWNER }}"
+          NAME="${{ matrix.image }}"
+          BASE="${{ env.REGISTRY }}/${OWNER}/${NAME}"
+          TAGS="${BASE}:latest"
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            V="${GITHUB_REF_NAME}"
+            TAGS="${TAGS},${BASE}:${V}"
+          fi
+          MANUAL="${{ github.event.inputs.tag }}"
+          if [[ -n "${MANUAL}" ]]; then
+            TAGS="${TAGS},${BASE}:${MANUAL}"
+          fi
+          # Always also tag with short SHA for traceability
+          TAGS="${TAGS},${BASE}:sha-${GITHUB_SHA::12}"
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+          echo "Resolved tags: ${TAGS}"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.context }}/${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: ${{ matrix.build_args }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          provenance: false

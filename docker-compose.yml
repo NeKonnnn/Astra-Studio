@@ -3,15 +3,10 @@
 # Local rebuild: docker compose build <service>
 # CPU host: add -f docker-compose.cpu.yml
 # ASTRA_VERSION=latest|vX.Y.Z
-#
-# pull_policy default never — локальный `up`/`build` не ходит в GHCR (иначе denied → лишний rebuild).
-# One-liner после успешного pull: ASTRA_PULL_POLICY=missing (или always).
-
 services:
   # LLM Service (только LLM модели)
   llm-service:
     image: ghcr.io/nekonnnn/astrastudio-llm-cuda:${ASTRA_VERSION:-latest}
-    pull_policy: ${ASTRA_PULL_POLICY:-never}
     build:
       context: ./llm-svc
       dockerfile: Dockerfile.cuda
@@ -38,7 +33,6 @@ services:
   # Profile vision: включается one-liner'ом (ASTRA_PROFILE=full) или --profile vision
   comfyui:
     image: ghcr.io/nekonnnn/astrastudio-comfyui:${ASTRA_VERSION:-latest}
-    pull_policy: ${ASTRA_PULL_POLICY:-never}
     build:
       context: ./docker/comfyui
       dockerfile: Dockerfile
@@ -69,7 +63,6 @@ services:
   # STT Service (WhisperX) — profile speech
   stt-service:
     image: ghcr.io/nekonnnn/astrastudio-stt:${ASTRA_VERSION:-latest}
-    pull_policy: ${ASTRA_PULL_POLICY:-never}
     build:
       context: ./SVC-SPEECH-RECG
       dockerfile: Dockerfile
@@ -86,7 +79,6 @@ services:
   # TTS Service (Silero) — profile speech
   tts-service:
     image: ghcr.io/nekonnnn/astrastudio-tts:${ASTRA_VERSION:-latest}
-    pull_policy: ${ASTRA_PULL_POLICY:-never}
     build:
       context: ./SVC-SPEECH-SYNT
       dockerfile: Dockerfile
@@ -105,7 +97,6 @@ services:
   # Порт хоста 8014 — 8010 занят rag-models.
   omnivoice-service:
     image: ghcr.io/nekonnnn/astrastudio-omnivoice:${ASTRA_VERSION:-latest}
-    pull_policy: ${ASTRA_PULL_POLICY:-never}
     build:
       context: ./SVC-OMNIVOICE
       dockerfile: Dockerfile
@@ -137,7 +128,6 @@ services:
   # OCR Service (Surya). Backend вызывает его по http://ocr-service:8000 (SVC_OCR_URL) для извлечения текста из изображений при загрузке документов.
   ocr-service:
     image: ghcr.io/nekonnnn/astrastudio-ocr:${ASTRA_VERSION:-latest}
-    pull_policy: ${ASTRA_PULL_POLICY:-never}
     build:
       context: ./SVC-OCR
       dockerfile: Dockerfile
@@ -158,7 +148,6 @@ services:
   # Diarization Service — profile speech
   diarization-service:
     image: ghcr.io/nekonnnn/astrastudio-diarization:${ASTRA_VERSION:-latest}
-    pull_policy: ${ASTRA_PULL_POLICY:-never}
     build:
       context: ./SVC-SPEECH-DIAR
       dockerfile: Dockerfile
@@ -177,7 +166,6 @@ services:
   # Backend - FastAPI (теперь зависит от llm-svc, MongoDB и PostgreSQL)
   astrachat-backend:
     image: ghcr.io/nekonnnn/astrastudio-backend:${ASTRA_VERSION:-latest}
-    pull_policy: ${ASTRA_PULL_POLICY:-never}
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -322,7 +310,6 @@ services:
   # RAG Models Service (эмбеддинги + реранкер для SVC-RAG)
   rag-models:
     image: ghcr.io/nekonnnn/astrastudio-rag-models:${ASTRA_VERSION:-latest}
-    pull_policy: ${ASTRA_PULL_POLICY:-never}
     build:
       context: ./SVC-RAG-MODELS
       dockerfile: Dockerfile
@@ -347,7 +334,6 @@ services:
   # RAG Logic Service (SVC-RAG) — парсинг, pgvector, BM25, иерархия
   svc-rag:
     image: ghcr.io/nekonnnn/astrastudio-svc-rag:${ASTRA_VERSION:-latest}
-    pull_policy: ${ASTRA_PULL_POLICY:-never}
     build:
       context: ./SVC-RAG
       dockerfile: Dockerfile
@@ -402,7 +388,6 @@ services:
   # Frontend - React
   astrachat-frontend:
     image: ghcr.io/nekonnnn/astrastudio-frontend:${ASTRA_VERSION:-latest}
-    pull_policy: ${ASTRA_PULL_POLICY:-never}
     build:
       context: ./frontend
       dockerfile: Dockerfile
