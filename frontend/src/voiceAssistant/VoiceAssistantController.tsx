@@ -58,6 +58,7 @@ export default function VoiceAssistantController() {
   const [status, setStatus] = useState<VoiceAssistantStatus>({
     phase: 'idle',
     engine: 'none',
+    micMuted: false,
   });
 
   const settingsRef = useRef(settings);
@@ -86,6 +87,8 @@ export default function VoiceAssistantController() {
   const speakStartedAtRef = useRef(0);
   /** После включения VA горячей клавишей — сразу начать захват команды. */
   const pendingHotkeyActivateRef = useRef(false);
+  /** Пауза микрофона без выключения ассистента. */
+  const micMutedRef = useRef(false);
 
   settingsRef.current = settings;
   statusRef.current = status;
@@ -315,9 +318,81 @@ export default function VoiceAssistantController() {
   runCommandRef.current = runCommand;
   beginCaptureRef.current = beginCapture;
 
+  const pauseMicListening = useCallback(() => {
+    micMutedRef.current = true;
+    clearCommandTimers();
+    commandBufferRef.current = '';
+    srRef.current?.stop();
+    whisperRef.current?.stop();
+    if (statusRef.current.phase === 'capturing_command') {
+      busyRef.current = false;
+    }
+    publishStatus({
+      micMuted: true,
+      phase:
+        statusRef.current.phase === 'executing' || statusRef.current.phase === 'speaking'
+          ? statusRef.current.phase
+          : 'listening_wake',
+      lastHeard: undefined,
+    });
+    vaLog('mic_paused');
+  }, [clearCommandTimers, publishStatus]);
+
+  const resumeMicListening = useCallback(async () => {
+    if (!settingsRef.current.enabled) return;
+    micMutedRef.current = false;
+    publishStatus({ micMuted: false, phase: 'listening_wake', lastError: undefined });
+    vaLog('mic_resumed');
+    if (srRef.current) {
+      srRef.current.start();
+      return;
+    }
+    if (whisperRef.current) {
+      await whisperRef.current.start();
+      return;
+    }
+    // Движки могли быть сброшены — пересоздаём как при старте
+    if (isWebSpeechAvailable()) {
+      const sr = new ContinuousSpeechRecognition(settingsRef.current.language, {
+        onPartial: (t) => onSpeechTextRef.current(t, false),
+        onFinal: (t) => onSpeechTextRef.current(t, true),
+        onError: (err) => {
+          vaWarn('sr_error', { error: err });
+          publishStatus({ lastError: err });
+        },
+      });
+      srRef.current = sr;
+      sr.start();
+      publishStatus({ engine: 'webspeech' });
+      return;
+    }
+    const whisper = new WhisperFallbackListener(
+      (t) => onSpeechTextRef.current(t, true),
+      (err) => {
+        vaWarn('whisper_error', { error: err });
+        publishStatus({ lastError: err });
+      },
+    );
+    whisperRef.current = whisper;
+    const ok = await whisper.start();
+    if (ok) publishStatus({ engine: 'whisper' });
+  }, [publishStatus]);
+
+  const toggleMicListening = useCallback(() => {
+    if (!settingsRef.current.enabled) return;
+    if (micMutedRef.current) {
+      void resumeMicListening();
+      depsRef.current.showNotification('info', 'Микрофон снова слушает');
+    } else {
+      pauseMicListening();
+      depsRef.current.showNotification('info', 'Микрофон на паузе');
+    }
+  }, [pauseMicListening, resumeMicListening]);
+
   const onSpeechText = useCallback(
     (text: string, isFinal: boolean) => {
       if (!settingsRef.current.enabled) return;
+      if (micMutedRef.current) return;
 
       const phase = statusRef.current.phase;
       publishStatus({ lastHeard: text });
@@ -410,8 +485,9 @@ export default function VoiceAssistantController() {
 
     const start = async () => {
       stopEngines();
+      micMutedRef.current = false;
       if (!settings.enabled) {
-        publishStatus({ phase: 'idle', engine: 'none' });
+        publishStatus({ phase: 'idle', engine: 'none', micMuted: false });
         vaLog('disabled');
         return;
       }
@@ -482,7 +558,12 @@ export default function VoiceAssistantController() {
         if (cancelled) return;
         srRef.current = sr;
         if (sr.start()) {
-          publishStatus({ phase: 'listening_wake', engine: 'webspeech', lastError: undefined });
+          publishStatus({
+            phase: 'listening_wake',
+            engine: 'webspeech',
+            lastError: undefined,
+            micMuted: false,
+          });
           vaLog('listening', { engine: 'webspeech', wakeWord: settings.wakeWord });
           if (pendingHotkeyActivateRef.current) {
             pendingHotkeyActivateRef.current = false;
@@ -514,7 +595,12 @@ export default function VoiceAssistantController() {
       const ok = await whisper.start();
       if (cancelled) return;
       if (ok) {
-        publishStatus({ phase: 'listening_wake', engine: 'whisper', lastError: undefined });
+        publishStatus({
+          phase: 'listening_wake',
+          engine: 'whisper',
+          lastError: undefined,
+          micMuted: false,
+        });
         vaLog('listening', { engine: 'whisper', wakeWord: settings.wakeWord });
         if (pendingHotkeyActivateRef.current) {
           pendingHotkeyActivateRef.current = false;
@@ -523,7 +609,7 @@ export default function VoiceAssistantController() {
         }
       } else {
         pendingHotkeyActivateRef.current = false;
-        publishStatus({ phase: 'idle', engine: 'none' });
+        publishStatus({ phase: 'idle', engine: 'none', micMuted: false });
         updateVoiceAssistantSettings({ enabled: false });
       }
     };
@@ -541,7 +627,15 @@ export default function VoiceAssistantController() {
       vaLog('hotkey_activate');
       if (!settingsRef.current.enabled) {
         pendingHotkeyActivateRef.current = true;
+        micMutedRef.current = false;
         updateVoiceAssistantSettings({ enabled: true });
+        return;
+      }
+      if (micMutedRef.current) {
+        void resumeMicListening().then(() => {
+          beginCaptureRef.current('');
+          depsRef.current.showNotification('info', 'Слушаю команду…');
+        });
         return;
       }
       if (statusRef.current.phase === 'capturing_command') {
@@ -581,7 +675,7 @@ export default function VoiceAssistantController() {
       window.removeEventListener(ASTRA_ACTIVATE_VOICE_ASSISTANT, onActivate);
       window.removeEventListener(ASTRA_DEACTIVATE_VOICE_ASSISTANT, onDeactivate);
     };
-  }, [clearCommandTimers, publishStatus]);
+  }, [clearCommandTimers, publishStatus, resumeMicListening]);
 
   useEffect(() => {
     const onVis = () => {
@@ -591,7 +685,7 @@ export default function VoiceAssistantController() {
         liveAskRef.current?.abort();
         srRef.current?.stop();
         whisperRef.current?.stop();
-      } else {
+      } else if (!micMutedRef.current) {
         vaLog('tab_visible_resume');
         if (srRef.current) srRef.current.start();
         else if (whisperRef.current) void whisperRef.current.start();
@@ -601,5 +695,11 @@ export default function VoiceAssistantController() {
     return () => document.removeEventListener('visibilitychange', onVis);
   }, []);
 
-  return <VoiceAssistantStatusChip status={status} enabled={settings.enabled} />;
+  return (
+    <VoiceAssistantStatusChip
+      status={status}
+      enabled={settings.enabled}
+      onToggleMic={toggleMicListening}
+    />
+  );
 }

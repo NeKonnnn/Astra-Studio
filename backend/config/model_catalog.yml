@@ -1,6 +1,7 @@
 # Курируемый каталог моделей для UI-загрузки (HF + HTTP).
 # type: llm_gguf | llm_hf | rag_embed | rag_rerank | stt | tts | diarization | comfyui | ocr | omnivoice
 # apply: load_llm | select_rag | reload_stt | reload_tts | reload_diarization | reload_ocr | reload_omnivoice | none
+# Все записи ниже — рекомендованные (кнопка «Скачать» в UI).
 
 models:
   - id: qwen35-4b-gguf-q8
@@ -9,6 +10,7 @@ models:
     description: "Лёгкая чат-модель для CPU/GPU (llama.cpp)"
     size_hint: "~4–5 GB"
     gated: false
+    recommended: true
     apply: load_llm
     local_name: "Qwen3.5-4B-UD-Q8_K_XL.gguf"
     source:
@@ -16,17 +18,44 @@ models:
       repo_id: "unsloth/Qwen3.5-4B-GGUF"
       filename: "Qwen3.5-4B-UD-Q8_K_XL.gguf"
 
+  - id: qwen3-vl-30b-awq
+    type: llm_hf
+    display_name: "Qwen3-VL 30B-A3B Instruct AWQ"
+    description: "Качественная multimodal LLM для GPU (vLLM / HF)"
+    size_hint: "~18–25 GB"
+    gated: false
+    recommended: true
+    apply: load_llm
+    local_name: "Qwen3-VL-30B-A3B-Instruct-AWQ"
+    source:
+      kind: hf
+      repo_id: "Qwen/Qwen3-VL-30B-A3B-Instruct-AWQ"
+
   - id: frida-embed
     type: rag_embed
     display_name: "FRIDA (embeddings)"
     description: "Мультиязычные эмбеддинги (dim 1536), дефолт RAG"
     size_hint: "~1–2 GB"
     gated: false
+    recommended: true
     apply: select_rag
     local_name: "FRIDA"
     source:
       kind: hf
       repo_id: "ai-forever/FRIDA"
+
+  - id: giga-embed
+    type: rag_embed
+    display_name: "Giga-Embeddings-instruct"
+    description: "Альтернативные RU/мультиязычные эмбеддинги"
+    size_hint: "~1–2 GB"
+    gated: false
+    recommended: true
+    apply: select_rag
+    local_name: "Giga-Embeddings-instruct"
+    source:
+      kind: hf
+      repo_id: "ai-forever/Giga-Embeddings-instruct"
 
   - id: minilm-l12-embed
     type: rag_embed
@@ -34,6 +63,7 @@ models:
     description: "Лёгкий мультиязычный эмбеддер"
     size_hint: "~500 MB"
     gated: false
+    recommended: true
     apply: select_rag
     local_name: "paraphrase-multilingual-MiniLM-L12-v2"
     source:
@@ -46,6 +76,7 @@ models:
     description: "Лёгкий кросс-энкодер реранкер"
     size_hint: "~100 MB"
     gated: false
+    recommended: true
     apply: select_rag
     local_name: "ms-marco-MiniLM-L-6-v2"
     source:
@@ -58,6 +89,7 @@ models:
     description: "Качественный реранкер BAAI"
     size_hint: "~1–2 GB"
     gated: false
+    recommended: true
     apply: select_rag
     local_name: "bge-reranker-v2-minicpm-layerwise"
     source:
@@ -70,6 +102,7 @@ models:
     description: "WhisperX / Systran faster-whisper medium"
     size_hint: "~1.5 GB"
     gated: false
+    recommended: true
     apply: reload_stt
     local_name: "medium"
     stt_size: "medium"
@@ -83,6 +116,7 @@ models:
     description: "WhisperX / Systran faster-whisper large-v3"
     size_hint: "~3 GB"
     gated: false
+    recommended: true
     apply: reload_stt
     local_name: "large-v3"
     stt_size: "large-v3"
@@ -96,6 +130,7 @@ models:
     description: "Синтез речи RU (torch.package model.pt)"
     size_hint: "~60 MB"
     gated: false
+    recommended: true
     apply: reload_tts
     local_name: "ru"
     source:
@@ -109,6 +144,7 @@ models:
     description: "Синтез речи EN (torch.package model.pt)"
     size_hint: "~60 MB"
     gated: false
+    recommended: true
     apply: reload_tts
     local_name: "en"
     source:
@@ -122,6 +158,7 @@ models:
     description: "Диаризация спикеров (gated — нужен HF token)"
     size_hint: "~500 MB"
     gated: true
+    recommended: true
     apply: reload_diarization
     local_name: "pyannote"
     source:
@@ -130,10 +167,11 @@ models:
 
   - id: flux-schnell-fp8
     type: comfyui
-    display_name: "FLUX.1 Schnell FP8"
+    display_name: "FLUX.1 Schnell FP8 (изображения)"
     description: "Быстрая генерация изображений (ComfyUI checkpoint)"
     size_hint: "~12 GB"
     gated: false
+    recommended: true
     apply: none
     local_name: "flux1-schnell-fp8.safetensors"
     target_subdir: "checkpoints"
@@ -144,10 +182,11 @@ models:
 
   - id: flux-dev-fp8
     type: comfyui
-    display_name: "FLUX.1 Dev FP8"
-    description: "Качественная генерация (ComfyUI checkpoint)"
+    display_name: "FLUX.1 Dev FP8 (изображения)"
+    description: "Качественная генерация изображений (ComfyUI checkpoint)"
     size_hint: "~12 GB"
     gated: false
+    recommended: true
     apply: none
     local_name: "flux1-dev-fp8.safetensors"
     target_subdir: "checkpoints"
@@ -156,12 +195,28 @@ models:
       repo_id: "Comfy-Org/flux1-dev"
       filename: "flux1-dev-fp8.safetensors"
 
+  - id: wan21-t2v-1.3b-fp8
+    type: comfyui
+    display_name: "Wan 2.1 T2V 1.3B FP8 (видео)"
+    description: "Генерация видео в ComfyUI (diffusion model)"
+    size_hint: "~3–5 GB"
+    gated: false
+    recommended: true
+    apply: none
+    local_name: "wan2.1_t2v_1.3B_fp8_scaled.safetensors"
+    target_subdir: "diffusion_models"
+    source:
+      kind: hf
+      repo_id: "Comfy-Org/Wan_2.1_ComfyUI_repackaged"
+      filename: "split_files/diffusion_models/wan2.1_t2v_1.3B_fp8_scaled.safetensors"
+
   - id: surya-ocr
     type: ocr
     display_name: "Surya OCR checkpoints"
     description: "Детекция + распознавание текста (datalab/surya)"
     size_hint: "~1–2 GB"
     gated: false
+    recommended: true
     apply: reload_ocr
     local_name: "surya"
     source:
@@ -174,6 +229,7 @@ models:
     description: "Zero-shot TTS / voice cloning (CC-BY-NC)"
     size_hint: "~2–4 GB"
     gated: false
+    recommended: true
     apply: reload_omnivoice
     local_name: "omnivoice"
     source:

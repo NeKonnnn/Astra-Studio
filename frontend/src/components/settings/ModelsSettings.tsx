@@ -30,7 +30,6 @@ import {
   Restore as RestoreIcon,
 } from '@mui/icons-material';
 import { useAppActions } from '../../contexts/AppContext';
-import { useAuth } from '../../contexts/AuthContext';
 import ModelSelector from '../ModelSelector';
 import ModelSettingsFields from '../ModelSettingsFields';
 import { useTheme } from '@mui/material';
@@ -40,10 +39,21 @@ import { MODEL_SETTINGS_CHANGED_EVENT } from '../../utils/contextTokens';
 import ImageGenerationSettingsSection from './ImageGenerationSettingsSection';
 import ModelDownloadsSettings from './ModelDownloadsSettings';
 
+type ModelsSettingsProps = {
+  /** Открыть аккордеон «Тонкая настройка» и проскроллить к блоку. */
+  expandFineTune?: boolean;
+  onFineTuneExpandHandled?: () => void;
+  /** Открыть вкладку ComfyUI в блоке генерации изображений. */
+  openImageComfyUi?: boolean;
+  onImageComfyUiHandled?: () => void;
+};
 
-export default function ModelsSettings() {
-  const { user } = useAuth();
-  const isAdmin = Boolean(user?.is_admin);
+export default function ModelsSettings({
+  expandFineTune = false,
+  onFineTuneExpandHandled,
+  openImageComfyUi = false,
+  onImageComfyUiHandled,
+}: ModelsSettingsProps = {}) {
   const readIsSettingsMode = () => {
     const mode = localStorage.getItem('model_selector_mode');
     if (mode) return mode === 'settings';
@@ -103,8 +113,20 @@ export default function ModelsSettings() {
   const [promptDialogData, setPromptDialogData] = useState({ prompt: '', description: '', id: '' });
   const [selectedModelForPrompt, setSelectedModelForPrompt] = useState<string>('');
   const [showModelPromptDialog, setShowModelPromptDialog] = useState(false);
+  const [fineTuneExpanded, setFineTuneExpanded] = useState(false);
+  const selectedModelSettingsRef = useRef<HTMLDivElement | null>(null);
 
   const { showNotification, setModelSettings: syncGlobalModelSettings } = useAppActions();
+
+  useEffect(() => {
+    if (!expandFineTune) return;
+    setFineTuneExpanded(true);
+    const t = window.setTimeout(() => {
+      selectedModelSettingsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      onFineTuneExpandHandled?.();
+    }, 80);
+    return () => window.clearTimeout(t);
+  }, [expandFineTune, onFineTuneExpandHandled]);
 
   useEffect(() => {
     loadSettings();
@@ -456,7 +478,7 @@ export default function ModelsSettings() {
       )}
 
       {/* Настройки модели astrachat */}
-      <Card sx={MODEL_SETTINGS_CARD_SX}>
+      <Card ref={selectedModelSettingsRef} sx={MODEL_SETTINGS_CARD_SX}>
         <CardContent>
           <Typography variant="h6" gutterBottom sx={MODEL_SETTINGS_SECTION_TITLE_SX}>
             <SettingsIcon color="primary" />
@@ -475,6 +497,8 @@ export default function ModelsSettings() {
             defaults={recommendedSettings}
             accordion
             darkPanel={isDarkMode}
+            fineTuneExpanded={fineTuneExpanded}
+            onFineTuneExpandedChange={setFineTuneExpanded}
           />
 
           <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap', ...MODEL_SETTINGS_RESET_BUTTON_SX }}>
@@ -815,9 +839,12 @@ export default function ModelsSettings() {
         </DialogActions>
       </Dialog>
 
-      <ImageGenerationSettingsSection />
+      <ImageGenerationSettingsSection
+        openComfyUiTab={openImageComfyUi}
+        onComfyUiTabHandled={onImageComfyUiHandled}
+      />
 
-      {isAdmin && <ModelDownloadsSettings />}
+      <ModelDownloadsSettings />
     </Box>
   );
 }

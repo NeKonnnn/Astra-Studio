@@ -106,6 +106,7 @@ export const API_ENDPOINTS = {
   AUTH_LOGIN_LOCKOUT_POLICY: '/api/auth/login-lockout-policy',
   AUTH_SESSION_POLICY: '/api/auth/session-policy',
   AUTH_SERVER_INSTANCE: '/api/auth/server-instance',
+  AUTH_REGISTER: '/api/auth/register',
   AUTH_SSO_PROVIDERS: '/api/auth/sso/providers',
   AUTH_SSO_KEYCLOAK_LOGIN: '/api/auth/sso/keycloak/login',
   AUTH_SSO_KEYCLOAK_EXCHANGE: '/api/auth/sso/keycloak/exchange',

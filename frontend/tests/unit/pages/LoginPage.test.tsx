@@ -17,7 +17,7 @@ jest.mock('@/contexts/AuthContext', () => {
       this.meta = meta;
     }
   }
-  return { AuthLoginError, useAuth: () => ({ login: mockLogin }) };
+  return { AuthLoginError, useAuth: () => ({ login: mockLogin, register: jest.fn() }) };
 });
 jest.mock('@/settings', () => ({
   initSettings: () => mockInitSettings(),

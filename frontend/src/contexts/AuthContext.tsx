@@ -68,6 +68,7 @@ interface AuthContextType {
   /** Готовый src для <Avatar>: внешний URL или один blob на сессию (LDAP). */
   avatarSrc: string | undefined;
   login: (username: string, password: string) => Promise<void>;
+  register: (username: string, password: string) => Promise<void>;
   completeSsoLogin: (ticket: string) => Promise<void>;
   logout: () => void;
   isAuthenticated: boolean;
@@ -577,6 +578,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [applyLoginResponse]);
 
+  const register = useCallback(async (username: string, password: string) => {
+    try {
+      try {
+        await initSettings();
+      } catch (settingsError) {
+        console.warn('Не удалось загрузить настройки перед register, используем дефолтные:', settingsError);
+      }
+      const response = await axios.post(authApiUrl('/api/auth/register'), {
+        username,
+        password,
+      });
+      await applyLoginResponse(response.data);
+    } catch (error: any) {
+      const detail = error.response?.data?.detail;
+      const message =
+        typeof detail === 'string'
+          ? detail
+          : Array.isArray(detail)
+            ? detail.map((d: { msg?: string }) => d?.msg).filter(Boolean).join('; ')
+            : '';
+      if (error.response?.status === 400) {
+        throw new AuthLoginError(message || 'Некорректные данные регистрации');
+      }
+      if (error.response?.status === 503) {
+        throw new AuthLoginError(message || 'Регистрация временно недоступна');
+      }
+      throw new AuthLoginError(message || 'Ошибка при регистрации');
+    }
+  }, [applyLoginResponse]);
+
   const completeSsoLogin = useCallback(async (ticket: string) => {
     // Сбрасываем старую LDAP/SSO-сессию до обмена ticket — иначе параллельные запросы
     // с устаревшим client binding дают 401 и мешают новому входу.
@@ -651,6 +682,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     token,
     avatarSrc,
     login,
+    register,
     completeSsoLogin,
     logout,
     isAuthenticated: !!token && !!user,

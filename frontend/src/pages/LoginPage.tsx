@@ -31,7 +31,10 @@ import {
 import { fetchLoginLockoutPolicy, getApiUrl, API_ENDPOINTS } from '../config/api';
 import LoginSessionNotice from '../components/LoginSessionNotice';
 
+type AuthMode = 'login' | 'register';
+
 export default function LoginPage() {
+  const [mode, setMode] = useState<AuthMode>('login');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -47,8 +50,9 @@ export default function LoginPage() {
     return saved ? saved === 'dark' : false;
   });
 
-  const { login } = useAuth();
+  const { login, register } = useAuth();
   const navigate = useNavigate();
+  const isRegisterMode = mode === 'register';
 
   useEffect(() => {
     let cancelled = false;
@@ -136,6 +140,47 @@ export default function LoginPage() {
     };
   }, [isDarkMode]);
 
+  const glassCardSx = {
+    width: '100%',
+    maxWidth: 450,
+    borderRadius: '20px',
+    backgroundColor: isDarkMode ? 'rgba(30, 30, 30, 0.45)' : 'rgba(255, 255, 255, 0.45)',
+    backgroundImage: 'none',
+    border: isDarkMode
+      ? '1px solid rgba(255, 255, 255, 0.18)'
+      : '1px solid rgba(255, 255, 255, 0.65)',
+    boxShadow: isDarkMode
+      ? '0 8px 32px rgba(0, 0, 0, 0.35)'
+      : '0 8px 32px rgba(0, 0, 0, 0.1)',
+    backdropFilter: 'blur(18px)',
+    WebkitBackdropFilter: 'blur(18px)',
+  } as const;
+
+  const pageBackdropSx = {
+    minHeight: '100vh',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    // Лёгкий градиент из палитры темы — чтобы glass-blur читался на фоне
+    background: isDarkMode
+      ? `
+        radial-gradient(ellipse 80% 60% at 20% 20%, rgba(92, 107, 192, 0.22) 0%, transparent 55%),
+        radial-gradient(ellipse 70% 50% at 80% 80%, rgba(255, 179, 0, 0.08) 0%, transparent 50%),
+        linear-gradient(160deg, #121212 0%, #1a1a1a 45%, #16161c 100%)
+      `
+      : `
+        radial-gradient(ellipse 80% 60% at 15% 15%, rgba(92, 107, 192, 0.16) 0%, transparent 55%),
+        radial-gradient(ellipse 70% 50% at 85% 85%, rgba(25, 118, 210, 0.08) 0%, transparent 50%),
+        linear-gradient(160deg, #f5f5f5 0%, #eef0f5 50%, #f7f7f9 100%)
+      `,
+  } as const;
+
+  const switchMode = (next: AuthMode) => {
+    setMode(next);
+    setError('');
+    setAttemptHint('');
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
@@ -143,10 +188,19 @@ export default function LoginPage() {
     setIsLoading(true);
 
     try {
-      await login(username, password);
+      if (isRegisterMode) {
+        await register(username, password);
+      } else {
+        await login(username, password);
+      }
       navigate('/');
     } catch (err: unknown) {
-      if (err instanceof AuthLoginError && err.meta.retryAfterSeconds !== undefined) {
+      if (isRegisterMode) {
+        const message =
+          err instanceof Error ? err.message : 'Ошибка при регистрации';
+        setError(message);
+        setAttemptHint('');
+      } else if (err instanceof AuthLoginError && err.meta.retryAfterSeconds !== undefined) {
         setError(LOGIN_LOCKOUT_EXHAUSTED_MESSAGE);
         setAttemptHint('');
       } else if (err instanceof AuthLoginError) {
@@ -177,7 +231,7 @@ export default function LoginPage() {
   };
 
   return (
-    <Container maxWidth="sm">
+    <Box sx={pageBackdropSx}>
       <LoginSessionNotice />
       <IconButton
         onClick={toggleTheme}
@@ -201,22 +255,8 @@ export default function LoginPage() {
         )}
       </IconButton>
 
-      <Box
-        sx={{
-          minHeight: '100vh',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
-        <Card
-          sx={{
-            width: '100%',
-            maxWidth: 450,
-            boxShadow: isDarkMode ? '0 8px 32px rgba(0,0,0,0.4)' : 3,
-            bgcolor: isDarkMode ? '#1e1e1e' : '#ffffff',
-          }}
-        >
+      <Container maxWidth="sm" sx={{ display: 'flex', justifyContent: 'center' }}>
+        <Card elevation={0} sx={glassCardSx}>
           <CardContent sx={{ p: 4 }}>
             <Box
               sx={{
@@ -243,7 +283,7 @@ export default function LoginPage() {
                 fontWeight="bold"
                 sx={{ color: isDarkMode ? '#fff' : '#000' }}
               >
-                Вход в систему
+                {isRegisterMode ? 'Регистрация' : 'Вход в систему'}
               </Typography>
               <Typography
                 variant="body2"
@@ -253,7 +293,9 @@ export default function LoginPage() {
                   textAlign: 'center',
                 }}
               >
-                Используйте ваши данные корпоративной учетной записи
+                {isRegisterMode
+                  ? 'Укажите имя пользователя и пароль'
+                  : 'Используйте ваши данные учётной записи'}
               </Typography>
             </Box>
 
@@ -330,7 +372,7 @@ export default function LoginPage() {
                 onChange={(e) => setPassword(e.target.value)}
                 disabled={isLoading}
                 required
-                autoComplete="current-password"
+                autoComplete={isRegisterMode ? 'new-password' : 'current-password'}
                 sx={{
                   '& .MuiOutlinedInput-root': {
                     backgroundColor: inputBackgroundColor,
@@ -417,13 +459,36 @@ export default function LoginPage() {
               >
                 {isLoading ? (
                   <CircularProgress size={24} color="inherit" />
+                ) : isRegisterMode ? (
+                  'Зарегистрироваться'
                 ) : (
                   'Войти'
                 )}
               </Button>
+
+              <Button
+                fullWidth
+                type="button"
+                variant="text"
+                disabled={isLoading || isSsoRedirecting}
+                onClick={() => switchMode(isRegisterMode ? 'login' : 'register')}
+                sx={{
+                  mt: 1.5,
+                  textTransform: 'none',
+                  color: isDarkMode ? 'rgba(255,255,255,0.75)' : 'rgba(0,0,0,0.6)',
+                  '&:hover': {
+                    backgroundColor: 'transparent',
+                    color: isDarkMode ? '#fff' : '#000',
+                  },
+                }}
+              >
+                {isRegisterMode
+                  ? 'Уже есть аккаунт? Войти'
+                  : 'Нет аккаунта? Регистрация'}
+              </Button>
             </form>
 
-            {keycloakSsoEnabled && (
+            {keycloakSsoEnabled && !isRegisterMode && (
               <>
                 <Divider sx={{ my: 2.5 }}>
                   <Typography
@@ -470,7 +535,7 @@ export default function LoginPage() {
             )}
           </CardContent>
         </Card>
-      </Box>
-    </Container>
+      </Container>
+    </Box>
   );
 }

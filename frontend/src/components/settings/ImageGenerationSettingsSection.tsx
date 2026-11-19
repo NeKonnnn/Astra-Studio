@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Box,
   Typography,
@@ -100,9 +100,31 @@ function fileToDataUri(file: File): Promise<string> {
   });
 }
 
-export default function ImageGenerationSettingsSection() {
+const COMFYUI_TAB_INDEX = 3;
+
+type ImageGenerationSettingsSectionProps = {
+  /** Переключить на вкладку ComfyUI и проскроллить к секции. */
+  openComfyUiTab?: boolean;
+  onComfyUiTabHandled?: () => void;
+};
+
+export default function ImageGenerationSettingsSection({
+  openComfyUiTab = false,
+  onComfyUiTabHandled,
+}: ImageGenerationSettingsSectionProps = {}) {
   const { showNotification } = useAppActions();
   const [tab, setTab] = useState(0);
+  const sectionRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!openComfyUiTab) return;
+    setTab(COMFYUI_TAB_INDEX);
+    const t = window.setTimeout(() => {
+      sectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      onComfyUiTabHandled?.();
+    }, 80);
+    return () => window.clearTimeout(t);
+  }, [openComfyUiTab, onComfyUiTabHandled]);
   const [status, setStatus] = useState<StatusPayload | null>(null);
   const [presets, setPresets] = useState<CustomPresetDraft[]>([]);
   const [defaultPresetId, setDefaultPresetId] = useState('');
@@ -435,7 +457,7 @@ export default function ImageGenerationSettingsSection() {
   );
 
   return (
-    <Card sx={MODEL_SETTINGS_CARD_SX}>
+    <Card ref={sectionRef} sx={MODEL_SETTINGS_CARD_SX}>
       <CardContent>
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1, mb: 1 }}>
           <Typography variant="h6" sx={MODEL_SETTINGS_SECTION_TITLE_SX}>

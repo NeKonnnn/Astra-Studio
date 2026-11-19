@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import { Box, Typography, Popover, Tooltip, CircularProgress, Divider } from '@mui/material';
+import { Box, Typography, Popover, Tooltip, CircularProgress, Divider, IconButton } from '@mui/material';
 import {
   Search as SearchIcon,
   ExpandMore as ExpandMoreIcon,
@@ -8,12 +8,14 @@ import {
   Check as CheckIcon,
   Image as ImageIcon,
   Add as AddIcon,
+  SettingsOutlined as SettingsOutlinedIcon,
 } from '@mui/icons-material';
 import AgentIcon from '../icons/AgentIcon';
 import { useAuth } from '../contexts/AuthContext';
 import { useFeatureAccess } from '../hooks/useFeatureAccess';
 import { useAppActions } from '../contexts/AppContext';
 import { authFetch, getApiUrl } from '../config/api';
+import { ASTRA_OPEN_SETTINGS_SECTION } from '../constants/hotkeys';
 import AddModelFromHfDialog from './AddModelFromHfDialog';
 import {
   isValidSelectedModelPath,
@@ -153,8 +155,7 @@ export default function AgentSelector({
   onAgentChange,
   onModelSelect,
 }: AgentSelectorProps) {
-  const { token, user } = useAuth();
-  const isAdmin = Boolean(user?.is_admin);
+  const { token } = useAuth();
   const { canUseAgents } = useFeatureAccess();
   const { showNotification } = useAppActions();
   const [addModelOpen, setAddModelOpen] = useState(false);
@@ -515,6 +516,26 @@ export default function AgentSelector({
     setActiveConnectionLabel(null);
   };
 
+  const openModelFineTuneSettings = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    handleClose();
+    window.dispatchEvent(
+      new CustomEvent(ASTRA_OPEN_SETTINGS_SECTION, {
+        detail: { section: 'models', expandFineTune: true },
+      }),
+    );
+  };
+
+  const openImageComfyUiSettings = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    handleClose();
+    window.dispatchEvent(
+      new CustomEvent(ASTRA_OPEN_SETTINGS_SECTION, {
+        detail: { section: 'models', openImageComfyUi: true },
+      }),
+    );
+  };
+
   // ─── Model select ─────────────────────────────────────────────────────────────
 
   const handleSelectModel = async (modelPath: string) => {
@@ -859,40 +880,36 @@ export default function AgentSelector({
                 </Box>
               ) : null}
             </Box>
-            {isAdmin && (
-              <>
-                <Divider sx={{ borderColor: menuDividerBorder }} />
-                <Box sx={{ p: 0.5 }}>
-                  <Box
-                    onClick={() => {
-                      setAddModelOpen(true);
-                      handleClose();
-                    }}
-                    sx={{
-                      ...dropdownItemSx,
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 1,
-                      color: menuItemColor,
-                      fontWeight: 500,
-                    }}
-                  >
-                    <AddIcon sx={{ fontSize: 18, color: 'primary.main', flexShrink: 0 }} />
-                    <Typography
-                      sx={{
-                        flex: 1,
-                        fontSize: MENU_ACTION_TEXT_SIZE,
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      Добавить модель
-                    </Typography>
-                  </Box>
-                </Box>
-              </>
-            )}
+            <Divider sx={{ borderColor: menuDividerBorder }} />
+            <Box sx={{ p: 0.5 }}>
+              <Box
+                onClick={() => {
+                  setAddModelOpen(true);
+                  handleClose();
+                }}
+                sx={{
+                  ...dropdownItemSx,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 1,
+                  color: menuItemColor,
+                  fontWeight: 500,
+                }}
+              >
+                <AddIcon sx={{ fontSize: 18, color: 'primary.main', flexShrink: 0 }} />
+                <Typography
+                  sx={{
+                    flex: 1,
+                    fontSize: MENU_ACTION_TEXT_SIZE,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  Добавить модель
+                </Typography>
+              </Box>
+            </Box>
           </Box>
 
           {/* ── Правая карточка: список моделей подключения ─────── */}
@@ -999,6 +1016,22 @@ export default function AgentSelector({
                               </Typography>
                             ) : null}
                           </Box>
+                          <Tooltip title="Настройки генерации изображений">
+                            <IconButton
+                              size="small"
+                              aria-label="Настройки генерации изображений"
+                              onClick={openImageComfyUiSettings}
+                              sx={{
+                                p: 0.35,
+                                color: subtleColor,
+                                flexShrink: 0,
+                                mt: 0.1,
+                                '&:hover': { color: menuItemColor, bgcolor: 'transparent' },
+                              }}
+                            >
+                              <SettingsOutlinedIcon sx={{ fontSize: 16 }} />
+                            </IconButton>
+                          </Tooltip>
                           {isSelected ? (
                             <CheckIcon sx={{ fontSize: 16, color: 'primary.main', flexShrink: 0 }} />
                           ) : null}
@@ -1054,6 +1087,21 @@ export default function AgentSelector({
                           >
                             {(model.display_name || model.name || '').replace(/\.gguf$/i, '')}
                           </Typography>
+                          <Tooltip title="Настройки модели">
+                            <IconButton
+                              size="small"
+                              aria-label="Настройки модели"
+                              onClick={openModelFineTuneSettings}
+                              sx={{
+                                p: 0.35,
+                                color: subtleColor,
+                                flexShrink: 0,
+                                '&:hover': { color: menuItemColor, bgcolor: 'transparent' },
+                              }}
+                            >
+                              <SettingsOutlinedIcon sx={{ fontSize: 16 }} />
+                            </IconButton>
+                          </Tooltip>
                           {isLoading ? (
                             <CircularProgress size={16} sx={{ color: mutedTextColor, flexShrink: 0 }} />
                           ) : isSelected ? (

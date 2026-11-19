@@ -1,8 +1,8 @@
-"""API загрузки моделей из Hugging Face / HTTP."""
+"""API загрузки моделей из Hugging Face / HTTP (для любого авторизованного пользователя)."""
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Annotated, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -22,11 +22,6 @@ from backend.settings.logging import get_logger
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/model-downloads", tags=["model-downloads"])
-
-
-def _require_admin(current_user: dict) -> None:
-    if not current_user.get("is_admin"):
-        raise HTTPException(status_code=403, detail="Admin access required")
 
 
 class StartDownloadRequest(BaseModel):
@@ -50,13 +45,13 @@ class HfTokenRequest(BaseModel):
 
 @router.get("/catalog")
 async def get_catalog(current_user: Annotated[dict, Depends(get_current_user)]):
-    _require_admin(current_user)
+    _ = current_user
     return {"models": list_catalog_with_installed()}
 
 
 @router.get("/installed")
 async def get_installed(current_user: Annotated[dict, Depends(get_current_user)]):
-    _require_admin(current_user)
+    _ = current_user
     roots = {k: str(v) for k, v in model_roots().items()}
     catalog = list_catalog_with_installed()
     return {
@@ -72,7 +67,7 @@ async def get_hf_files(
     repo_id: str,
     revision: Optional[str] = None,
 ):
-    _require_admin(current_user)
+    _ = current_user
     rid = (repo_id or "").strip()
     if not rid or "/" not in rid:
         raise HTTPException(status_code=400, detail="repo_id вида org/name")
@@ -90,7 +85,6 @@ async def get_model_avatar(
     repo_id: str,
 ):
     """Аватар org/user владельца HF-репо (публичные данные Hub, кэш на backend)."""
-    # достаточно быть авторизованным — не только admin (нужно в селекторе моделей чата)
     _ = current_user
     from backend.services.model_downloads.avatar import fetch_org_avatar_url
 
@@ -103,7 +97,7 @@ async def get_model_avatar(
 
 @router.get("/hf-token")
 async def get_token_status(current_user: Annotated[dict, Depends(get_current_user)]):
-    _require_admin(current_user)
+    _ = current_user
     return mask_token(get_hf_token())
 
 
@@ -112,14 +106,14 @@ async def put_hf_token(
     body: HfTokenRequest,
     current_user: Annotated[dict, Depends(get_current_user)],
 ):
-    _require_admin(current_user)
+    _ = current_user
     set_hf_token(body.token)
     return mask_token(get_hf_token())
 
 
 @router.get("")
 async def list_jobs(current_user: Annotated[dict, Depends(get_current_user)]):
-    _require_admin(current_user)
+    _ = current_user
     return {"jobs": get_job_manager().list_jobs()}
 
 
@@ -128,7 +122,7 @@ async def get_job(
     job_id: str,
     current_user: Annotated[dict, Depends(get_current_user)],
 ):
-    _require_admin(current_user)
+    _ = current_user
     job = get_job_manager().get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -140,7 +134,7 @@ async def cancel_job(
     job_id: str,
     current_user: Annotated[dict, Depends(get_current_user)],
 ):
-    _require_admin(current_user)
+    _ = current_user
     ok = get_job_manager().cancel(job_id)
     if not ok:
         raise HTTPException(status_code=400, detail="Нельзя отменить эту задачу")
@@ -152,7 +146,7 @@ async def start_download(
     body: StartDownloadRequest,
     current_user: Annotated[dict, Depends(get_current_user)],
 ):
-    _require_admin(current_user)
+    _ = current_user
     mgr = get_job_manager()
     try:
         if body.catalog_id:
@@ -206,7 +200,7 @@ async def apply_installed(
     current_user: Annotated[dict, Depends(get_current_user)],
 ):
     """Применить уже установленную модель из каталога без повторной загрузки."""
-    _require_admin(current_user)
+    _ = current_user
     from backend.services.model_downloads.apply import apply_model
     from backend.services.model_downloads.catalog import get_catalog_entry
 
@@ -234,7 +228,7 @@ async def delete_catalog_model(
     current_user: Annotated[dict, Depends(get_current_user)],
 ):
     """Удалить веса модели с диска (файл/папка + sidecar provenance)."""
-    _require_admin(current_user)
+    _ = current_user
     from backend.services.model_downloads.delete import delete_installed_model
 
     try:

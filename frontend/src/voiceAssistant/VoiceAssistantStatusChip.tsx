@@ -8,7 +8,7 @@ import {
   Tooltip,
 } from '@mui/material';
 import MicIcon from '@mui/icons-material/Mic';
-import MicNoneIcon from '@mui/icons-material/MicNone';
+import MicOffIcon from '@mui/icons-material/MicOff';
 import RecordVoiceOverIcon from '@mui/icons-material/RecordVoiceOver';
 import HeadsetMicIcon from '@mui/icons-material/HeadsetMic';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
@@ -26,7 +26,7 @@ import { ASTRA_OPEN_SETTINGS_SECTION } from '../constants/hotkeys';
 
 const PHASE_LABEL: Record<VoiceAssistantStatus['phase'], string> = {
   idle: 'Выкл',
-  listening_wake: 'Слушаю wake-word',
+  listening_wake: 'Микрофон слушает',
   capturing_command: 'Записываю команду',
   executing: 'Выполняю',
   speaking: 'Отвечаю',
@@ -79,9 +79,10 @@ function formatTime(at: number): string {
 type Props = {
   status: VoiceAssistantStatus;
   enabled: boolean;
+  onToggleMic?: () => void;
 };
 
-export default function VoiceAssistantStatusChip({ status, enabled }: Props) {
+export default function VoiceAssistantStatusChip({ status, enabled, onToggleMic }: Props) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const historyEndRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{
@@ -97,21 +98,22 @@ export default function VoiceAssistantStatusChip({ status, enabled }: Props) {
   const [historyOpen, setHistoryOpen] = useState(true);
   const [history, setHistory] = useState<VaHistoryEntry[]>(() => loadVaHistory());
 
-  const color =
-    status.phase === 'capturing_command'
+  const micMuted = Boolean(status.micMuted);
+  const color = micMuted
+    ? 'error'
+    : status.phase === 'capturing_command'
       ? 'warning'
-      : status.phase === 'executing' || status.phase === 'speaking'
-        ? 'success'
-        : 'primary';
+      : 'success';
 
-  const icon =
-    status.phase === 'capturing_command' || status.phase === 'speaking' ? (
-      <RecordVoiceOverIcon fontSize="small" />
-    ) : status.phase === 'listening_wake' ? (
-      <MicIcon fontSize="small" />
-    ) : (
-      <MicNoneIcon fontSize="small" />
-    );
+  const icon = micMuted ? (
+    <MicOffIcon fontSize="small" />
+  ) : status.phase === 'capturing_command' || status.phase === 'speaking' || status.phase === 'executing' ? (
+    <RecordVoiceOverIcon fontSize="small" />
+  ) : (
+    <MicIcon fontSize="small" />
+  );
+
+  const chipLabel = micMuted ? 'Микрофон выкл' : PHASE_LABEL[status.phase];
 
   const transcript = status.lastAnswer || status.lastHeard || status.lastCommand || '';
 
@@ -262,7 +264,30 @@ export default function VoiceAssistantStatusChip({ status, enabled }: Props) {
         </Box>
 
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 1 }}>
-          <Chip icon={icon} label={PHASE_LABEL[status.phase]} color={color} size="small" />
+          <Tooltip
+            title={
+              micMuted
+                ? 'Включить прослушку микрофона'
+                : 'Выключить прослушку (ассистент останется включён)'
+            }
+          >
+            <Chip
+              data-va-no-drag
+              icon={icon}
+              label={chipLabel}
+              color={color}
+              size="small"
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleMic?.();
+              }}
+              sx={{
+                cursor: 'pointer',
+                fontWeight: 600,
+                '&:hover': { filter: 'brightness(1.08)' },
+              }}
+            />
+          </Tooltip>
           <Box sx={{ flex: 1 }} />
           <Tooltip title="Настройки голосового помощника">
             <IconButton

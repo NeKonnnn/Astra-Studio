@@ -1,4 +1,4 @@
-"""Admin API: проверка и применение обновлений AstraStudio."""
+"""API: проверка и применение обновлений AstraStudio (для любого авторизованного пользователя)."""
 
 from __future__ import annotations
 
@@ -15,14 +15,9 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/api/admin/updates", tags=["updates"])
 
 
-def _require_admin(current_user: dict) -> None:
-    if not current_user.get("is_admin"):
-        raise HTTPException(status_code=403, detail="Admin access required")
-
-
 @router.get("/check")
 async def check_updates(current_user: Annotated[dict, Depends(get_current_user)]):
-    _require_admin(current_user)
+    _ = current_user
     try:
         return await system_updates.fetch_remote_version()
     except Exception as exc:
@@ -32,13 +27,13 @@ async def check_updates(current_user: Annotated[dict, Depends(get_current_user)]
 
 @router.get("/status")
 async def update_status(current_user: Annotated[dict, Depends(get_current_user)]):
-    _require_admin(current_user)
+    _ = current_user
     return system_updates.get_job_snapshot()
 
 
 @router.post("/apply")
 async def apply_updates(current_user: Annotated[dict, Depends(get_current_user)]):
-    _require_admin(current_user)
+    _ = current_user
     try:
         return system_updates.start_apply()
     except RuntimeError as exc:

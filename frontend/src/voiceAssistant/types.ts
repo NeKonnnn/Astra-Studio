@@ -98,6 +98,8 @@ export type VoiceAssistantStatus = {
   engine: 'webspeech' | 'whisper' | 'none';
   ttsEngine?: 'silero' | 'browser' | 'omnivoice' | 'none';
   sileroBlocked?: boolean;
+  /** true — ассистент включён, но микрофон не слушает (пауза). */
+  micMuted?: boolean;
 };
 
 export type TtsStatusResponse = {

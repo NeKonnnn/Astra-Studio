@@ -28,6 +28,7 @@ import {
   Typography,
   useTheme,
 } from '@mui/material';
+import type { Theme } from '@mui/material/styles';
 import CloudDownloadIcon from '@mui/icons-material/CloudDownload';
 import DownloadIcon from '@mui/icons-material/Download';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
@@ -69,6 +70,7 @@ type CatalogModel = {
   gated?: boolean;
   installed?: boolean;
   from_disk?: boolean;
+  recommended?: boolean;
   has_provenance?: boolean;
   avatar_url?: string;
   local_name?: string;
@@ -93,8 +95,7 @@ type DownloadJob = {
 
 const TYPE_OPTIONS: Array<{ id: string; label: string }> = [
   { id: 'all', label: 'Все типы' },
-  { id: 'llm_gguf', label: 'LLM (GGUF)' },
-  { id: 'llm_hf', label: 'LLM (HF)' },
+  { id: 'llm_gguf', label: 'LLM' },
   { id: 'rag_embed', label: 'RAG embed' },
   { id: 'rag_rerank', label: 'RAG rerank' },
   { id: 'stt', label: 'STT' },
@@ -104,6 +105,24 @@ const TYPE_OPTIONS: Array<{ id: string; label: string }> = [
   { id: 'ocr', label: 'OCR' },
   { id: 'omnivoice', label: 'OmniVoice' },
 ];
+
+/** Порядок секций «Рекомендованные» в UI. */
+const TYPE_SECTION_ORDER: Array<{ id: string; label: string }> = [
+  { id: 'llm', label: 'LLM' },
+  { id: 'rag_embed', label: 'RAG (embed)' },
+  { id: 'rag_rerank', label: 'RAG (rerank)' },
+  { id: 'stt', label: 'STT' },
+  { id: 'tts', label: 'TTS' },
+  { id: 'diarization', label: 'Диаризация' },
+  { id: 'ocr', label: 'OCR' },
+  { id: 'comfyui', label: 'ComfyUI (изображения / видео)' },
+  { id: 'omnivoice', label: 'OmniVoice' },
+];
+
+function sectionKeyForType(type: string): string {
+  if (type === 'llm_gguf' || type === 'llm_hf') return 'llm';
+  return type;
+}
 
 function formatBytes(n: number): string {
   if (!n || n <= 0) return '0 B';
@@ -152,6 +171,112 @@ function statusColor(status: string): 'default' | 'success' | 'warning' | 'error
   if (status === 'failed' || status === 'cancelled') return 'error';
   if (status === 'running' || status === 'queued') return 'info';
   return 'default';
+}
+
+function ModelCatalogRow({
+  model: m,
+  theme,
+  onApply,
+  onDownload,
+  onDelete,
+}: {
+  model: CatalogModel;
+  theme: Theme;
+  onApply: (id: string) => void;
+  onDownload: (id: string) => void;
+  onDelete: (m: CatalogModel) => void;
+}) {
+  return (
+    <ListItem
+      divider
+      sx={{
+        py: 1.25,
+        '&:hover': { backgroundColor: theme.palette.action.hover },
+      }}
+    >
+      <ListItemAvatar sx={{ minWidth: 48 }}>
+        <ModelHfAvatar
+          avatarUrl={m.avatar_url}
+          repoId={m.source?.kind !== 'local' ? m.source?.repo_id : undefined}
+          modelKey={m.local_name || m.source?.filename || m.display_name}
+          size={36}
+          iconFontSize={22}
+          rounded
+        />
+      </ListItemAvatar>
+      <ListItemText
+        primary={
+          <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Typography variant="body2" fontWeight={600}>
+              {m.display_name}
+            </Typography>
+            {m.installed && (
+              <Chip
+                size="small"
+                icon={<CheckCircleOutlineIcon />}
+                label="установлена"
+                color="success"
+                variant="outlined"
+              />
+            )}
+            {m.from_disk && m.source?.kind === 'local' && (
+              <Chip size="small" label="local" color="info" variant="outlined" />
+            )}
+            {m.from_disk && m.source?.kind !== 'local' && (
+              <Chip size="small" label="pulled" color="info" variant="outlined" />
+            )}
+            {m.gated && <Chip size="small" label="gated" color="warning" variant="outlined" />}
+            <Chip size="small" label={m.type} variant="outlined" />
+            {m.size_hint && (
+              <Typography variant="caption" color="text.secondary">
+                {m.size_hint}
+              </Typography>
+            )}
+          </Stack>
+        }
+        secondary={
+          <Typography variant="caption" color="text.secondary" component="span">
+            {m.source?.kind === 'local'
+              ? (m.source.filename || m.local_name || 'local disk')
+              : m.source?.kind === 'http'
+                ? m.source.url
+                : m.source?.repo_id}
+            {m.source?.kind !== 'local' && m.source?.filename ? ` · ${m.source.filename}` : ''}
+            {m.description ? ` — ${m.description}` : ''}
+          </Typography>
+        }
+      />
+      <Stack direction="row" spacing={0.5} sx={{ ml: 1, flexShrink: 0 }} alignItems="center">
+        {m.installed && m.apply && m.apply !== 'none' && (
+          <Button size="small" variant="text" onClick={() => void onApply(m.id)}>
+            Apply
+          </Button>
+        )}
+        {m.source?.kind !== 'local' && (
+          <Button
+            size="small"
+            variant={m.installed ? 'outlined' : 'contained'}
+            startIcon={<DownloadIcon />}
+            onClick={() => void onDownload(m.id)}
+          >
+            {m.installed ? 'Re-pull' : 'Скачать'}
+          </Button>
+        )}
+        {m.installed && (
+          <Tooltip title="Удалить с диска">
+            <IconButton
+              size="small"
+              color="error"
+              aria-label="Удалить модель"
+              onClick={() => onDelete(m)}
+            >
+              <DeleteOutlineIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+        )}
+      </Stack>
+    </ListItem>
+  );
 }
 
 export default function ModelDownloadsSettings() {
@@ -248,6 +373,38 @@ export default function ModelDownloadsSettings() {
       return hay.includes(q);
     });
   }, [catalog, typeFilter, search]);
+
+  const groupedSections = useMemo(() => {
+    const bySection = new Map<string, CatalogModel[]>();
+    for (const m of filtered) {
+      const key = sectionKeyForType(m.type);
+      const list = bySection.get(key) || [];
+      list.push(m);
+      bySection.set(key, list);
+    }
+    const sections: Array<{ id: string; label: string; recommended: CatalogModel[]; other: CatalogModel[] }> = [];
+    for (const meta of TYPE_SECTION_ORDER) {
+      const items = bySection.get(meta.id) || [];
+      if (!items.length) continue;
+      sections.push({
+        id: meta.id,
+        label: meta.label,
+        recommended: items.filter((m) => m.recommended !== false && !m.from_disk),
+        other: items.filter((m) => m.recommended === false || Boolean(m.from_disk)),
+      });
+    }
+    // типы вне известного порядка
+    Array.from(bySection.entries()).forEach(([key, items]) => {
+      if (TYPE_SECTION_ORDER.some((s) => s.id === key)) return;
+      sections.push({
+        id: key,
+        label: key,
+        recommended: items.filter((m) => m.recommended !== false && !m.from_disk),
+        other: items.filter((m) => m.recommended === false || Boolean(m.from_disk)),
+      });
+    });
+    return sections;
+  }, [filtered]);
 
   const startCatalog = async (id: string) => {
     setError(null);
@@ -346,7 +503,7 @@ export default function ModelDownloadsSettings() {
           <CloudDownloadIcon color="primary" />
           Управление моделями
           <Tooltip
-            title="Каталог, Re-pull, Apply и удаление. Новую LLM с Hugging Face добавляйте в рабочей зоне: Модели → Добавить модель"
+            title="Рекомендованные модели по типам: Скачать / Re-pull / Apply / удаление. Новую LLM с Hugging Face — в чате: Модели → Добавить модель"
             arrow
           >
             <IconButton size="small" sx={MODEL_SETTINGS_HELP_ICON_BUTTON_SX}>
@@ -365,7 +522,11 @@ export default function ModelDownloadsSettings() {
             {info}
           </Alert>
         )}
-        {loading && <LinearProgress sx={{ mb: 2 }} />}
+        {loading && (
+          <Box sx={{ display: 'flex', justifyContent: 'center', mb: 2 }}>
+            <CircularProgress size={28} thickness={2.4} />
+          </Box>
+        )}
 
       {activeJobs.length > 0 && (
         <Box sx={{ mb: 2, borderRadius: 1, border, overflow: 'hidden' }}>
@@ -548,111 +709,74 @@ export default function ModelDownloadsSettings() {
           </Box>
         </Box>
 
-        <List dense disablePadding>
-          {filtered.map((m) => (
-            <ListItem
-              key={m.id}
-              divider
-              sx={{
-                py: 1.25,
-                '&:hover': { backgroundColor: theme.palette.action.hover },
-              }}
-            >
-              <ListItemAvatar sx={{ minWidth: 48 }}>
-                <ModelHfAvatar
-                  avatarUrl={m.avatar_url}
-                  repoId={m.source?.kind !== 'local' ? m.source?.repo_id : undefined}
-                  modelKey={m.local_name || m.source?.filename || m.display_name}
-                  size={36}
-                  iconFontSize={22}
-                  rounded
-                />
-              </ListItemAvatar>
-              <ListItemText
-                primary={
-                  <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
-                    <Typography variant="body2" fontWeight={600}>
-                      {m.display_name}
-                    </Typography>
-                    {m.installed && (
-                      <Chip
-                        size="small"
-                        icon={<CheckCircleOutlineIcon />}
-                        label="installed"
-                        color="success"
-                        variant="outlined"
-                      />
-                    )}
-                    {m.from_disk && m.source?.kind === 'local' && (
-                      <Chip size="small" label="local" color="info" variant="outlined" />
-                    )}
-                    {m.from_disk && m.source?.kind !== 'local' && (
-                      <Chip size="small" label="pulled" color="info" variant="outlined" />
-                    )}
-                    {m.gated && <Chip size="small" label="gated" color="warning" variant="outlined" />}
-                    <Chip size="small" label={m.type} variant="outlined" />
-                    {m.size_hint && (
-                      <Typography variant="caption" color="text.secondary">
-                        {m.size_hint}
-                      </Typography>
-                    )}
-                  </Stack>
-                }
-                secondary={
-                  <Typography variant="caption" color="text.secondary" component="span">
-                    {m.source?.kind === 'local'
-                      ? (m.source.filename || m.local_name || 'local disk')
-                      : m.source?.kind === 'http'
-                        ? m.source.url
-                        : m.source?.repo_id}
-                    {m.source?.kind !== 'local' && m.source?.filename ? ` · ${m.source.filename}` : ''}
-                    {m.description ? ` — ${m.description}` : ''}
-                  </Typography>
-                }
-              />
-              <Stack direction="row" spacing={0.5} sx={{ ml: 1, flexShrink: 0 }} alignItems="center">
-                {m.installed && m.apply && m.apply !== 'none' && (
-                  <Button size="small" variant="text" onClick={() => void applyInstalled(m.id)}>
-                    Apply
-                  </Button>
-                )}
-                {m.source?.kind !== 'local' && (
-                  <Button
-                    size="small"
-                    variant={m.installed ? 'outlined' : 'contained'}
-                    startIcon={<DownloadIcon />}
-                    onClick={() => void startCatalog(m.id)}
+        {!filtered.length ? (
+          <Box sx={{ px: 2, py: 2 }}>
+            <Typography variant="body2" color="text.secondary">
+              Ничего не найдено
+            </Typography>
+          </Box>
+        ) : (
+          groupedSections.map((section) => (
+            <Box key={section.id}>
+              {section.recommended.length > 0 && (
+                <>
+                  <Box
+                    sx={{
+                      px: 2,
+                      py: 1,
+                      backgroundColor: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.03)',
+                      borderTop: border,
+                    }}
                   >
-                    {m.installed ? 'Re-pull' : 'Pull'}
-                  </Button>
-                )}
-                {m.installed && (
-                  <Tooltip title="Удалить с диска">
-                    <IconButton
-                      size="small"
-                      color="error"
-                      aria-label="Удалить модель"
-                      onClick={() => setDeleteTarget(m)}
-                    >
-                      <DeleteOutlineIcon fontSize="small" />
-                    </IconButton>
-                  </Tooltip>
-                )}
-              </Stack>
-            </ListItem>
-          ))}
-          {!filtered.length && (
-            <ListItem>
-              <ListItemText
-                primary={
-                  <Typography variant="body2" color="text.secondary">
-                    Ничего не найдено
-                  </Typography>
-                }
-              />
-            </ListItem>
-          )}
-        </List>
+                    <Typography variant="subtitle2" fontWeight={700}>
+                      Рекомендованные · {section.label}
+                    </Typography>
+                  </Box>
+                  <List dense disablePadding>
+                    {section.recommended.map((m) => (
+                      <ModelCatalogRow
+                        key={m.id}
+                        model={m}
+                        theme={theme}
+                        onApply={applyInstalled}
+                        onDownload={startCatalog}
+                        onDelete={setDeleteTarget}
+                      />
+                    ))}
+                  </List>
+                </>
+              )}
+              {section.other.length > 0 && (
+                <>
+                  <Box
+                    sx={{
+                      px: 2,
+                      py: 1,
+                      backgroundColor: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.03)',
+                      borderTop: border,
+                    }}
+                  >
+                    <Typography variant="subtitle2" fontWeight={700}>
+                      На диске · {section.label}
+                    </Typography>
+                  </Box>
+                  <List dense disablePadding>
+                    {section.other.map((m) => (
+                      <ModelCatalogRow
+                        key={m.id}
+                        model={m}
+                        theme={theme}
+                        onApply={applyInstalled}
+                        onDownload={startCatalog}
+                        onDelete={setDeleteTarget}
+                      />
+                    ))}
+                  </List>
+                </>
+              )}
+            </Box>
+          ))
+        )}
       </Box>
 
       <Dialog

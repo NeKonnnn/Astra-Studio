@@ -38,6 +38,11 @@ from backend.auth.ldap_auth import (
     is_ldap_enabled,
     validate_ldap_user_account,
 )
+from backend.auth.local_auth import (
+    authenticate_local,
+    fetch_local_user_profile,
+    register_local_user,
+)
 from backend.auth.mock_users import authenticate_mock
 from backend.auth.login_lockout import (
     assert_login_not_locked,
@@ -125,86 +130,22 @@ def _ensure_ldap_user_active(current_user: dict) -> None:
 
 
 def _ensure_user_account_active(current_user: dict) -> None:
-    """Проверить учётную запись: LDAP — через AD; Keycloak/mock — без повторной LDAP-проверки."""
+    """Проверить учётную запись: LDAP — через AD; Keycloak/mock/local — без LDAP."""
     auth_method = current_user.get("auth_method") or "ldap"
-    if auth_method in ("keycloak", "mock"):
+    if auth_method in ("keycloak", "mock", "local"):
         return
     _ensure_ldap_user_active(current_user)
 
 
-@router.get("/login-lockout-policy")
-async def login_lockout_policy():
-    """Публичные параметры блокировки входа (для страницы авторизации)."""
-    return get_lockout_policy()
-
-
-@router.get("/session-policy")
-async def session_policy():
-    """Параметры абсолютного таймаута сессии с момента входа (для frontend)."""
-    return get_session_policy()
-
-
-@router.get("/server-instance", response_model=ServerInstanceResponse)
-async def server_instance():
-    """Идентификатор текущего процесса backend (меняется при рестарте)."""
-    return {"instance_id": get_server_instance_id()}
-
-
-@router.post("/login", response_model=TokenResponse)
-async def login(credentials: LoginRequest, request: Request, response: Response):
-    """
-    Логин: LDAP (если включён) либо локальные mock-учётки (admin/user/test),
-    когда LDAP_ENABLED=false.
-    """
-    username = credentials.username
-    logger.debug("auth login start user=%s", username)
-    try:
-        assert_login_not_locked(username)
-    except HTTPException as he:
-        if he.status_code == status.HTTP_429_TOO_MANY_REQUESTS:
-            log_cef_event(
-                "SEC003",
-                request=request,
-                current_user={"username": username},
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                extra=build_cef_sec003_extra(username, account_locked=True),
-            )
-        raise
-    ldap_on = is_ldap_enabled()
-    logger.debug("auth login ldap_enabled=%s", ldap_on)
-    auth_method = "ldap"
-    if ldap_on:
-        user = authenticate_ldap(username, credentials.password)
-        logger.debug("auth login after LDAP user_resolved=%s", bool(user))
-    else:
-        auth_method = "mock"
-        user = authenticate_mock(username, credentials.password)
-        logger.debug(
-            "auth login LDAP disabled; mock user_resolved=%s",
-            bool(user),
-        )
-    if not user:
-        record_failed_login(username)
-        logger.info("auth login rejecting invalid credentials user=%s", username)
-        log_cef_event(
-            "SEC003",
-            request=request,
-            current_user={"username": username},
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            extra={
-                **build_cef_sec003_extra(username, account_locked=False),
-                "auth_method": auth_method,
-                **(
-                    {"reason": f"LDAP disabled{ldap_reason_suffix()}; mock miss"}
-                    if not ldap_on
-                    else {}
-                ),
-            },
-        )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=build_login_failed_detail(username),
-        )
+async def _issue_session_tokens(
+    *,
+    user: dict,
+    auth_method: str,
+    request: Request,
+    response: Response,
+) -> dict:
+    """Общий pipeline после успешного login/register: сессия + JWT + cookie."""
+    username = user.get("username") or user.get("user_id") or ""
     user = {**user, "auth_method": auth_method}
     record_successful_login(username)
     sub = username
@@ -212,7 +153,7 @@ async def login(credentials: LoginRequest, request: Request, response: Response)
     session_info = register_user_session(
         sub, session_id, username=username, request=request
     )
-    logger.debug("auth login issuing token sub=%s method=%s", sub, auth_method)
+    logger.debug("auth issuing token sub=%s method=%s", sub, auth_method)
     try:
         access_token = create_access_token(
             username=sub, session_id=session_id, user_profile=user
@@ -221,7 +162,7 @@ async def login(credentials: LoginRequest, request: Request, response: Response)
             username=sub, session_id=session_id, user_profile=user
         )
     except Exception as e:
-        logger.exception("auth login JWT token create failed user=%s", username)
+        logger.exception("auth JWT token create failed user=%s", username)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Ошибка выдачи токена",
@@ -232,7 +173,7 @@ async def login(credentials: LoginRequest, request: Request, response: Response)
         jwt_token_byte_length(access_token),
         jwt_token_byte_length(refresh_token),
     )
-    logger.info("auth login success sub=%s method=%s", sub, auth_method)
+    logger.info("auth success sub=%s method=%s", sub, auth_method)
     try:
         from backend.services.admin_activity import schedule_record_login
 
@@ -275,6 +216,127 @@ async def login(credentials: LoginRequest, request: Request, response: Response)
         ),
         "server_instance_id": get_server_instance_id(),
     }
+
+
+@router.get("/login-lockout-policy")
+async def login_lockout_policy():
+    """Публичные параметры блокировки входа (для страницы авторизации)."""
+    return get_lockout_policy()
+
+
+@router.get("/session-policy")
+async def session_policy():
+    """Параметры абсолютного таймаута сессии с момента входа (для frontend)."""
+    return get_session_policy()
+
+
+@router.get("/server-instance", response_model=ServerInstanceResponse)
+async def server_instance():
+    """Идентификатор текущего процесса backend (меняется при рестарте)."""
+    return {"instance_id": get_server_instance_id()}
+
+
+@router.post("/register", response_model=TokenResponse)
+async def register(credentials: LoginRequest, request: Request, response: Response):
+    """
+    Регистрация локального пользователя (username + password) в PostgreSQL.
+    По умолчанию is_admin=True — полный доступ к админ-ресурсам.
+    После создания сразу выдаётся сессия (как при login).
+    """
+    username = (credentials.username or "").strip()
+    logger.debug("auth register start user=%s", username)
+    try:
+        user = await register_local_user(username, credentials.password)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
+    except RuntimeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e),
+        ) from e
+    except Exception as e:
+        logger.exception("auth register failed user=%s", username)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Ошибка регистрации",
+        ) from e
+    return await _issue_session_tokens(
+        user=user, auth_method="local", request=request, response=response
+    )
+
+
+@router.post("/login", response_model=TokenResponse)
+async def login(credentials: LoginRequest, request: Request, response: Response):
+    """
+    Логин: LDAP (если включён); иначе локальные пользователи из PostgreSQL,
+    затем mock-учётки (admin/user/test).
+    """
+    username = credentials.username
+    logger.debug("auth login start user=%s", username)
+    try:
+        assert_login_not_locked(username)
+    except HTTPException as he:
+        if he.status_code == status.HTTP_429_TOO_MANY_REQUESTS:
+            log_cef_event(
+                "SEC003",
+                request=request,
+                current_user={"username": username},
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                extra=build_cef_sec003_extra(username, account_locked=True),
+            )
+        raise
+    ldap_on = is_ldap_enabled()
+    logger.debug("auth login ldap_enabled=%s", ldap_on)
+    auth_method = "ldap"
+    user = None
+    if ldap_on:
+        user = authenticate_ldap(username, credentials.password)
+        logger.debug("auth login after LDAP user_resolved=%s", bool(user))
+    else:
+        user = await authenticate_local(username, credentials.password)
+        if user:
+            auth_method = "local"
+            logger.debug("auth login local user_resolved=true")
+        else:
+            auth_method = "mock"
+            user = authenticate_mock(username, credentials.password)
+            logger.debug(
+                "auth login LDAP disabled; mock user_resolved=%s",
+                bool(user),
+            )
+    if not user:
+        record_failed_login(username)
+        logger.info("auth login rejecting invalid credentials user=%s", username)
+        log_cef_event(
+            "SEC003",
+            request=request,
+            current_user={"username": username},
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            extra={
+                **build_cef_sec003_extra(username, account_locked=False),
+                "auth_method": auth_method,
+                **(
+                    {
+                        "reason": (
+                            f"LDAP disabled{ldap_reason_suffix()}; "
+                            "local/mock miss"
+                        )
+                    }
+                    if not ldap_on
+                    else {}
+                ),
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=build_login_failed_detail(username),
+        )
+    return await _issue_session_tokens(
+        user=user, auth_method=auth_method, request=request, response=response
+    )
 
 
 @router.post("/refresh", response_model=TokenResponse)
@@ -322,6 +384,10 @@ async def refresh_tokens(request: Request, response: Response, payload: RefreshR
             request=request,
         )
     if auth_method == "keycloak":
+        user_profile = token_data
+    elif auth_method == "local":
+        user_profile = await fetch_local_user_profile(sub) or token_data
+    elif auth_method == "mock":
         user_profile = token_data
     else:
         user_profile = fetch_ldap_user_profile(sub) or token_data

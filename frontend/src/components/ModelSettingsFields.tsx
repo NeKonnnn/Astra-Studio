@@ -57,6 +57,9 @@ interface ModelSettingsFieldsProps {
   compact?: boolean;
   /** Только просмотр: аккордеон открывается, поля и переключатели заблокированы. */
   readOnly?: boolean;
+  /** Контролируемое раскрытие аккордеона «Тонкая настройка». */
+  fineTuneExpanded?: boolean;
+  onFineTuneExpandedChange?: (expanded: boolean) => void;
 }
 
 const INTEGER_KEYS = new Set<keyof ModelSettingsState>(['context_size', 'output_tokens', 'top_k']);
@@ -115,6 +118,8 @@ export default function ModelSettingsFields({
   darkPanel = false,
   compact = false,
   readOnly = false,
+  fineTuneExpanded,
+  onFineTuneExpandedChange,
 }: ModelSettingsFieldsProps) {
   const maxValues = { ...MODEL_SETTINGS_MAX_DEFAULT, ...maxValuesProp };
   const defaults = { ...MODEL_SETTINGS_DEFAULT, ...defaultsProp };
@@ -292,6 +297,14 @@ export default function ModelSettingsFields({
     return (
       <>
         <Accordion
+          {...(typeof fineTuneExpanded === 'boolean'
+            ? {
+                expanded: fineTuneExpanded,
+                onChange: (_: React.SyntheticEvent, next: boolean) => {
+                  onFineTuneExpandedChange?.(next);
+                },
+              }
+            : {})}
           sx={{
             ...MODEL_SETTINGS_ACCORDION_SX,
             ...(darkPanel

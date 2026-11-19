@@ -250,6 +250,8 @@ function App() {
   const [settingsInitialSection, setSettingsInitialSection] = useState<
     'general' | 'profile' | 'interface' | 'models' | 'rag' | 'transcription' | 'voiceAssistant' | 'chats' | 'about' | undefined
   >(undefined);
+  const [settingsExpandModelFineTune, setSettingsExpandModelFineTune] = useState(false);
+  const [settingsOpenImageComfyUi, setSettingsOpenImageComfyUi] = useState(false);
 
   useEffect(() => {
     const onOpenSettings = () => setSettingsFromHotkeyOpen(true);
@@ -259,9 +261,16 @@ function App() {
 
   useEffect(() => {
     const onOpenSection = (e: Event) => {
-      const section = (e as CustomEvent<{ section?: string }>).detail?.section;
+      const detail = (e as CustomEvent<{
+        section?: string;
+        expandFineTune?: boolean;
+        openImageComfyUi?: boolean;
+      }>).detail;
+      const section = detail?.section;
       if (section) {
         setSettingsInitialSection(section as typeof settingsInitialSection);
+        setSettingsExpandModelFineTune(Boolean(detail?.expandFineTune));
+        setSettingsOpenImageComfyUi(Boolean(detail?.openImageComfyUi));
         setSettingsFromHotkeyOpen(true);
       }
     };
@@ -408,8 +417,12 @@ function App() {
                           onClose={() => {
                             setSettingsFromHotkeyOpen(false);
                             setSettingsInitialSection(undefined);
+                            setSettingsExpandModelFineTune(false);
+                            setSettingsOpenImageComfyUi(false);
                           }}
                           initialSection={settingsInitialSection}
+                          expandModelFineTune={settingsExpandModelFineTune}
+                          openImageComfyUi={settingsOpenImageComfyUi}
                           isDarkMode={isDarkMode}
                           onToggleTheme={toggleTheme}
                         />

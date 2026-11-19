@@ -6,13 +6,17 @@ import {
   Menu,
   MenuItem,
   CircularProgress,
+  IconButton,
+  Tooltip,
 } from '@mui/material';
 import {
   Computer as ComputerIcon,
   KeyboardArrowDown as KeyboardArrowDownIcon,
+  SettingsOutlined as SettingsOutlinedIcon,
 } from '@mui/icons-material';
 import { useAppActions } from '../contexts/AppContext';
 import { authFetch, getApiUrl } from '../config/api';
+import { ASTRA_OPEN_SETTINGS_SECTION } from '../constants/hotkeys';
 import { MENU_BORDER_RADIUS_PX } from '../constants/menuStyles';
 import {
   isValidSelectedModelPath,
@@ -168,6 +172,16 @@ export default function ModelSelector({ isDarkMode, onModelSelect }: ModelSelect
 
   const handleClose = () => {
     setAnchorEl(null);
+  };
+
+  const openModelFineTuneSettings = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    handleClose();
+    window.dispatchEvent(
+      new CustomEvent(ASTRA_OPEN_SETTINGS_SECTION, {
+        detail: { section: 'models', expandFineTune: true },
+      }),
+    );
   };
 
   const handleModelSelect = async (modelPath: string) => {
@@ -429,12 +443,30 @@ export default function ModelSelector({ isDarkMode, onModelSelect }: ModelSelect
                 >
                   {model.name.replace('.gguf', '')}
                 </Typography>
+                <Tooltip title="Настройки модели">
+                  <IconButton
+                    size="small"
+                    aria-label="Настройки модели"
+                    onClick={openModelFineTuneSettings}
+                    sx={{
+                      p: 0.35,
+                      ml: 0.5,
+                      color: isDarkMode ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.45)',
+                      '&:hover': {
+                        color: isDarkMode ? 'rgba(255,255,255,0.9)' : 'rgba(0,0,0,0.75)',
+                        bgcolor: 'transparent',
+                      },
+                    }}
+                  >
+                    <SettingsOutlinedIcon sx={{ fontSize: 16 }} />
+                  </IconButton>
+                </Tooltip>
                 {isSelected && (
                   <ComputerIcon 
                     fontSize="small" 
                     sx={{ 
                       color: isDarkMode ? '#9c27b0' : '#9c27b0',
-                      ml: 1,
+                      ml: 0.5,
                     }}
                   />
                 )}

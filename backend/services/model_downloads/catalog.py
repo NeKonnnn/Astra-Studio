@@ -265,6 +265,8 @@ def list_catalog_with_installed() -> List[Dict[str, Any]]:
         entry = dict(item)
         entry["installed"] = bool(installed)
         entry["from_disk"] = False
+        # Курируемый YAML = рекомендованные для UI (можно явно выключить recommended: false)
+        entry["recommended"] = bool(item.get("recommended", True))
         result.append(_attach_avatar(entry))
         if filename:
             known_files.add(str(filename).lower())
@@ -284,7 +286,9 @@ def list_catalog_with_installed() -> List[Dict[str, Any]]:
             continue
         if disk.get("local_name") and str(disk["local_name"]).lower() in known_dirs:
             continue
-        result.append(disk)
+        disk_entry = dict(disk)
+        disk_entry["recommended"] = False
+        result.append(disk_entry)
 
     # установленные сверху в своём типе
     result.sort(key=lambda m: (0 if m.get("installed") else 1, str(m.get("type")), str(m.get("display_name"))))

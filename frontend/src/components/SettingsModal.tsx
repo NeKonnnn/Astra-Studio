@@ -44,6 +44,10 @@ interface SettingsModalProps {
   isDarkMode: boolean;
   onToggleTheme: () => void;
   initialSection?: SettingsSection;
+  /** Открыть «Тонкая настройка» в разделе Модели. */
+  expandModelFineTune?: boolean;
+  /** Открыть вкладку ComfyUI в блоке генерации изображений. */
+  openImageComfyUi?: boolean;
 }
 
 type SettingsSection =
@@ -119,22 +123,39 @@ function normalizeSection(section?: SettingsSection | string | null): SettingsSe
   return undefined;
 }
 
-export default function SettingsModal({ open, onClose, isDarkMode, onToggleTheme, initialSection }: SettingsModalProps) {
+export default function SettingsModal({
+  open,
+  onClose,
+  isDarkMode,
+  onToggleTheme,
+  initialSection,
+  expandModelFineTune = false,
+  openImageComfyUi = false,
+}: SettingsModalProps) {
   const [activeSection, setActiveSection] = useState<SettingsSection>('general');
+  const [expandFineTune, setExpandFineTune] = useState(false);
+  const [openComfyUiTab, setOpenComfyUiTab] = useState(false);
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   useEffect(() => {
     if (!open) return;
     const section = normalizeSection(initialSection);
     if (section) setActiveSection(section);
-  }, [open, initialSection]);
+    if (expandModelFineTune) setExpandFineTune(true);
+    if (openImageComfyUi) setOpenComfyUiTab(true);
+  }, [open, initialSection, expandModelFineTune, openImageComfyUi]);
 
   useEffect(() => {
     const onSection = (e: Event) => {
-      const section = normalizeSection(
-        (e as CustomEvent<{ section?: SettingsSection }>).detail?.section,
-      );
+      const detail = (e as CustomEvent<{
+        section?: SettingsSection;
+        expandFineTune?: boolean;
+        openImageComfyUi?: boolean;
+      }>).detail;
+      const section = normalizeSection(detail?.section);
       if (section) setActiveSection(section);
+      if (detail?.expandFineTune) setExpandFineTune(true);
+      if (detail?.openImageComfyUi) setOpenComfyUiTab(true);
     };
     window.addEventListener(ASTRA_OPEN_SETTINGS_SECTION, onSection);
     return () => window.removeEventListener(ASTRA_OPEN_SETTINGS_SECTION, onSection);
@@ -154,7 +175,14 @@ export default function SettingsModal({ open, onClose, isDarkMode, onToggleTheme
         return <InterfaceSettings isDarkMode={isDarkMode} />;
       case 'models':
       case 'modelDownloads':
-        return <ModelsSettings />;
+        return (
+          <ModelsSettings
+            expandFineTune={expandFineTune}
+            onFineTuneExpandHandled={() => setExpandFineTune(false)}
+            openImageComfyUi={openComfyUiTab}
+            onImageComfyUiHandled={() => setOpenComfyUiTab(false)}
+          />
+        );
       case 'transcription':
         return <TranscriptionSettings />;
       case 'voiceAssistant':

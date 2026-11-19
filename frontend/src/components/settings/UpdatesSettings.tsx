@@ -6,14 +6,14 @@ import {
   Card,
   CardContent,
   Chip,
-  LinearProgress,
+  CircularProgress,
   Stack,
   Typography,
 } from '@mui/material';
 import SystemUpdateAltIcon from '@mui/icons-material/SystemUpdateAlt';
 import RefreshIcon from '@mui/icons-material/Refresh';
+import GitHubIcon from '@mui/icons-material/GitHub';
 import { authFetch, getApiUrl } from '../../config/api';
-import { useAuth } from '../../contexts/AuthContext';
 
 type CheckResult = {
   local_version?: string;
@@ -38,9 +38,12 @@ type StatusResult = {
   file_status?: { phase?: string; message?: string };
 };
 
+const ACTION_BUTTON_SX = {
+  minWidth: 200,
+  height: 40,
+} as const;
+
 export default function UpdatesSettings() {
-  const { user } = useAuth();
-  const isAdmin = Boolean(user?.is_admin);
   const [check, setCheck] = useState<CheckResult | null>(null);
   const [status, setStatus] = useState<StatusResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -63,7 +66,6 @@ export default function UpdatesSettings() {
   }, []);
 
   useEffect(() => {
-    if (!isAdmin) return;
     (async () => {
       try {
         setBusy(true);
@@ -74,19 +76,17 @@ export default function UpdatesSettings() {
         setBusy(false);
       }
     })();
-  }, [isAdmin, loadCheck, loadStatus]);
+  }, [loadCheck, loadStatus]);
 
   useEffect(() => {
-    if (!isAdmin || !status?.running) return undefined;
+    if (!status?.running) return undefined;
     const id = window.setInterval(() => {
       void loadStatus().catch(() => {
         // backend may restart mid-update
       });
     }, 3000);
     return () => window.clearInterval(id);
-  }, [isAdmin, status?.running, loadStatus]);
-
-  if (!isAdmin) return null;
+  }, [status?.running, loadStatus]);
 
   const onCheck = async () => {
     try {
@@ -131,13 +131,18 @@ export default function UpdatesSettings() {
 
   const running = Boolean(status?.running);
   const updateAvailable = Boolean(check?.update_available);
+  const showLoader = busy || running;
 
   return (
     <Card sx={{ mb: 3 }}>
       <CardContent>
         <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           <SystemUpdateAltIcon color="primary" />
-          Обновления (admin)
+          Обновления
+        </Typography>
+
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          Разработчик Константин Некрасов
         </Typography>
 
         {error && (
@@ -146,14 +151,12 @@ export default function UpdatesSettings() {
           </Alert>
         )}
 
-        {(busy || running) && <LinearProgress sx={{ mb: 2 }} />}
-
         <Stack spacing={1} sx={{ mb: 2 }}>
           <Typography variant="body2">
             Локальная версия: <strong>{check?.local_version || status?.local_version || '—'}</strong>
           </Typography>
           <Typography variant="body2">
-            На GitHub (VERSION): <strong>{check?.remote_version || '—'}</strong>
+            GitHub версия: <strong>{check?.remote_version || '—'}</strong>
             {check?.latest_release ? ` (release ${check.latest_release})` : ''}
           </Typography>
           <Typography variant="body2" color="text.secondary">
@@ -198,7 +201,19 @@ export default function UpdatesSettings() {
         </Stack>
 
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-          <Button variant="outlined" startIcon={<RefreshIcon />} onClick={onCheck} disabled={busy || running}>
+          <Button
+            variant="outlined"
+            startIcon={
+              showLoader ? (
+                <CircularProgress size={18} thickness={2.4} color="inherit" />
+              ) : (
+                <RefreshIcon />
+              )
+            }
+            onClick={onCheck}
+            disabled={busy || running}
+            sx={ACTION_BUTTON_SX}
+          >
             Проверить обновления
           </Button>
           <Button
@@ -206,11 +221,18 @@ export default function UpdatesSettings() {
             startIcon={<SystemUpdateAltIcon />}
             onClick={onApply}
             disabled={busy || running || !check?.enabled || !check?.can_apply}
+            sx={ACTION_BUTTON_SX}
           >
             Обновить сейчас
           </Button>
           {check?.html_url && (
-            <Button href={check.html_url} target="_blank" rel="noreferrer">
+            <Button
+              href={check.html_url}
+              target="_blank"
+              rel="noreferrer"
+              startIcon={<GitHubIcon />}
+              sx={{ height: 40 }}
+            >
               GitHub
             </Button>
           )}
