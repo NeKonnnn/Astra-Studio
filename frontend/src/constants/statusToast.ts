@@ -25,6 +25,12 @@ export const STATUS_TOAST_AUTO_DISMISS_MS = 10_000;
 /** Короткое автоскрытие (копирование и т.п.) */
 export const STATUS_TOAST_SHORT_DISMISS_MS = 2_500;
 
+/** Общий DOM-стек для fixed-тостов (не перекрывают друг друга и шапку) */
+export const STATUS_TOAST_STACK_ID = 'astra-status-toast-stack';
+/** Ниже типичной шапки (~56px) */
+export const STATUS_TOAST_STACK_TOP_PX = 64;
+export const STATUS_TOAST_STACK_Z_INDEX = 1400;
+
 /** Типовые сообщения для переиспользования */
 export const STATUS_TOAST_MESSAGES = {
   COPY_SUCCESS: 'Копирование в буфер обмена прошло успешно!',
