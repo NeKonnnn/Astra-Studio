@@ -1,12 +1,9 @@
-# Prebuilt images: ghcr.io/nekonnnn/astrastudio-* (see .github/workflows/publish-images.yml).
-# Install pull path: docker compose pull && docker compose --profile speech --profile vision up -d
-# Local rebuild: docker compose build <service>
-# CPU host: add -f docker-compose.cpu.yml
-# ASTRA_VERSION=latest|vX.Y.Z
+# Local: docker compose build <service> → теги вида <project>-<service>:latest (без ghcr.io).
+# Prebuilt GHCR (one-liner): добавляйте -f docker-compose.release.yml
+# GPU/CPU: -f docker-compose.gpu.yml | docker-compose.cpu.yml
 services:
   # LLM Service (только LLM модели)
   llm-service:
-    image: ghcr.io/nekonnnn/astrastudio-llm-cuda:${ASTRA_VERSION:-latest}
     build:
       context: ./llm-svc
       dockerfile: Dockerfile.cuda
@@ -32,7 +29,6 @@ services:
   # UI/API: http://localhost:8188 ; из astrachat-backend: http://comfyui:8188 (переменная IMAGE_GEN_COMFYUI_URL)
   # Profile vision: включается one-liner'ом (ASTRA_PROFILE=full) или --profile vision
   comfyui:
-    image: ghcr.io/nekonnnn/astrastudio-comfyui:${ASTRA_VERSION:-latest}
     build:
       context: ./docker/comfyui
       dockerfile: Dockerfile
@@ -62,7 +58,6 @@ services:
 
   # STT Service (WhisperX) — profile speech
   stt-service:
-    image: ghcr.io/nekonnnn/astrastudio-stt:${ASTRA_VERSION:-latest}
     build:
       context: ./SVC-SPEECH-RECG
       dockerfile: Dockerfile
@@ -78,7 +73,6 @@ services:
 
   # TTS Service (Silero) — profile speech
   tts-service:
-    image: ghcr.io/nekonnnn/astrastudio-tts:${ASTRA_VERSION:-latest}
     build:
       context: ./SVC-SPEECH-SYNT
       dockerfile: Dockerfile
@@ -96,7 +90,6 @@ services:
   # Веса: ./models/omnivoice (локально, без скачивания с HF).
   # Порт хоста 8014 — 8010 занят rag-models.
   omnivoice-service:
-    image: ghcr.io/nekonnnn/astrastudio-omnivoice:${ASTRA_VERSION:-latest}
     build:
       context: ./SVC-OMNIVOICE
       dockerfile: Dockerfile
@@ -127,7 +120,6 @@ services:
 
   # OCR Service (Surya). Backend вызывает его по http://ocr-service:8000 (SVC_OCR_URL) для извлечения текста из изображений при загрузке документов.
   ocr-service:
-    image: ghcr.io/nekonnnn/astrastudio-ocr:${ASTRA_VERSION:-latest}
     build:
       context: ./SVC-OCR
       dockerfile: Dockerfile
@@ -147,7 +139,6 @@ services:
 
   # Diarization Service — profile speech
   diarization-service:
-    image: ghcr.io/nekonnnn/astrastudio-diarization:${ASTRA_VERSION:-latest}
     build:
       context: ./SVC-SPEECH-DIAR
       dockerfile: Dockerfile
@@ -165,7 +156,6 @@ services:
 
   # Backend - FastAPI (теперь зависит от llm-svc, MongoDB и PostgreSQL)
   astrachat-backend:
-    image: ghcr.io/nekonnnn/astrastudio-backend:${ASTRA_VERSION:-latest}
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -174,7 +164,7 @@ services:
     volumes:
       - ./memory:/app/memory
       - ./uploads:/app/uploads  # Директория для загруженных документов
-      - ./backend:/app  # Полное монтирование для работы импортов
+      # Hot-reload исходников: docker-compose.dev.yml → ./backend:/app
       # RW: UI/API скачивания моделей пишут веса на хост
       - ./models:/app/models
       - ./whisperx_models:/app/whisperx_models
@@ -183,6 +173,14 @@ services:
       - ./surya_models:/app/surya_models
     environment:
       - PYTHONPATH=/app
+      - ASTRA_VERSION=${ASTRA_VERSION:-latest}
+      - ASTRA_UPDATES_ENABLED=${ASTRA_UPDATES_ENABLED:-false}
+      - ASTRA_HOST_ROOT=${ASTRA_HOST_ROOT:-}
+      - ASTRA_HOST_ROOT_ON_HOST=${ASTRA_HOST_ROOT_ON_HOST:-}
+      - ASTRA_GITHUB_REPO=${ASTRA_GITHUB_REPO:-NeKonnnn/Astra-Studio}
+      - ASTRA_GITHUB_REF=${ASTRA_GITHUB_REF:-main}
+      - ASTRA_PROFILE=${ASTRA_PROFILE:-full}
+      - ASTRA_LLM_VARIANT=${ASTRA_LLM_VARIANT:-cuda}
       - HF_TOKEN=${HF_TOKEN:-}
       - HF_HOME=${HF_HOME:-/app/models/.hf_home}
       # Быстрая закачка моделей: parallel Range + опционально hf_transfer
@@ -309,7 +307,6 @@ services:
 
   # RAG Models Service (эмбеддинги + реранкер для SVC-RAG)
   rag-models:
-    image: ghcr.io/nekonnnn/astrastudio-rag-models:${ASTRA_VERSION:-latest}
     build:
       context: ./SVC-RAG-MODELS
       dockerfile: Dockerfile
@@ -333,7 +330,6 @@ services:
 
   # RAG Logic Service (SVC-RAG) — парсинг, pgvector, BM25, иерархия
   svc-rag:
-    image: ghcr.io/nekonnnn/astrastudio-svc-rag:${ASTRA_VERSION:-latest}
     build:
       context: ./SVC-RAG
       dockerfile: Dockerfile
@@ -387,7 +383,6 @@ services:
 
   # Frontend - React
   astrachat-frontend:
-    image: ghcr.io/nekonnnn/astrastudio-frontend:${ASTRA_VERSION:-latest}
     build:
       context: ./frontend
       dockerfile: Dockerfile

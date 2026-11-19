@@ -6,7 +6,6 @@
 
 services:
   llm-service:
-    image: ghcr.io/nekonnnn/astrastudio-llm-cuda:${ASTRA_VERSION:-latest}
     build:
       context: ./llm-svc
       dockerfile: Dockerfile.cuda

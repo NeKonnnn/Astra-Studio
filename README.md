@@ -17,7 +17,7 @@ AstraStudio — корпоративная AI-платформа с микрос
 - **Backend** — бизнес-логика, агенты, auth, WebSocket
 - **Frontend** — веб-интерфейс (React)
 - **RAG** — `svc-rag` + `rag-models` (поиск, эмбеддинги, реранк)
-- **Speech / OCR / ComfyUI** — STT, TTS, диаризация, OCR, генерация картинок
+- **Speech / OCR / ComfyUI** — STT, TTS, диаризация, OmniVoice (клонирование голоса), OCR, генерация картинок
 - **Инфраструктура** — MongoDB, PostgreSQL+pgvector, MinIO, MCP websearch, nginx (опционально)
 
 ### Агентная архитектура на LangGraph
@@ -29,6 +29,7 @@ AstraStudio — корпоративная AI-платформа с микрос
 - **Транскрипция**: WhisperX (+ опционально Vosk в отдельных сценариях)
 - **Диаризация**: pyannote — разделение по спикерам
 - **Синтез речи**: Silero TTS
+- **Клонирование голоса**: OmniVoice — zero-shot voice cloning для голосового ассистента («мой голос»)
 - **OCR**: Surya
 - **Документы**: PDF, DOCX, TXT, Markdown и др.
 - **Изображения**: ComfyUI (Flux / SD)
@@ -61,6 +62,7 @@ AstraStudio — корпоративная AI-платформа с микрос
 | `diarization-service` | Диаризация спикеров | `8003` | `SVC-SPEECH-DIAR/config/config.yml` |
 | `ocr-service` | OCR (Surya) | `8004` | `SVC-OCR/config/config.yml` |
 | `tts-service` | Синтез речи (Silero) | `8005` | `SVC-SPEECH-SYNT/config/config.yml` |
+| `omnivoice-service` | Zero-shot voice cloning (профиль `speech`) | `8014` | `SVC-OMNIVOICE/` + `models/omnivoice/` |
 | `rag-models` | Эмбеддинги + реранкер | `8010` | `SVC-RAG-MODELS/config/config.yml` |
 | `svc-rag` | Логика RAG (парсинг, pgvector, BM25) | `8011` | `SVC-RAG/config/config.yml` |
 | `comfyui` | Генерация изображений | `8188` | workflow + `models/comfyui/` |
@@ -72,7 +74,130 @@ AstraStudio — корпоративная AI-платформа с микрос
 | `minio` | Object storage | `9000` / `9001` | `.env` |
 | `nginx` | Reverse proxy (профиль `production`) | `80` / `443` | `nginx.conf` |
 
-Backend ходит к сервисам по внутренним именам сети `astrachat-network` (`SVC_LLM_URL`, `SVC_STT_URL`, `SVC_RAG_URL` и т.д.).
+Backend ходит к сервисам по внутренним именам сети `astrachat-network` (`SVC_LLM_URL`, `SVC_STT_URL`, `SVC_OMNIVOICE_URL`, `SVC_RAG_URL` и т.д.).
+
+---
+
+## Установка
+
+Рекомендуемый путь — **одна команда**. Скрипт сам ставит Docker/git (если нужно), клонирует репозиторий, готовит `.env`, тянет готовые образы из GHCR и поднимает стек.
+
+### Шаг 1. Запустить установщик
+
+#### Linux / WSL2
+
+Нужен `sudo`, если Docker ещё не установлен:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NeKonnnn/Astra-Studio/main/scripts/install.sh | sh
+```
+
+С опциями (переменные **перед** `sh`, флаги после `|` не сработают):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NeKonnnn/Astra-Studio/main/scripts/install.sh \
+  | ASTRA_PROFILE=full ASTRA_DEVICE=auto ASTRA_HF_TOKEN=hf_xxx sh
+```
+
+#### Windows (PowerShell)
+
+1. Откройте **PowerShell от имени администратора** (ПКМ по меню Пуск → «Терминал (Администратор)»).
+2. Выполните:
+
+```powershell
+irm https://raw.githubusercontent.com/NeKonnnn/Astra-Studio/main/scripts/install.ps1 | iex
+```
+
+С опциями:
+
+```powershell
+$env:ASTRA_PROFILE = "full"      # full | minimal
+$env:ASTRA_DEVICE = "auto"       # auto | gpu | cpu
+$env:ASTRA_HF_TOKEN = "hf_xxx"   # для gated-моделей (pyannote и др.)
+irm https://raw.githubusercontent.com/NeKonnnn/Astra-Studio/main/scripts/install.ps1 | iex
+```
+
+Если Docker Desktop ставится впервые — **перезапустите ПК**, дождитесь зелёного статуса Docker Desktop и **повторите ту же команду**.
+
+### Шаг 2. Открыть UI и войти
+
+1. Откройте **http://localhost:3000**
+2. Войдите: **`admin` / `admin123`**
+
+| Логин | Пароль | Роль |
+|-------|--------|------|
+| `admin` | `admin123` | Администратор |
+| `user` | `user123` | Пользователь |
+| `test` | `test123` | Тест |
+
+Эти mock-учётки работают, пока LDAP/Keycloak выключены. Не для продакшена.
+
+### Шаг 3. Скачать модели
+
+Без моделей чат и RAG не заработают.
+
+1. Settings → **Загрузка моделей** (только admin)
+2. Скачайте LLM (GGUF) и при необходимости эмбеддинги / STT / OCR из каталога
+3. Либо положите файлы вручную в каталоги на хосте (см. [Модельные сервисы](#модельные-сервисы-cpu-и-gpu))
+
+Для gated-моделей (диаризация pyannote) нужен `ASTRA_HF_TOKEN` / `HF_TOKEN`.
+
+### Шаг 4. Обновления (позже)
+
+- В UI: Settings → **О приложении** → «Обновления» → проверить → «Обновить сейчас»
+- Вручную в каталоге установки: `sh scripts/update.sh`
+
+Скрипт сравнивает локальный файл `VERSION` с `VERSION` на GitHub и при обновлении делает `git pull` + `docker compose pull/up` образов из GHCR.
+
+### Что делает установщик (порядок)
+
+1. Ставит Docker и git (если нет; отключить: `ASTRA_INSTALL_DOCKER=0`)
+2. Клонирует `NeKonnnn/Astra-Studio` в `~/astrastudio` (или `ASTRA_HOME`)
+3. Создаёт каталоги `models/`, `uploads/` и т.д.
+4. Пишет `.env` с секретами и путями для self-update
+5. Тянет образы: `docker-compose.yml` + `docker-compose.release.yml` + `cpu|gpu`
+6. Если pull из GHCR не удался — собирает образы локально (`build`)
+7. Поднимает сервисы (`up -d`)
+
+### Параметры установщика
+
+| Переменная | Значения | По умолчанию |
+|------------|----------|--------------|
+| `ASTRA_HOME` | каталог установки | `~/astrastudio` |
+| `ASTRA_VERSION` | тег образов GHCR | `latest` |
+| `ASTRA_PROFILE` | `full` (speech+vision) / `minimal` (чат+RAG+OCR) | `full` |
+| `ASTRA_DEVICE` | `auto` / `gpu` / `cpu` | `auto` |
+| `ASTRA_HF_TOKEN` | токен Hugging Face | пусто |
+| `ASTRA_FORCE_BUILD` | `1` — всегда локальный build | `0` |
+| `ASTRA_INSTALL_DOCKER` | `0` — не ставить Docker/git | `1` |
+
+Проверка: `docker compose ps` в каталоге установки, API — http://localhost:8000/health.
+
+### Ручной запуск (разработка)
+
+Если репозиторий уже клонирован и нужен hot-reload backend:
+
+```bash
+cd /path/to/Astra-Studio
+cp env.example .env   # один раз: пароли, JWT
+mkdir -p models/llm models/rag models/comfyui models/omnivoice models/omnivoice_cache \
+  diarize_models silero_models whisperx_models surya_models uploads memory
+
+# Dev (локальный build + bind-mount backend):
+docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.gpu.yml \
+  --profile speech --profile vision up -d --build
+
+# Как у пользователей (готовые образы GHCR, без bind исходников):
+docker compose -f docker-compose.yml -f docker-compose.release.yml -f docker-compose.gpu.yml \
+  --profile speech --profile vision pull
+docker compose -f docker-compose.yml -f docker-compose.release.yml -f docker-compose.gpu.yml \
+  --profile speech --profile vision up -d
+```
+
+На CPU вместо `docker-compose.gpu.yml` используйте `docker-compose.cpu.yml`.  
+Остановка: `docker compose down`.
+
+> Docker и NVIDIA Container Toolkit вручную нужны только если установщик отключён (`ASTRA_INSTALL_DOCKER=0`) или вы поднимаете стек без one-liner. Windows: [Docker Desktop](https://www.docker.com/products/docker-desktop/). Linux GPU: [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
 
 ---
 
@@ -105,6 +230,7 @@ Backend ходит к сервисам по внутренним именам с
 | **Реранкер (качество)** | bge-reranker-v2-minicpm-layerwise | `models/rag/bge-reranker-v2-minicpm-layerwise/` | `BAAI/bge-reranker-v2-minicpm-layerwise` |
 | **STT** | WhisperX (large-v3 / medium) | `whisperx_models/` | подтянется при первом запуске или зеркала HF `Systran/faster-whisper-*` |
 | **TTS** | Silero RU | `silero_models/` | [Silero Models](https://github.com/snakers4/silero-models) |
+| **OmniVoice** | Веса OmniVoice (+ tokenizer/Whisper в кэш) | `models/omnivoice/`, кэш `models/omnivoice_cache/` | Локальные веса сервиса; при первом старте может дотянуть зависимости с HF |
 | **Диаризация** | pyannote speaker-diarization | `diarize_models/` | [pyannote](https://huggingface.co/pyannote) (нужен HF token для gated) |
 | **OCR** | Surya text_detection + text_recognition | `surya_models/` | Datalab / Surya checkpoints (см. `SVC-OCR/config`) |
 | **ComfyUI** | flux1-schnell-fp8 (быстро) или flux1-dev-fp8 | `models/comfyui/checkpoints/` | [flux1-schnell-fp8](https://huggingface.co/Comfy-Org/flux1-schnell/blob/main/flux1-schnell-fp8.safetensors), [flux1-dev-fp8](https://huggingface.co/Comfy-Org/flux1-dev) |
@@ -121,8 +247,7 @@ Backend ходит к сервисам по внутренним именам с
 
 ```bash
 # GPU override (после publish — pull вместо build)
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml pull llm-service
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d llm-service
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build llm-service
 ```
 
 #### rag-models
@@ -152,271 +277,21 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d llm-service
 #### tts-service (Silero)
 Обычно **CPU** достаточно (`gpu_layers: 0` в конфиге). GPU не обязателен.
 
+#### omnivoice-service
+Zero-shot voice cloning (профиль compose `speech`). Веса: `models/omnivoice/` (ro), кэш HF: `models/omnivoice_cache/`. Backend: `SVC_OMNIVOICE_URL` → `http://omnivoice-service:8000`, хост-порт **8014**.
+
+| Режим | Как |
+|-------|-----|
+| **CPU** | `OMNIVOICE_DEVICE=cpu` (или `-f docker-compose.cpu.yml`) |
+| **GPU** | `OMNIVOICE_DEVICE=cuda:0` (дефолт) + `-f docker-compose.gpu.yml` |
+
+Лицензия весов/кода OmniVoice: **CC-BY-NC** (некоммерческое использование — проверьте условия для своего деплоя).
+
 #### comfyui
 | Режим | Как |
 |-------|-----|
 | **CPU** | `COMFYUI_FORCE_CPU=1` в env |
-| **GPU** | дефолт в `docker-compose.yml` (`gpus` / NVIDIA devices), `COMFYUI_FORCE_CPU=0` |
-
----
-
-## Установка одной командой
-
-Нужен только **Docker** (и на Windows — **Docker Desktop** + **git**). Скрипт клонирует репозиторий, готовит `.env`, тянет готовые образы из GHCR (`ghcr.io/nekonnnn/astrastudio-*`) и поднимает стек. Если образы ещё не опубликованы — автоматически соберёт локально (дольше).
-
-### Linux / WSL2
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/NeKonnnn/Astra-Studio/main/scripts/install.sh | sh
-```
-
-Опции через переменные окружения (флаги после `|` нельзя — их съест `sh`):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/NeKonnnn/Astra-Studio/main/scripts/install.sh \
-  | ASTRA_PROFILE=minimal ASTRA_DEVICE=cpu ASTRA_HF_TOKEN=hf_xxx sh
-```
-
-### Windows (PowerShell)
-
-```powershell
-irm https://raw.githubusercontent.com/NeKonnnn/Astra-Studio/main/scripts/install.ps1 | iex
-```
-
-```powershell
-$env:ASTRA_PROFILE = "full"
-$env:ASTRA_DEVICE = "auto"   # auto | gpu | cpu
-$env:ASTRA_HF_TOKEN = "hf_xxx"
-irm https://raw.githubusercontent.com/NeKonnnn/Astra-Studio/main/scripts/install.ps1 | iex
-```
-
-| Переменная | Значения | По умолчанию |
-|------------|----------|--------------|
-| `ASTRA_HOME` | каталог установки | `~/astrastudio` |
-| `ASTRA_VERSION` | тег образов GHCR | `latest` |
-| `ASTRA_PROFILE` | `full` (speech+vision) / `minimal` (чат+RAG+OCR) | `full` |
-| `ASTRA_DEVICE` | `auto` / `gpu` / `cpu` | `auto` |
-| `ASTRA_HF_TOKEN` | токен HF для gated-моделей | пусто |
-| `ASTRA_FORCE_BUILD` | `1` — всегда локальный build | `0` |
-
-После установки: UI **http://localhost:3000**, логин **`admin` / `admin123`**. Модели скачайте в UI (**Загрузка моделей**) или положите GGUF в `models/llm/`.
-
-> **Важно для быстрой установки:** образы публикуются workflow [`.github/workflows/publish-images.yml`](.github/workflows/publish-images.yml) в GHCR. Владельцу репозитория нужно один раз разрешить GitHub Actions писать в Packages и сделать пакеты публичными (или `docker login ghcr.io`). Пока образов нет, installer уйдёт в локальный `build`.
-
-Подробная ручная установка Docker и `docker compose` — ниже.
-
----
-
-## Установка Docker
-
-Перед началом работы с AstraStudio необходимо установить и запустить Docker на вашей системе.
-
-### Установка Docker для Windows
-
-1. Скачайте **Docker Desktop для Windows** с официального сайта:
-   - https://www.docker.com/products/docker-desktop/
-
-2. Запустите установщик и следуйте инструкциям мастера установки.
-
-3. После установки запустите Docker Desktop и дождитесь полной загрузки (иконка Docker в системном трее должна быть активна).
-
-4. Убедитесь, что Docker запущен, выполнив в командной строке или PowerShell:
-   ```bash
-   docker --version
-   docker-compose --version
-   ```
-
-### Установка Docker для Linux
-
-#### Ubuntu/Debian
-
-```bash
-# Обновляем список пакетов
-sudo apt-get update
-
-# Устанавливаем необходимые пакеты
-sudo apt-get install -y ca-certificates curl gnupg lsb-release
-
-# Добавляем официальный GPG ключ Docker
-sudo mkdir -p /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-
-# Настраиваем репозиторий
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-  $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-# Устанавливаем Docker Engine и Docker Compose
-sudo apt-get update
-sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-
-# Добавляем текущего пользователя в группу docker (чтобы не использовать sudo)
-sudo usermod -aG docker $USER
-
-# Перезапускаем сессию или выполняем:
-newgrp docker
-```
-
-#### CentOS/RHEL/Fedora
-
-```bash
-# Устанавливаем необходимые пакеты
-sudo yum install -y yum-utils
-
-# Добавляем репозиторий Docker
-sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
-
-# Устанавливаем Docker Engine и Docker Compose
-sudo yum install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-
-# Запускаем Docker
-sudo systemctl start docker
-sudo systemctl enable docker
-
-# Добавляем текущего пользователя в группу docker
-sudo usermod -aG docker $USER
-newgrp docker
-```
-
-#### Проверка установки
-
-После установки проверьте, что Docker работает:
-
-```bash
-docker --version
-docker-compose --version
-sudo systemctl status docker  # Для Linux
-```
-
-> **Важно**
-> 
-> Убедитесь, что Docker запущен и работает перед выполнением команд установки AstraStudio. В Windows Docker Desktop должен быть запущен, в Linux — служба Docker должна быть активна.
-
----
-
-## Быстрый старт с Docker (вручную)
-
-Предпочтительный путь для новых пользователей — [установка одной командой](#установка-одной-командой). Ниже — ручной сценарий для разработки.
-
-> **Примечание**
-> 
-> Для некоторых Docker-окружений могут потребоваться дополнительные настройки. Если вы столкнетесь с проблемами подключения, обратитесь к подробной документации в каталоге `README/`.
-
-> **Важно**
-> 
-> При использовании Docker убедитесь, что корректно настроено монтирование томов для моделей и данных — иначе модели не загрузятся, а данные могут теряться при пересоздании контейнеров.
-
-> **Совет**
-> 
-> Для GPU (CUDA) установите Nvidia CUDA Container Toolkit и добавляйте `-f docker-compose.gpu.yml`. На CPU: `-f docker-compose.cpu.yml`.
-
-### Подготовка каталогов
-
-```bash
-cd /path/to/Astra-Studio
-
-mkdir -p models/llm models/rag models/comfyui models/omnivoice \
-  diarize_models silero_models whisperx_models surya_models \
-  uploads memory
-```
-
-Назначение:
-- `models/llm` — веса LLM
-- `models/rag` — эмбеддинги и реранкеры
-- `models/comfyui` — чекпоинты ComfyUI
-- `diarize_models`, `silero_models`, `whisperx_models`, `surya_models` — speech/OCR
-- `uploads`, `memory` — пользовательские данные backend
-
-```bash
-cp env.example .env
-# задайте пароли БД, JWT, при необходимости HF_TOKEN / LDAP / Keycloak
-```
-
----
-
-## Запуск через Docker
-
-### Все сервисы сразу
-
-```bash
-cd /path/to/Astra-Studio
-
-# GPU (рекомендуется при наличии NVIDIA):
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml pull
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile speech --profile vision up -d
-
-# CPU:
-# docker compose -f docker-compose.yml -f docker-compose.cpu.yml --profile speech --profile vision up -d
-
-# Minimal (без speech/ComfyUI):
-# docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
-```
-
-Профили: `speech` (STT/TTS/diarization/omnivoice), `vision` (ComfyUI). OCR, LLM, RAG, backend/frontend — в core.
-
-UI: **http://localhost:3000**  
-API: **http://localhost:8000**
-
-### Локальный вход (mock-пользователи)
-
-Пока `LDAP_ENABLED=false` и Keycloak выключен, на экране логина работают встроенные учётки из `backend/auth/mock_users.py` (не для продакшена):
-
-| Логин | Пароль | Роль |
-|-------|--------|------|
-| `admin` | `admin123` | Администратор (`is_admin=true`) — полный доступ, в т.ч. все агенты |
-| `user` | `user123` | Обычный пользователь |
-| `test` | `test123` | Тестовый пользователь |
-
-Рекомендуемый вход для локальной разработки: **`admin` / `admin123`**.
-
-Проверка:
-
-```bash
-docker compose ps
-docker compose logs -f astrachat-backend
-```
-
-### Отдельные сервисы
-
-```bash
-# Только инфраструктура
-docker compose up -d mongodb postgresql minio
-
-# Модельные / AI
-docker compose up -d llm-service
-docker compose up -d rag-models svc-rag
-docker compose up -d stt-service tts-service diarization-service ocr-service
-docker compose up -d comfyui mcp-websearch
-
-# Приложение
-docker compose up -d astrachat-backend astrachat-frontend
-```
-
-### Поэтапные compose-файлы (legacy-сплит)
-
-```bash
-docker compose -f docker-compose-llm-svc.yml up -d
-docker compose -f docker-compose-backend.yml up -d
-docker compose -f docker-compose-frontend.yml up -d
-```
-
-> Основной актуальный файл — корневой `docker-compose.yml`. Сплит-файлы удобны для частичного стенда, но пути/порты могут отличаться от полного стека.
-
-### GPU для LLM
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d llm-service
-```
-
-В `llm-svc/config/config.yml` выставьте `gpu_layers: -1`.
-
-### Остановка
-
-```bash
-docker compose down
-# с удалением volumes (осторожно — данные БД):
-# docker compose down -v
-```
+| **GPU** | дефолт с `-f docker-compose.gpu.yml`, `COMFYUI_FORCE_CPU=0` |
 
 ---
 
@@ -585,6 +460,7 @@ curl http://localhost:8010/v1/health   # rag-models
 | Diarization | http://localhost:8003 |
 | OCR | http://localhost:8004 |
 | TTS | http://localhost:8005 |
+| OmniVoice | http://localhost:8014 |
 | RAG models | http://localhost:8010 |
 | SVC-RAG | http://localhost:8011 |
 | MCP websearch | http://localhost:8013 |

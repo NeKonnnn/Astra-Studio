@@ -12,6 +12,7 @@
 #   ASTRA_HF_TOKEN      Hugging Face token (optional)
 #   ASTRA_SKIP_PULL=1   skip docker compose pull
 #   ASTRA_FORCE_BUILD=1 always docker compose build
+#   ASTRA_INSTALL_DOCKER=0  do not auto-install Docker/git (default: 1)
 # SPDX-License-Identifier: MIT
 set -e
 
@@ -45,6 +46,8 @@ warn() { printf "%s[warn]%s %s\n" "$C_WARN" "$C_RST" "$*"; }
 die() { printf "%s[error]%s %s\n" "$C_ERR" "$C_RST" "$*" >&2; exit 1; }
 
 ASTRA_HOME="${ASTRA_HOME:-$HOME/astrastudio}"
+# absolute path for docker bind (self-update)
+ASTRA_HOME="$(CDPATH= cd -- "$ASTRA_HOME" 2>/dev/null && pwd || printf "%s" "$ASTRA_HOME")"
 ASTRA_VERSION="${ASTRA_VERSION:-latest}"
 ASTRA_PROFILE="${ASTRA_PROFILE:-full}"
 ASTRA_DEVICE="${ASTRA_DEVICE:-auto}"
@@ -52,6 +55,7 @@ ASTRA_REPO_URL="${ASTRA_REPO_URL:-https://github.com/NeKonnnn/Astra-Studio.git}"
 ASTRA_REPO_REF="${ASTRA_REPO_REF:-main}"
 ASTRA_SKIP_PULL="${ASTRA_SKIP_PULL:-0}"
 ASTRA_FORCE_BUILD="${ASTRA_FORCE_BUILD:-0}"
+ASTRA_INSTALL_DOCKER="${ASTRA_INSTALL_DOCKER:-1}"
 
 printf "%s\n" "$RULE"
 printf "%s AstraStudio installer%s\n" "$C_TITLE" "$C_RST"
@@ -59,21 +63,99 @@ printf "%s\n" "$RULE"
 printf "  home=%s  version=%s  profile=%s  device=%s\n" \
   "$ASTRA_HOME" "$ASTRA_VERSION" "$ASTRA_PROFILE" "$ASTRA_DEVICE"
 
-# --- prerequisites ---
+# --- prerequisites (auto-install Docker/git when possible) ---
 step "Checking prerequisites"
-command -v git >/dev/null 2>&1 || die "git is required"
 command -v curl >/dev/null 2>&1 || die "curl is required"
-command -v docker >/dev/null 2>&1 || die "Docker is required. Install Docker Desktop or Docker Engine, then re-run."
 
-if docker compose version >/dev/null 2>&1; then
-  COMPOSE="docker compose"
-elif command -v docker-compose >/dev/null 2>&1; then
+_have_sudo() {
+  if [ "$(id -u)" -eq 0 ]; then return 0; fi
+  command -v sudo >/dev/null 2>&1 || return 1
+  sudo -n true >/dev/null 2>&1 || sudo -v
+}
+
+_install_git() {
+  step "Installing git"
+  _have_sudo || die "git is missing and sudo is required to install it"
+  if command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get update -y
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y git
+  elif command -v dnf >/dev/null 2>&1; then
+    sudo dnf install -y git
+  elif command -v yum >/dev/null 2>&1; then
+    sudo yum install -y git
+  elif command -v pacman >/dev/null 2>&1; then
+    sudo pacman -Sy --noconfirm git
+  else
+    die "git is required; install it manually for your distro"
+  fi
+  command -v git >/dev/null 2>&1 || die "git install failed"
+  ok "git installed"
+}
+
+_install_docker() {
+  step "Installing Docker Engine"
+  _have_sudo || die "Docker is missing and sudo is required to install it"
+  curl -fsSL https://get.docker.com | sudo sh
+  if command -v systemctl >/dev/null 2>&1; then
+    sudo systemctl enable --now docker >/dev/null 2>&1 || sudo service docker start || true
+  fi
+  if [ "$(id -u)" -ne 0 ]; then
+    sudo usermod -aG docker "$USER" 2>/dev/null || true
+    warn "Added $USER to group 'docker' (new shells pick this up automatically)"
+  fi
+  command -v docker >/dev/null 2>&1 || die "Docker install finished but 'docker' not on PATH — open a new terminal and re-run"
+  ok "Docker Engine installed"
+}
+
+if ! command -v git >/dev/null 2>&1; then
+  if [ "$ASTRA_INSTALL_DOCKER" = "1" ]; then
+    _install_git
+  else
+    die "git is required"
+  fi
+fi
+
+if ! command -v docker >/dev/null 2>&1; then
+  if [ "$ASTRA_INSTALL_DOCKER" = "1" ]; then
+    _install_docker
+  else
+    die "Docker is required. Install Docker Engine/Desktop, then re-run."
+  fi
+fi
+
+DOCKER_BIN="docker"
+if ! docker info >/dev/null 2>&1; then
+  if command -v sudo >/dev/null 2>&1 && sudo docker info >/dev/null 2>&1; then
+    warn "Docker needs root for this session — using sudo docker (re-login to drop sudo)"
+    DOCKER_BIN="sudo docker"
+  else
+    # daemon may still be starting after fresh install
+    _i=0
+    while [ "$_i" -lt 30 ]; do
+      if docker info >/dev/null 2>&1; then break; fi
+      if command -v sudo >/dev/null 2>&1 && sudo docker info >/dev/null 2>&1; then
+        DOCKER_BIN="sudo docker"
+        break
+      fi
+      _i=$((_i + 1))
+      sleep 2
+    done
+    if ! $DOCKER_BIN info >/dev/null 2>&1; then
+      die "Docker daemon is not running. Start it and re-run."
+    fi
+  fi
+fi
+
+if $DOCKER_BIN compose version >/dev/null 2>&1; then
+  COMPOSE="$DOCKER_BIN compose"
+elif [ "$DOCKER_BIN" = "docker" ] && command -v docker-compose >/dev/null 2>&1; then
   COMPOSE="docker-compose"
+elif [ "$DOCKER_BIN" = "sudo docker" ] && sudo docker-compose version >/dev/null 2>&1; then
+  COMPOSE="sudo docker-compose"
 else
   die "Docker Compose plugin is required (docker compose)"
 fi
 
-docker info >/dev/null 2>&1 || die "Docker daemon is not running"
 ok "Docker OK ($COMPOSE)"
 
 # --- device detection ---
@@ -88,11 +170,15 @@ fi
 
 if [ "$HAS_GPU" = "1" ]; then
   ok "GPU mode (NVIDIA detected or forced)"
-  COMPOSE_FILES="-f docker-compose.yml -f docker-compose.gpu.yml"
+  export ASTRA_LLM_VARIANT=cuda
+  COMPOSE_LOCAL="-f docker-compose.yml -f docker-compose.gpu.yml"
 else
   warn "CPU mode (no NVIDIA GPU or ASTRA_DEVICE=cpu)"
-  COMPOSE_FILES="-f docker-compose.yml -f docker-compose.cpu.yml"
+  export ASTRA_LLM_VARIANT=cpu
+  COMPOSE_LOCAL="-f docker-compose.yml -f docker-compose.cpu.yml"
 fi
+# release.yml — только для pull готовых GHCR-образов; локальный build без него
+COMPOSE_RELEASE="$COMPOSE_LOCAL -f docker-compose.release.yml"
 
 PROFILE_ARGS=""
 case "$ASTRA_PROFILE" in
@@ -176,6 +262,11 @@ if [ ! -f .env ]; then
   }
 
   _set_env ASTRA_VERSION "$ASTRA_VERSION"
+  _set_env ASTRA_UPDATES_ENABLED true
+  _set_env ASTRA_HOST_ROOT_ON_HOST "$ASTRA_HOME"
+  _set_env ASTRA_HOST_ROOT /astra-host
+  _set_env ASTRA_PROFILE "$ASTRA_PROFILE"
+  _set_env ASTRA_GITHUB_REPO NeKonnnn/Astra-Studio
   _set_env JWT_SECRET "$JWT"
   _set_env JWT_REFRESH_SECRET "$JWT_R"
   _set_env MONGODB_PASSWORD "$MONGO_PW"
@@ -185,6 +276,7 @@ if [ ! -f .env ]; then
   _set_env STT_SERVICE_ENABLED "$SPEECH_ENABLED"
   _set_env TTS_SERVICE_ENABLED "$SPEECH_ENABLED"
   _set_env DIARIZATION_SERVICE_ENABLED "$SPEECH_ENABLED"
+  _set_env ASTRA_LLM_VARIANT "$ASTRA_LLM_VARIANT"
   if [ "$HAS_GPU" = "0" ]; then
     _set_env COMFYUI_FORCE_CPU 1
     _set_env OMNIVOICE_DEVICE cpu
@@ -212,16 +304,21 @@ if [ "$ASTRA_FORCE_BUILD" = "1" ]; then
 else
   if [ "$ASTRA_SKIP_PULL" != "1" ]; then
     # shellcheck disable=SC2086
-    if $COMPOSE $COMPOSE_FILES $PROFILE_ARGS pull; then
+    if $COMPOSE $COMPOSE_RELEASE $PROFILE_ARGS pull; then
       PULL_OK=1
       ok "Pulled prebuilt images from GHCR"
+      COMPOSE_FILES="$COMPOSE_RELEASE"
     else
       warn "GHCR pull failed (images may not be published yet) — falling back to local build"
+      COMPOSE_FILES="$COMPOSE_LOCAL"
     fi
+  else
+    COMPOSE_FILES="$COMPOSE_LOCAL"
   fi
 fi
 
 if [ "$PULL_OK" != "1" ]; then
+  COMPOSE_FILES="$COMPOSE_LOCAL"
   step "Building images locally (this can take a long time on first run)"
   # shellcheck disable=SC2086
   $COMPOSE $COMPOSE_FILES $PROFILE_ARGS build

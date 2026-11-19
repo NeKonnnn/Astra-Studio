@@ -7,7 +7,6 @@
 
 services:
   llm-service:
-    image: ghcr.io/nekonnnn/astrastudio-llm-cpu:${ASTRA_VERSION:-latest}
     build:
       context: ./llm-svc
       dockerfile: Dockerfile
