@@ -24,6 +24,14 @@ jest.mock('@/components/ModelSelector', () => ({
     <button onClick={() => onModelSelect('picked/model.gguf')}>stub-pick-model</button>
   ),
 }));
+jest.mock('@/components/settings/ModelDownloadsSettings', () => ({
+  __esModule: true,
+  default: () => <div data-testid="model-downloads-section">downloads</div>,
+}));
+jest.mock('@/components/settings/ImageGenerationSettingsSection', () => ({
+  __esModule: true,
+  default: () => <div data-testid="image-gen-section">image-gen</div>,
+}));
 jest.mock('@/components/ModelSettingsFields', () => ({
   __esModule: true,
   default: ({ value, onChange, maxValues, defaults }: any) => (
@@ -130,7 +138,7 @@ beforeEach(() => {
   fetchMock.mockReset();
   localStorage.clear();
   (global as any).fetch = fetchMock;
-  mockUseAuth.mockReturnValue({ token: 'tok' });
+  mockUseAuth.mockReturnValue({ token: 'tok', user: { is_admin: true } });
   jest.spyOn(console, 'error').mockImplementation(() => undefined);
   jest.spyOn(console, 'warn').mockImplementation(() => undefined);
   jest.spyOn(console, 'log').mockImplementation(() => undefined);
@@ -153,7 +161,7 @@ describe('ModelsSettings: loading', () => {
   });
 
   it('omits the Authorization header when there is no token', async () => {
-    mockUseAuth.mockReturnValue({ token: null });
+    mockUseAuth.mockReturnValue({ token: null, user: { is_admin: true } });
     await renderSettings();
 
     // authFetch без токена и без init вызывает fetch(url) без второго аргумента

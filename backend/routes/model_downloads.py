@@ -89,8 +89,9 @@ async def get_model_avatar(
     current_user: Annotated[dict, Depends(get_current_user)],
     repo_id: str,
 ):
-    """Аватар org/user владельца HF-репо (кэш на backend)."""
-    _require_admin(current_user)
+    """Аватар org/user владельца HF-репо (публичные данные Hub, кэш на backend)."""
+    # достаточно быть авторизованным — не только admin (нужно в селекторе моделей чата)
+    _ = current_user
     from backend.services.model_downloads.avatar import fetch_org_avatar_url
 
     rid = (repo_id or "").strip()

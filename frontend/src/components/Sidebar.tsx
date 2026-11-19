@@ -228,10 +228,6 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
   const [showUpdatesDialog, setShowUpdatesDialog] = React.useState(false);
   const [showShortcutsDialog, setShowShortcutsDialog] = React.useState(false);
 
-  const onyxNewsUrl =
-    'https://xlnk.ms/join/channel/MTcwYzM0NjMtNzJmMC01ZTQxLTg2MzQtMjEyNWM3ODIwMDdhOjc1ZjkzYmE4LWJlZTMtNWIwYi05OTM2LWNhNGExYmZkNDQ2MDpjZmIzMzY3Ny1iNTI5LTVmOWMtYWZhYy03NWY5MjgyYmU3OTM6NGNkNGM2ZjAtYjU3ZC01Njg5LWI4ZTEtM2UxMjU3Yzg2Njk5';
-  const onyxSupportUrl =
-    'https://xlnk.ms/join/chat/MTBkMWNhZDktNzA2MC01ZDc0LTlkOGItM2FkN2E2NWI3YWQyOjc1ZjkzYmE4LWJlZTMtNWIwYi05OTM2LWNhNGExYmZkNDQ2MDo0MWFjYTFhZS1iNzMwLTViNWEtODQ5My0xYmZkMWUxOTkyMWM6NGNkNGM2ZjAtYjU3ZC01Njg5LWI4ZTEtM2UxMjU3Yzg2Njk5';
   const helpDialogPaperSx = {
     width: { xs: '94vw', sm: 'min(920px, 88vw)' },
     maxWidth: 920,
@@ -2166,7 +2162,13 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
         BackdropProps={{
           sx: { backgroundColor: isDarkMode ? 'rgba(0,0,0,0.55)' : 'rgba(0,0,0,0.4)' },
         }}
-        PaperProps={{ sx: helpDialogPaperSx }}
+        PaperProps={{
+          sx: {
+            ...helpDialogPaperSx,
+            width: { xs: '94vw', sm: 'min(520px, 88vw)' },
+            maxWidth: 520,
+          },
+        }}
       >
         <Box sx={{ px: { xs: 2.5, sm: 3.5 }, pt: 2, pb: 0 }}>
           <Box
@@ -2222,51 +2224,38 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
           >
             По возникающим вопросам обращаться:
           </Typography>
-          <Box
-            component="ul"
+          <Typography
             sx={{
-              m: 0,
-              pl: 2.5,
-              mb: 2.5,
               color: isDarkMode ? 'rgba(255,255,255,0.88)' : 'rgba(0,0,0,0.85)',
               fontSize: '0.9375rem',
               lineHeight: 1.55,
-              '& li': { mb: 0.5 },
+              mb: 2,
             }}
           >
-            <li>в jabber или onyx (ссылки ниже)</li>
-            <li>по почте: команде AstraChat</li>
-          </Box>
-
-          <Typography
-            sx={{
-              fontSize: '0.8125rem',
-              color: isDarkMode ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.5)',
-              mb: 0.75,
-            }}
-          >
-            Onyx
+            Telegram:{' '}
+            <Box
+              component="a"
+              href="https://t.me/NeKonnn"
+              target="_blank"
+              rel="noopener noreferrer"
+              sx={{ ...helpLinkSx, textDecoration: 'underline' }}
+            >
+              @NeKonnn
+            </Box>
           </Typography>
-          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 0.75 }}>
-            <Link
-              href={onyxNewsUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              underline="hover"
-              sx={helpLinkSx}
-            >
-              AstraChat News
-            </Link>
-            <Link
-              href={onyxSupportUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              underline="hover"
-              sx={helpLinkSx}
-            >
-              AstraChat Support
-            </Link>
-          </Box>
+          <Box
+            component="img"
+            src="/static/support/telegram-qr.png"
+            alt="QR-код Telegram @NeKonnn"
+            sx={{
+              display: 'block',
+              width: '100%',
+              maxWidth: 280,
+              height: 'auto',
+              borderRadius: '12px',
+              mx: 'auto',
+            }}
+          />
         </DialogContent>
       </Dialog>
 

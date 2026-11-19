@@ -30,6 +30,7 @@ import {
   Restore as RestoreIcon,
 } from '@mui/icons-material';
 import { useAppActions } from '../../contexts/AppContext';
+import { useAuth } from '../../contexts/AuthContext';
 import ModelSelector from '../ModelSelector';
 import ModelSettingsFields from '../ModelSettingsFields';
 import { useTheme } from '@mui/material';
@@ -37,9 +38,12 @@ import { authFetch, getApiUrl } from '../../config/api';
 import { MODEL_SETTINGS_SECTION_TITLE_SX, MODEL_SETTINGS_CARD_SX, MODEL_SETTINGS_RESET_BUTTON_SX, MODEL_SETTINGS_DEFAULT, MODEL_SETTINGS_MAX_DEFAULT } from '../../constants/modelSettingsStyles';
 import { MODEL_SETTINGS_CHANGED_EVENT } from '../../utils/contextTokens';
 import ImageGenerationSettingsSection from './ImageGenerationSettingsSection';
+import ModelDownloadsSettings from './ModelDownloadsSettings';
 
 
 export default function ModelsSettings() {
+  const { user } = useAuth();
+  const isAdmin = Boolean(user?.is_admin);
   const readIsSettingsMode = () => {
     const mode = localStorage.getItem('model_selector_mode');
     if (mode) return mode === 'settings';
@@ -812,6 +816,8 @@ export default function ModelsSettings() {
       </Dialog>
 
       <ImageGenerationSettingsSection />
+
+      {isAdmin && <ModelDownloadsSettings />}
     </Box>
   );
 }

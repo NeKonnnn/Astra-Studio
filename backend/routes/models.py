@@ -41,6 +41,36 @@ def _models_available_cache_seconds() -> int:
     return get_settings().model_health.models_available_cache_seconds
 
 
+def _avatar_url_for_local_model(model_id: str) -> Optional[str]:
+    """Читает sidecar аватара рядом с GGUF в models/llm (если модель качали через UI)."""
+    try:
+        from pathlib import Path
+
+        from backend.services.model_downloads.avatar import read_avatar_url_near
+        from backend.services.model_downloads.paths import model_roots
+
+        llm = model_roots().get("llm")
+        if not llm:
+            return None
+        name = Path(str(model_id or "").replace("\\", "/")).name
+        if not name:
+            return None
+        candidates = []
+        if name.lower().endswith(".gguf"):
+            candidates.append(llm / name)
+        else:
+            candidates.append(llm / f"{name}.gguf")
+            candidates.append(llm / name)
+        for path in candidates:
+            if path.is_file():
+                url = read_avatar_url_near(path)
+                if url:
+                    return url
+    except Exception:
+        return None
+    return None
+
+
 def _is_chat_model(model_id: str) -> bool:
     """Модель годится для диалога — то есть не эмбеддер и не реранкер.
 
@@ -193,6 +223,9 @@ async def get_available_models(
                     if not _is_chat_model(m.model_id):
                         continue
                     extra = dict(m.extra or {})
+                    avatar_url = extra.pop("avatar_url", None) or _avatar_url_for_local_model(
+                        m.model_id
+                    )
                     rows.append(
                         {
                             "name": m.model_id,
@@ -213,6 +246,7 @@ async def get_available_models(
                             "object": extra.pop("object", "model"),
                             "owned_by": extra.pop("owned_by", provider.id),
                             "llm_host_id": provider.id,
+                            "avatar_url": avatar_url,
                             "extra": extra,
                         }
                     )

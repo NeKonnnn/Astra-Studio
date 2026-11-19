@@ -38,6 +38,7 @@ from backend.routes.memory import router as memory_router
 from backend.routes.model_comparison import router as model_comparison_router
 from backend.routes.models import router as models_router
 from backend.routes.model_downloads import router as model_downloads_router
+from backend.routes.updates import router as updates_router
 from backend.routes.project_rag import router as project_rag_router
 from backend.routes.projects import router as projects_router
 from backend.routes.rag import router as rag_router
@@ -313,6 +314,7 @@ for _r in (
     chat_router,
     models_router,
     model_downloads_router,
+    updates_router,
     llm_router,
     llm_providers_router,
     memory_router,

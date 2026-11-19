@@ -32,8 +32,10 @@ import { fetchVaTtsStatus } from '../../voiceAssistant/ttsStatus';
 import { speakConfirmation } from '../../voiceAssistant/ttsConfirm';
 import { authFetch, getApiUrl, API_ENDPOINTS } from '../../config/api';
 import { useAppActions } from '../../contexts/AppContext';
+import { useHotkeyBindings } from '../../hooks/useHotkeyBindings';
 
 export default function VoiceAssistantSettings() {
+  const { bindings, format } = useHotkeyBindings();
   const [settings, setSettings] = useState<VoiceAssistantSettings>(() =>
     loadVoiceAssistantSettings(),
   );
@@ -106,8 +108,9 @@ export default function VoiceAssistantSettings() {
             Голосовой помощник
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            После «{settings.wakeWord || 'астра'}» — команда или вопрос. Ответ стримится и
-            озвучивается по фразам; можно перебить речь (barge-in). Логи: Console → [VA].
+            После «{settings.wakeWord || 'астра'}» — команда или вопрос. Быстрый вызов:{' '}
+            <strong>{format(bindings.activateVoiceAssistant)}</strong> (меняется в «Сочетание
+            клавиш»). Ответ стримится и озвучивается по фразам; можно перебить речь (barge-in).
           </Typography>
 
           {!webSpeech && (

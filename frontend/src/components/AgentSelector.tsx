@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import { Box, Typography, Popover, Tooltip, CircularProgress } from '@mui/material';
+import { Box, Typography, Popover, Tooltip, CircularProgress, Divider } from '@mui/material';
 import {
   Search as SearchIcon,
   ExpandMore as ExpandMoreIcon,
@@ -7,12 +7,14 @@ import {
   Computer as ComputerIcon,
   Check as CheckIcon,
   Image as ImageIcon,
+  Add as AddIcon,
 } from '@mui/icons-material';
 import AgentIcon from '../icons/AgentIcon';
 import { useAuth } from '../contexts/AuthContext';
 import { useFeatureAccess } from '../hooks/useFeatureAccess';
 import { useAppActions } from '../contexts/AppContext';
 import { authFetch, getApiUrl } from '../config/api';
+import AddModelFromHfDialog from './AddModelFromHfDialog';
 import {
   isValidSelectedModelPath,
   LAST_SELECTED_MODEL_PATH_STORAGE_KEY,
@@ -36,6 +38,7 @@ import {
   readSelectedImageGenPresetId,
   writeSelectedImageGenPresetId,
 } from '../utils/imageGenerationPresets';
+import ModelHfAvatar from './ModelHfAvatar';
 
 function readStoredModelPath(): string {
   if (typeof window === 'undefined') return '';
@@ -74,6 +77,8 @@ interface ModelItem {
   provider_kind?: string;
   /** Legacy-алиас для старых бэкендов (== provider_id). */
   llm_host_id?: string;
+  /** URL аватара HF org (sidecar / Hub), если известен. */
+  avatar_url?: string;
 }
 
 interface ProvidersResponse {
@@ -148,9 +153,11 @@ export default function AgentSelector({
   onAgentChange,
   onModelSelect,
 }: AgentSelectorProps) {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
+  const isAdmin = Boolean(user?.is_admin);
   const { canUseAgents } = useFeatureAccess();
   const { showNotification } = useAppActions();
+  const [addModelOpen, setAddModelOpen] = useState(false);
 
   const [models, setModels] = useState<ModelItem[]>(() => {
     const cached = readTimedCache<ModelItem[]>(MODELS_CACHE_KEY, MODELS_CACHE_TTL_MS);
@@ -691,7 +698,19 @@ export default function AgentSelector({
           {activeAgent ? (
             <AgentIcon sx={{ fontSize: '1.1rem', color: mutedTextColor, flexShrink: 0 }} />
           ) : loadingModelPath || isValidSelectedModelPath(selectedModelPath) ? (
-            <ComputerIcon sx={{ fontSize: '1.1rem', color: mutedTextColor, flexShrink: 0 }} />
+            <ModelHfAvatar
+              avatarUrl={
+                models.find((m) => m.path === (loadingModelPath || selectedModelPath))?.avatar_url
+              }
+              modelKey={
+                getModelDisplayName(loadingModelPath || selectedModelPath || '')
+                || loadingModelPath
+                || selectedModelPath
+              }
+              size={18}
+              iconFontSize="1.1rem"
+              iconColor={mutedTextColor}
+            />
           ) : (
             <AgentIcon sx={{ fontSize: '1.1rem', color: mutedTextColor, flexShrink: 0 }} />
           )}
@@ -742,13 +761,21 @@ export default function AgentSelector({
               display: 'flex',
               flexDirection: 'column',
               maxHeight: 300,
-              overflowY: 'auto',
-              scrollbarWidth: 'none',
-              msOverflowStyle: 'none',
-              '&::-webkit-scrollbar': { display: 'none' },
+              overflow: 'hidden',
             }}
           >
-            <Box sx={{ py: 0.5, px: 0.5 }}>
+            <Box
+              sx={{
+                py: 0.5,
+                px: 0.5,
+                flex: 1,
+                minHeight: 0,
+                overflowY: 'auto',
+                scrollbarWidth: 'none',
+                msOverflowStyle: 'none',
+                '&::-webkit-scrollbar': { display: 'none' },
+              }}
+            >
               <Box
                 onMouseEnter={() => {
                   setActiveConnectionLabel(IMAGE_GEN_SLOT);
@@ -832,6 +859,40 @@ export default function AgentSelector({
                 </Box>
               ) : null}
             </Box>
+            {isAdmin && (
+              <>
+                <Divider sx={{ borderColor: menuDividerBorder }} />
+                <Box sx={{ p: 0.5 }}>
+                  <Box
+                    onClick={() => {
+                      setAddModelOpen(true);
+                      handleClose();
+                    }}
+                    sx={{
+                      ...dropdownItemSx,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 1,
+                      color: menuItemColor,
+                      fontWeight: 500,
+                    }}
+                  >
+                    <AddIcon sx={{ fontSize: 18, color: 'primary.main', flexShrink: 0 }} />
+                    <Typography
+                      sx={{
+                        flex: 1,
+                        fontSize: MENU_ACTION_TEXT_SIZE,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      Добавить модель
+                    </Typography>
+                  </Box>
+                </Box>
+              </>
+            )}
           </Box>
 
           {/* ── Правая карточка: список моделей подключения ─────── */}
@@ -974,7 +1035,13 @@ export default function AgentSelector({
                             bgcolor: isSelected || isLoading ? menuItemHover : 'transparent',
                           }}
                         >
-                          <ComputerIcon sx={{ fontSize: 18, color: iconColor, flexShrink: 0 }} />
+                          <ModelHfAvatar
+                            avatarUrl={model.avatar_url}
+                            modelKey={model.display_name || model.name || model.path}
+                            size={18}
+                            iconFontSize={18}
+                            iconColor={iconColor}
+                          />
                           <Typography
                             sx={{
                               flex: 1,
@@ -1007,6 +1074,20 @@ export default function AgentSelector({
           ) : null}
         </Box>
       </Popover>
+
+      <AddModelFromHfDialog
+        open={addModelOpen}
+        isDarkMode={isDarkMode}
+        onClose={() => setAddModelOpen(false)}
+        onStarted={() => {
+          showNotification('success', 'Загрузка модели запущена');
+        }}
+        onCompleted={() => {
+          showNotification('success', 'Модель скачана');
+          void loadModels(false);
+          window.dispatchEvent(new CustomEvent('astra-models-changed'));
+        }}
+      />
     </Box>
   );
 }

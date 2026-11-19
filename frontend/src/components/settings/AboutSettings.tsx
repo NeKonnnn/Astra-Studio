@@ -24,6 +24,7 @@ import {
   DownloadOutlined as DownloadIcon,
 } from '@mui/icons-material';
 import { MENU_ICON_MIN_WIDTH, MENU_ICON_TO_TEXT_GAP_PX, MENU_ICON_FONT_SIZE_PX } from '../../constants/menuStyles';
+import UpdatesSettings from './UpdatesSettings';
 
 interface SystemInfo {
   version: string;
@@ -39,7 +40,7 @@ interface SystemInfo {
 
 export default function AboutSettings() {
   const [systemInfo] = useState<SystemInfo>({
-    version: 'Web Interface v1.0.3',
+    version: 'AstraStudio (см. блок «Обновления» / VERSION)',
     platform: navigator.platform || 'Неизвестно',
     browser: navigator.userAgent.split(' ')[0] || 'Неизвестно',
     backend: 'FastAPI + Python',
@@ -105,6 +106,8 @@ export default function AboutSettings() {
         </Alert>
       )}
 
+      <UpdatesSettings />
+
       {/* Основная информация */}
       <Card sx={{ mb: 3 }}>
         <CardContent>
@@ -119,7 +122,7 @@ export default function AboutSettings() {
                 Название
               </Typography>
               <Typography variant="body1" sx={{ mb: 2 }}>
-                astrachat - Голосовой ассистент
+                AstraStudio
               </Typography>
               
               <Typography variant="subtitle1" fontWeight="600" gutterBottom>
@@ -332,7 +335,7 @@ export default function AboutSettings() {
                 Обновления
               </Typography>
               <Typography variant="body1">
-                Автоматические обновления отключены
+                Проверка и установка — в блоке «Обновления» выше (только admin)
               </Typography>
             </Box>
           </Box>

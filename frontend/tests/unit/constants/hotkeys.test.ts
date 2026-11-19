@@ -58,8 +58,24 @@ describe('defaults and metadata', () => {
     }
   });
 
-  it('only attaching files works while typing', () => {
-    expect(HOTKEY_ACTIONS.filter((a) => a.worksInInput).map((a) => a.id)).toEqual(['attachFiles']);
+  it('attach files and voice assistant toggles work while typing', () => {
+    expect(HOTKEY_ACTIONS.filter((a) => a.worksInInput).map((a) => a.id)).toEqual([
+      'attachFiles',
+      'activateVoiceAssistant',
+      'deactivateVoiceAssistant',
+    ]);
+  });
+
+  it('default voice assistant hotkeys are Alt+V / Alt+Shift+V', () => {
+    expect(DEFAULT_HOTKEY_BINDINGS.activateVoiceAssistant).toEqual({
+      code: 'KeyV',
+      alt: true,
+    });
+    expect(DEFAULT_HOTKEY_BINDINGS.deactivateVoiceAssistant).toEqual({
+      code: 'KeyV',
+      alt: true,
+      shift: true,
+    });
   });
 });
 

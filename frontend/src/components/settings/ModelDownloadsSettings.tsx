@@ -3,6 +3,8 @@ import {
   Alert,
   Box,
   Button,
+  Card,
+  CardContent,
   Chip,
   CircularProgress,
   Collapse,
@@ -10,7 +12,6 @@ import {
   DialogActions,
   DialogContent,
   DialogContentText,
-  Avatar,
   DialogTitle,
   IconButton,
   InputAdornment,
@@ -20,7 +21,7 @@ import {
   ListItemAvatar,
   ListItemSecondaryAction,
   ListItemText,
-  MenuItem,
+  Popover,
   Stack,
   TextField,
   Tooltip,
@@ -34,10 +35,25 @@ import CancelIcon from '@mui/icons-material/Cancel';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
+import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
 import SearchIcon from '@mui/icons-material/Search';
-import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
 import { authFetch, getApiUrl } from '../../config/api';
-import { MODEL_SETTINGS_SECTION_TITLE_SX } from '../../constants/modelSettingsStyles';
+import {
+  MODEL_SETTINGS_CARD_SX,
+  MODEL_SETTINGS_HELP_ICON_BUTTON_SX,
+  MODEL_SETTINGS_SECTION_TITLE_SX,
+} from '../../constants/modelSettingsStyles';
+import {
+  DROPDOWN_TRIGGER_BG,
+  DROPDOWN_TRIGGER_BG_HOVER,
+  getDropdownChevronSx,
+  getDropdownItemStateSx,
+  getDropdownItemSx,
+  getDropdownPopoverPaperSx,
+  getDropdownTriggerButtonSx,
+  getDropdownTriggerTextSx,
+} from '../../constants/menuStyles';
+import ModelHfAvatar from '../ModelHfAvatar';
 
 async function readErrorDetail(res: Response, fallback: string): Promise<string> {
   const data = await res.json().catch(() => ({} as { detail?: string }));
@@ -89,8 +105,6 @@ const TYPE_OPTIONS: Array<{ id: string; label: string }> = [
   { id: 'omnivoice', label: 'OmniVoice' },
 ];
 
-const PULL_TYPES = TYPE_OPTIONS.filter((t) => t.id !== 'all');
-
 function formatBytes(n: number): string {
   if (!n || n <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -140,163 +154,22 @@ function statusColor(status: string): 'default' | 'success' | 'warning' | 'error
   return 'default';
 }
 
-/** Разбор ввода: org/repo, hf://…, hf download …, hf.co/…, URL, catalog id */
-function parsePullInput(raw: string): {
-  repo_id?: string;
-  url?: string;
-  filename?: string;
-  catalogHint?: string;
-} {
-  let s = raw.trim().replace(/^["']|["']$/g, '');
-  if (!s) return {};
-
-  // CLI: `hf download hf://org/repo/file.gguf` / `huggingface-cli download org/repo file.gguf`
-  s = s
-    .replace(/^huggingface-cli\s+download\s+/i, '')
-    .replace(/^hf\s+download\s+/i, '')
-    .trim();
-
-  if (/^https?:\/\//i.test(s)) {
-    try {
-      const u = new URL(s);
-      const parts = u.pathname.split('/').filter(Boolean);
-      if (u.hostname.includes('huggingface.co') && parts.length >= 2) {
-        const repo_id = `${parts[0]}/${parts[1]}`;
-        const resolveIdx = parts.indexOf('resolve');
-        const blobIdx = parts.indexOf('blob');
-        const idx = resolveIdx >= 0 ? resolveIdx : blobIdx;
-        const filename = idx >= 0 && parts[idx + 2] ? parts.slice(idx + 2).join('/') : undefined;
-        return { repo_id, filename };
-      }
-    } catch {
-      /* fallthrough */
-    }
-    return { url: s };
-  }
-
-  // hf://org/repo/file.gguf  или  hf:org/repo/file.gguf
-  s = s.replace(/^hf:\/\//i, '').replace(/^hf:/i, '');
-  let t = s
-    .replace(/^hf\.co\//i, '')
-    .replace(/^huggingface\.co\//i, '')
-    .trim();
-
-  // org/repo:quant
-  const colon = t.indexOf(':');
-  if (colon > 0 && !t.slice(0, colon).includes('/')) {
-    // редкий случай — пропускаем
-  } else if (colon > 0 && t.slice(0, colon).includes('/')) {
-    const repo = t.slice(0, colon);
-    const quant = t.slice(colon + 1);
-    const segs = repo.split('/').filter(Boolean);
-    if (segs.length >= 2) {
-      return {
-        repo_id: `${segs[0]}/${segs[1]}`,
-        filename: quant.includes('.') ? quant : undefined,
-        catalogHint: quant,
-      };
-    }
-  }
-
-  if (t.includes('/')) {
-    const segs = t.split('/').filter(Boolean);
-    if (segs.length >= 2) {
-      const repo_id = `${segs[0]}/${segs[1]}`;
-      const rest = segs.slice(2).join('/');
-      // `hf download org/repo file.gguf` → иногда пробел вместо /
-      if (!rest && /\s+\S+\.\w+$/.test(t)) {
-        const [repoPart, filePart] = t.split(/\s+/, 2);
-        const rs = repoPart.split('/').filter(Boolean);
-        if (rs.length >= 2 && filePart) {
-          return { repo_id: `${rs[0]}/${rs[1]}`, filename: filePart };
-        }
-      }
-      if (rest) {
-        return { repo_id, filename: rest };
-      }
-      return { repo_id };
-    }
-  }
-
-  // `org/repo file.gguf` (пробел)
-  const spaceParts = t.split(/\s+/).filter(Boolean);
-  if (spaceParts.length >= 2 && spaceParts[0].includes('/')) {
-    const segs = spaceParts[0].split('/').filter(Boolean);
-    if (segs.length >= 2) {
-      return { repo_id: `${segs[0]}/${segs[1]}`, filename: spaceParts[1] };
-    }
-  }
-
-  return { catalogHint: t };
-}
-
-const avatarCache = new Map<string, string | null>();
-
-function ModelAvatar({ model }: { model: CatalogModel }) {
-  const [src, setSrc] = useState<string | undefined>(model.avatar_url);
-  const repoId = model.source?.repo_id;
-
-  useEffect(() => {
-    setSrc(model.avatar_url);
-  }, [model.avatar_url, model.id]);
-
-  useEffect(() => {
-    if (src || !repoId || model.source?.kind === 'local') return;
-    if (avatarCache.has(repoId)) {
-      const cached = avatarCache.get(repoId);
-      if (cached) setSrc(cached);
-      return;
-    }
-    let cancelled = false;
-    void (async () => {
-      try {
-        const res = await authFetch(
-          getApiUrl(`/api/model-downloads/avatar?repo_id=${encodeURIComponent(repoId)}`),
-        );
-        if (!res.ok) {
-          avatarCache.set(repoId, null);
-          return;
-        }
-        const data = await res.json();
-        const url = typeof data.avatar_url === 'string' ? data.avatar_url : null;
-        avatarCache.set(repoId, url);
-        if (!cancelled && url) setSrc(url);
-      } catch {
-        avatarCache.set(repoId, null);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [src, repoId, model.source?.kind]);
-
-  return (
-    <Avatar
-      src={src}
-      alt=""
-      variant="rounded"
-      sx={{ width: 36, height: 36, bgcolor: 'action.hover' }}
-    >
-      <SmartToyOutlinedIcon fontSize="small" />
-    </Avatar>
-  );
-}
-
 export default function ModelDownloadsSettings() {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
+  const dropdownTriggerSx = useMemo(() => getDropdownTriggerButtonSx(isDark), [isDark]);
+  const dropdownTriggerTextSx = useMemo(() => getDropdownTriggerTextSx(isDark), [isDark]);
+  const dropdownChevronSx = useMemo(() => getDropdownChevronSx(isDark), [isDark]);
+  const dropdownItemSx = useMemo(() => getDropdownItemSx(isDark), [isDark]);
 
   const [catalog, setCatalog] = useState<CatalogModel[]>([]);
   const [jobs, setJobs] = useState<DownloadJob[]>([]);
   const [typeFilter, setTypeFilter] = useState('all');
+  const [typeFilterAnchor, setTypeFilterAnchor] = useState<HTMLElement | null>(null);
   const [search, setSearch] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-
-  const [pullQuery, setPullQuery] = useState('');
-  const [pullType, setPullType] = useState('llm_gguf');
-  const [pullBusy, setPullBusy] = useState(false);
 
   const [hfMasked, setHfMasked] = useState('');
   const [hfConfigured, setHfConfigured] = useState(false);
@@ -438,104 +311,6 @@ export default function ModelDownloadsSettings() {
     await loadJobs();
   };
 
-  const pullModel = async () => {
-    const raw = pullQuery.trim();
-    if (!raw) return;
-    setPullBusy(true);
-    setError(null);
-    setInfo(null);
-    try {
-      // 1) точное совпадение с catalog id / display / repo
-      const lower = raw.toLowerCase();
-      const hit = catalog.find(
-        (m) =>
-          m.id.toLowerCase() === lower
-          || m.display_name.toLowerCase() === lower
-          || (m.source?.repo_id || '').toLowerCase() === lower
-          || (m.local_name || '').toLowerCase() === lower,
-      );
-      if (hit) {
-        await startCatalog(hit.id);
-        setPullQuery('');
-        return;
-      }
-
-      const parsed = parsePullInput(raw);
-      if (parsed.catalogHint && !parsed.repo_id && !parsed.url) {
-        const soft = catalog.find(
-          (m) =>
-            m.id.toLowerCase().includes(parsed.catalogHint!.toLowerCase())
-            || (m.local_name || '').toLowerCase().includes(parsed.catalogHint!.toLowerCase()),
-        );
-        if (soft) {
-          await startCatalog(soft.id);
-          setPullQuery('');
-          return;
-        }
-      }
-
-      const inferredType =
-        (parsed.filename || '').toLowerCase().endsWith('.gguf')
-        || (parsed.repo_id || '').toLowerCase().includes('gguf')
-          ? 'llm_gguf'
-          : pullType;
-
-      const body: Record<string, unknown> = {
-        type: inferredType,
-        apply: true,
-      };
-      if (parsed.repo_id) body.repo_id = parsed.repo_id;
-      if (parsed.url) body.url = parsed.url;
-      if (parsed.filename) {
-        body.filename = parsed.filename;
-        body.local_name = parsed.filename.split('/').pop();
-      }
-      if (parsed.repo_id && !parsed.filename && pullType === 'llm_gguf') {
-        // без filename — попробуем список файлов
-        const filesRes = await authFetch(
-          getApiUrl(`/api/model-downloads/hf-files?repo_id=${encodeURIComponent(parsed.repo_id)}`),
-        );
-        if (filesRes.ok) {
-          const filesData = await filesRes.json();
-          const gguf: string[] = Array.isArray(filesData.gguf) ? filesData.gguf : [];
-          if (gguf.length === 1) {
-            body.filename = gguf[0];
-            body.local_name = gguf[0].split('/').pop();
-          } else if (gguf.length > 1) {
-            setError(
-              `В репозитории несколько GGUF (${gguf.length}). Укажите файл, например: ${parsed.repo_id}/${gguf[0]}`,
-            );
-            return;
-          }
-        }
-      }
-      if (pullType === 'stt') body.stt_size = 'medium';
-      if (pullType.startsWith('rag') && parsed.repo_id) {
-        body.local_name = parsed.repo_id.split('/').pop();
-      }
-
-      if (!body.repo_id && !body.url) {
-        setError('Не удалось разобрать модель. Пример: unsloth/Qwen3.5-4B-GGUF или id из каталога');
-        return;
-      }
-
-      const res = await authFetch(getApiUrl('/api/model-downloads/start'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        setError(await readErrorDetail(res, `Ошибка ${res.status}`));
-        return;
-      }
-      setInfo('Загрузка запущена');
-      setPullQuery('');
-      await loadJobs();
-    } finally {
-      setPullBusy(false);
-    }
-  };
-
   const saveToken = async () => {
     const res = await authFetch(getApiUrl('/api/model-downloads/hf-token'), {
       method: 'PUT',
@@ -565,98 +340,38 @@ export default function ModelDownloadsSettings() {
   const border = `1px solid ${theme.palette.divider}`;
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5, maxWidth: 920 }}>
-      <Box>
-        <Typography variant="h6" sx={{ ...MODEL_SETTINGS_SECTION_TITLE_SX, display: 'flex', alignItems: 'center', gap: 1 }}>
-          <CloudDownloadIcon fontSize="small" /> Manage Models
-        </Typography>
-        <Typography variant="body2" color="text.secondary">
-          Скачайте модель из каталога или укажите Hugging Face repo — как Pull в Open WebUI.
-        </Typography>
-      </Box>
-
-      {error && (
-        <Alert severity="error" onClose={() => setError(null)}>
-          {error}
-        </Alert>
-      )}
-      {info && (
-        <Alert severity="success" onClose={() => setInfo(null)}>
-          {info}
-        </Alert>
-      )}
-      {loading && <LinearProgress />}
-
-      {/* Pull bar — главный паттерн Open WebUI */}
-      <Box
-        sx={{
-          p: 2,
-          borderRadius: 2,
-          border,
-          backgroundColor: panelBg,
-        }}
-      >
-        <Typography variant="subtitle2" sx={{ mb: 1.25, fontWeight: 600 }}>
-          Pull a model from Hugging Face
-        </Typography>
-        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'stretch' }}>
-          <TextField
-            select
-            size="small"
-            label="Тип"
-            value={pullType}
-            onChange={(e) => setPullType(String(e.target.value))}
-            sx={{ minWidth: { sm: 150 } }}
+    <Card sx={MODEL_SETTINGS_CARD_SX}>
+      <CardContent>
+        <Typography variant="h6" gutterBottom sx={MODEL_SETTINGS_SECTION_TITLE_SX}>
+          <CloudDownloadIcon color="primary" />
+          Управление моделями
+          <Tooltip
+            title="Каталог, Re-pull, Apply и удаление. Новую LLM с Hugging Face добавляйте в рабочей зоне: Модели → Добавить модель"
+            arrow
           >
-            {PULL_TYPES.map((t) => (
-              <MenuItem key={t.id} value={t.id}>
-                {t.label}
-              </MenuItem>
-            ))}
-          </TextField>
-          <TextField
-            size="small"
-            fullWidth
-            placeholder="hf://org/repo/file.gguf · org/repo · URL · id из каталога"
-            value={pullQuery}
-            onChange={(e) => setPullQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') void pullModel();
-            }}
-            InputProps={{
-              endAdornment: (
-                <InputAdornment position="end">
-                  <Tooltip title="Скачать">
-                    <span>
-                      <IconButton
-                        color="primary"
-                        edge="end"
-                        disabled={!pullQuery.trim() || pullBusy}
-                        onClick={() => void pullModel()}
-                        aria-label="pull model"
-                      >
-                        {pullBusy ? <CircularProgress size={18} /> : <DownloadIcon />}
-                      </IconButton>
-                    </span>
-                  </Tooltip>
-                </InputAdornment>
-              ),
-            }}
-          />
-        </Stack>
-        <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
-          Примеры:{' '}
-          <code>hf://unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-IQ4_XS.gguf</code>,{' '}
-          <code>ai-forever/FRIDA</code>
+            <IconButton size="small" sx={MODEL_SETTINGS_HELP_ICON_BUTTON_SX}>
+              <HelpOutlineIcon fontSize="small" color="action" />
+            </IconButton>
+          </Tooltip>
         </Typography>
-      </Box>
 
-      {/* Active downloads */}
+        {error && (
+          <Alert severity="error" onClose={() => setError(null)} sx={{ mb: 2 }}>
+            {error}
+          </Alert>
+        )}
+        {info && (
+          <Alert severity="success" onClose={() => setInfo(null)} sx={{ mb: 2 }}>
+            {info}
+          </Alert>
+        )}
+        {loading && <LinearProgress sx={{ mb: 2 }} />}
+
       {activeJobs.length > 0 && (
-        <Box sx={{ borderRadius: 2, border, overflow: 'hidden' }}>
+        <Box sx={{ mb: 2, borderRadius: 1, border, overflow: 'hidden' }}>
           <Box sx={{ px: 2, py: 1.25, backgroundColor: panelBg }}>
-            <Typography variant="subtitle2" fontWeight={600}>
-              Downloads
+            <Typography variant="subtitle1" fontWeight={600}>
+              Загрузки
             </Typography>
           </Box>
           <List dense disablePadding>
@@ -709,8 +424,7 @@ export default function ModelDownloadsSettings() {
         </Box>
       )}
 
-      {/* Catalog / installed list */}
-      <Box sx={{ borderRadius: 2, border, overflow: 'hidden' }}>
+      <Box sx={{ mb: 2, borderRadius: 1, border, overflow: 'hidden' }}>
         <Box
           sx={{
             px: 2,
@@ -722,36 +436,116 @@ export default function ModelDownloadsSettings() {
             alignItems: 'center',
           }}
         >
-          <Typography variant="subtitle2" fontWeight={600} sx={{ mr: 1 }}>
-            Models
+          <Typography variant="subtitle1" fontWeight={600} sx={{ mr: 1 }}>
+            Модели
           </Typography>
           <TextField
             size="small"
-            placeholder="Search models"
+            placeholder="Поиск моделей"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            sx={{ minWidth: 180, flex: 1 }}
+            sx={{
+              flex: 1,
+              minWidth: 140,
+              '& .MuiOutlinedInput-root': {
+                borderRadius: '10px',
+                bgcolor: isDark ? DROPDOWN_TRIGGER_BG : 'rgba(0,0,0,0.04)',
+                transition: 'background 0.15s, border-color 0.15s',
+                '& fieldset': {
+                  borderColor: isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.12)',
+                },
+                '&:hover': {
+                  bgcolor: isDark ? DROPDOWN_TRIGGER_BG_HOVER : 'rgba(0,0,0,0.06)',
+                  '& fieldset': {
+                    borderColor: isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.12)',
+                  },
+                },
+                '&.Mui-focused': {
+                  bgcolor: isDark ? DROPDOWN_TRIGGER_BG_HOVER : 'rgba(0,0,0,0.06)',
+                  '& fieldset': {
+                    borderColor: isDark ? 'rgba(255,255,255,0.28)' : 'rgba(0,0,0,0.24)',
+                    borderWidth: '1px',
+                  },
+                },
+              },
+              '& .MuiOutlinedInput-input': {
+                py: 1,
+                px: 0,
+                fontSize: '0.875rem',
+                fontWeight: 500,
+                color: isDark ? '#fff' : 'rgba(0,0,0,0.87)',
+              },
+            }}
             InputProps={{
               startAdornment: (
-                <InputAdornment position="start">
-                  <SearchIcon fontSize="small" color="action" />
+                <InputAdornment position="start" sx={{ mr: 0.75 }}>
+                  <SearchIcon fontSize="small" sx={{ color: isDark ? 'rgba(255,255,255,0.55)' : 'action.active' }} />
                 </InputAdornment>
               ),
             }}
           />
-          <TextField
-            select
-            size="small"
-            value={typeFilter}
-            onChange={(e) => setTypeFilter(String(e.target.value))}
-            sx={{ minWidth: 140 }}
-          >
-            {TYPE_OPTIONS.map((t) => (
-              <MenuItem key={t.id} value={t.id}>
-                {t.label}
-              </MenuItem>
-            ))}
-          </TextField>
+          <Box sx={{ width: 140, flexShrink: 0 }}>
+            <Box
+              onClick={(e) => setTypeFilterAnchor(e.currentTarget)}
+              sx={{ ...dropdownTriggerSx, width: '100%', boxSizing: 'border-box' }}
+            >
+              <Typography sx={{ ...dropdownTriggerTextSx, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {TYPE_OPTIONS.find((t) => t.id === typeFilter)?.label || 'Все типы'}
+              </Typography>
+              <ExpandMoreIcon
+                sx={{
+                  ...dropdownChevronSx,
+                  transform: typeFilterAnchor ? 'rotate(180deg)' : 'none',
+                  flexShrink: 0,
+                }}
+              />
+            </Box>
+            <Popover
+              open={Boolean(typeFilterAnchor)}
+              anchorEl={typeFilterAnchor}
+              onClose={() => setTypeFilterAnchor(null)}
+              anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+              transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+              slotProps={{
+                paper: {
+                  sx: {
+                    ...getDropdownPopoverPaperSx(typeFilterAnchor, isDark),
+                    // совпадает с шириной кнопки (не раздувать minWidth=180)
+                    width: typeFilterAnchor
+                      ? `${typeFilterAnchor.getBoundingClientRect().width}px`
+                      : 140,
+                    minWidth: typeFilterAnchor
+                      ? `${typeFilterAnchor.getBoundingClientRect().width}px`
+                      : 140,
+                    maxWidth: typeFilterAnchor
+                      ? `${typeFilterAnchor.getBoundingClientRect().width}px`
+                      : 140,
+                  },
+                },
+              }}
+            >
+              <Box sx={{ py: 0.5 }}>
+                {TYPE_OPTIONS.map((t) => (
+                  <Box
+                    key={t.id}
+                    onClick={() => {
+                      setTypeFilter(t.id);
+                      setTypeFilterAnchor(null);
+                    }}
+                    sx={{
+                      ...dropdownItemSx,
+                      ...getDropdownItemStateSx(isDark, typeFilter === t.id),
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                    }}
+                  >
+                    {t.label}
+                  </Box>
+                ))}
+              </Box>
+            </Popover>
+          </Box>
         </Box>
 
         <List dense disablePadding>
@@ -765,7 +559,14 @@ export default function ModelDownloadsSettings() {
               }}
             >
               <ListItemAvatar sx={{ minWidth: 48 }}>
-                <ModelAvatar model={m} />
+                <ModelHfAvatar
+                  avatarUrl={m.avatar_url}
+                  repoId={m.source?.kind !== 'local' ? m.source?.repo_id : undefined}
+                  modelKey={m.local_name || m.source?.filename || m.display_name}
+                  size={36}
+                  iconFontSize={22}
+                  rounded
+                />
               </ListItemAvatar>
               <ListItemText
                 primary={
@@ -894,7 +695,7 @@ export default function ModelDownloadsSettings() {
       </Dialog>
 
       {recentJobs.length > 0 && (
-        <Box>
+        <Box sx={{ mb: 2 }}>
           <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: 'block' }}>
             Недавние задачи
           </Typography>
@@ -912,16 +713,15 @@ export default function ModelDownloadsSettings() {
         </Box>
       )}
 
-      {/* Advanced: HF token */}
-      <Box sx={{ borderRadius: 2, border }}>
+      <Box sx={{ mb: 1, borderRadius: 1, border }}>
         <Button
           fullWidth
           onClick={() => setAdvancedOpen((v) => !v)}
           endIcon={advancedOpen ? <ExpandLessIcon /> : <ExpandMoreIcon />}
           sx={{ justifyContent: 'space-between', px: 2, py: 1.25, textTransform: 'none', color: 'text.primary' }}
         >
-          <Typography variant="subtitle2" fontWeight={600}>
-            Advanced · HF Token {hfConfigured ? `(${hfMasked})` : '(не задан)'}
+          <Typography variant="subtitle1" fontWeight={600}>
+            Дополнительно · HF Token {hfConfigured ? `(${hfMasked})` : '(не задан)'}
           </Typography>
         </Button>
         <Collapse in={advancedOpen}>
@@ -940,19 +740,20 @@ export default function ModelDownloadsSettings() {
                 autoComplete="off"
               />
               <Button variant="contained" onClick={() => void saveToken()} disabled={!hfTokenInput.trim()}>
-                Save
+                Сохранить
               </Button>
               <Button variant="outlined" color="inherit" onClick={() => void clearToken()} disabled={!hfConfigured}>
-                Clear
+                Очистить
               </Button>
             </Stack>
           </Box>
         </Collapse>
       </Box>
 
-      <Button variant="text" size="small" onClick={() => void refreshAll()} sx={{ alignSelf: 'flex-start' }}>
+      <Button variant="outlined" size="small" onClick={() => void refreshAll()}>
         Обновить список
       </Button>
-    </Box>
+      </CardContent>
+    </Card>
   );
 }

@@ -26,6 +26,10 @@ import { WhisperFallbackListener } from './whisperFallback';
 import VoiceAssistantStatusChip from './VoiceAssistantStatusChip';
 import { vaLog, vaWarn } from './log';
 import {
+  ASTRA_ACTIVATE_VOICE_ASSISTANT,
+  ASTRA_DEACTIVATE_VOICE_ASSISTANT,
+} from '../constants/hotkeys';
+import {
   VOICE_ASSISTANT_SETTINGS_CHANGED,
   type VoiceAssistantSettings,
   type VoiceAssistantStatus,
@@ -80,6 +84,8 @@ export default function VoiceAssistantController() {
   const liveAskRef = useRef<LiveAskHandle | null>(null);
   const sileroOkRef = useRef<boolean | null>(null);
   const speakStartedAtRef = useRef(0);
+  /** После включения VA горячей клавишей — сразу начать захват команды. */
+  const pendingHotkeyActivateRef = useRef(false);
 
   settingsRef.current = settings;
   statusRef.current = status;
@@ -478,10 +484,16 @@ export default function VoiceAssistantController() {
         if (sr.start()) {
           publishStatus({ phase: 'listening_wake', engine: 'webspeech', lastError: undefined });
           vaLog('listening', { engine: 'webspeech', wakeWord: settings.wakeWord });
-          depsRef.current.showNotification(
-            'info',
-            `Голосовой помощник слушает. Скажите «${settings.wakeWord}»`,
-          );
+          if (pendingHotkeyActivateRef.current) {
+            pendingHotkeyActivateRef.current = false;
+            beginCaptureRef.current('');
+            depsRef.current.showNotification('info', 'Слушаю команду…');
+          } else {
+            depsRef.current.showNotification(
+              'info',
+              `Голосовой помощник слушает. Скажите «${settings.wakeWord}»`,
+            );
+          }
           return;
         }
       }
@@ -504,7 +516,13 @@ export default function VoiceAssistantController() {
       if (ok) {
         publishStatus({ phase: 'listening_wake', engine: 'whisper', lastError: undefined });
         vaLog('listening', { engine: 'whisper', wakeWord: settings.wakeWord });
+        if (pendingHotkeyActivateRef.current) {
+          pendingHotkeyActivateRef.current = false;
+          beginCaptureRef.current('');
+          depsRef.current.showNotification('info', 'Слушаю команду…');
+        }
       } else {
+        pendingHotkeyActivateRef.current = false;
         publishStatus({ phase: 'idle', engine: 'none' });
         updateVoiceAssistantSettings({ enabled: false });
       }
@@ -516,6 +534,54 @@ export default function VoiceAssistantController() {
       stopEngines();
     };
   }, [settings.enabled, settings.language, settings.wakeWord, stopEngines, publishStatus]);
+
+  useEffect(() => {
+    const onActivate = () => {
+      void unlockAudioPlayback();
+      vaLog('hotkey_activate');
+      if (!settingsRef.current.enabled) {
+        pendingHotkeyActivateRef.current = true;
+        updateVoiceAssistantSettings({ enabled: true });
+        return;
+      }
+      if (statusRef.current.phase === 'capturing_command') {
+        depsRef.current.showNotification('info', 'Уже слушаю команду');
+        return;
+      }
+      if (busyRef.current && !isLiveTtsSpeaking() && !liveAskRef.current) return;
+      if (isLiveTtsSpeaking() || liveAskRef.current) {
+        bargeInStopAll();
+        liveAskRef.current?.abort();
+        liveAskRef.current = null;
+        stopVoiceAssistantSpeech();
+      }
+      beginCaptureRef.current('');
+      depsRef.current.showNotification('info', 'Слушаю команду…');
+    };
+    const onDeactivate = () => {
+      vaLog('hotkey_deactivate');
+      pendingHotkeyActivateRef.current = false;
+      if (!settingsRef.current.enabled) {
+        depsRef.current.showNotification('info', 'Голосовой помощник уже выключен');
+        return;
+      }
+      liveAskRef.current?.abort();
+      liveAskRef.current = null;
+      bargeInStopAll();
+      stopVoiceAssistantSpeech();
+      clearCommandTimers();
+      busyRef.current = false;
+      updateVoiceAssistantSettings({ enabled: false });
+      publishStatus({ phase: 'idle', lastError: undefined });
+      depsRef.current.showNotification('info', 'Голосовой помощник выключен');
+    };
+    window.addEventListener(ASTRA_ACTIVATE_VOICE_ASSISTANT, onActivate);
+    window.addEventListener(ASTRA_DEACTIVATE_VOICE_ASSISTANT, onDeactivate);
+    return () => {
+      window.removeEventListener(ASTRA_ACTIVATE_VOICE_ASSISTANT, onActivate);
+      window.removeEventListener(ASTRA_DEACTIVATE_VOICE_ASSISTANT, onDeactivate);
+    };
+  }, [clearCommandTimers, publishStatus]);
 
   useEffect(() => {
     const onVis = () => {

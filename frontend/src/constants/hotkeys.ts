@@ -15,6 +15,14 @@ export const ASTRA_CLOSE_CHAT_GEAR = 'astrachat:close-chat-gear';
 export const ASTRA_OPEN_CHAT_GEAR = 'astrachat:open-chat-gear';
 /** Открыть модалку создания проекта в левой панели. */
 export const ASTRA_OPEN_CREATE_PROJECT = 'astrachat:open-create-project';
+/** Горячая клавиша: разбудить / начать захват команды голосового помощника. */
+export const ASTRA_ACTIVATE_VOICE_ASSISTANT = 'astrachat:activate-voice-assistant';
+/** Горячая клавиша: выключить голосового помощника. */
+export const ASTRA_DEACTIVATE_VOICE_ASSISTANT = 'astrachat:deactivate-voice-assistant';
+/** Открыть Галерею (как пункт правой панели). */
+export const ASTRA_OPEN_GALLERY = 'astrachat:open-gallery';
+/** Открыть Администрирование (как пункт правой панели). */
+export const ASTRA_OPEN_ADMIN = 'astrachat:open-admin';
 
 /** sessionStorage: id агента, которого нужно открыть в конструкторе после перехода в чат */
 export const ASTRA_OPEN_AGENT_CONSTRUCTOR_ID_KEY = 'astrachat_open_agent_constructor_id';
@@ -33,7 +41,13 @@ export type HotkeyActionId =
   | 'deleteChat'
   | 'openSettings'
   | 'openAgentConstructor'
-  | 'openTranscription';
+  | 'openTranscription'
+  | 'activateVoiceAssistant'
+  | 'deactivateVoiceAssistant'
+  | 'openSkillsSidebar'
+  | 'openKnowledgeBasesSidebar'
+  | 'openGallery'
+  | 'openAdmin';
 
 export interface HotkeyBinding {
   /** KeyboardEvent.code — физическая клавиша, не зависит от раскладки. */
@@ -69,6 +83,27 @@ export const HOTKEY_ACTIONS: HotkeyActionMeta[] = [
   { id: 'openSettings', label: 'Окно настроек', category: 'application', worksInInput: false },
   { id: 'openAgentConstructor', label: 'Конструктор агента', category: 'application', worksInInput: false },
   { id: 'openTranscription', label: 'Транскрибатор', category: 'application', worksInInput: false },
+  {
+    id: 'activateVoiceAssistant',
+    label: 'Включить / вызвать голосовой помощник',
+    category: 'application',
+    worksInInput: true,
+  },
+  {
+    id: 'deactivateVoiceAssistant',
+    label: 'Выключить голосовой помощник',
+    category: 'application',
+    worksInInput: true,
+  },
+  { id: 'openSkillsSidebar', label: 'Skills (правая панель)', category: 'application', worksInInput: false },
+  {
+    id: 'openKnowledgeBasesSidebar',
+    label: 'Базы знаний (правая панель)',
+    category: 'application',
+    worksInInput: false,
+  },
+  { id: 'openGallery', label: 'Галерея', category: 'application', worksInInput: false },
+  { id: 'openAdmin', label: 'Администрирование', category: 'application', worksInInput: false },
 ];
 
 export const DEFAULT_HOTKEY_BINDINGS: Record<HotkeyActionId, HotkeyBinding> = {
@@ -79,6 +114,14 @@ export const DEFAULT_HOTKEY_BINDINGS: Record<HotkeyActionId, HotkeyBinding> = {
   openSettings: { code: 'KeyS', alt: true },
   openAgentConstructor: { code: 'KeyA', alt: true },
   openTranscription: { code: 'KeyT', alt: true },
+  /** Alt+V — Voice; работает и из поля ввода. */
+  activateVoiceAssistant: { code: 'KeyV', alt: true },
+  /** Alt+Shift+V — выключить VA. */
+  deactivateVoiceAssistant: { code: 'KeyV', alt: true, shift: true },
+  openSkillsSidebar: { code: 'KeyL', alt: true },
+  openKnowledgeBasesSidebar: { code: 'KeyB', alt: true },
+  openGallery: { code: 'KeyG', alt: true },
+  openAdmin: { code: 'KeyD', alt: true },
 };
 
 const HOTKEY_BINDINGS_STORAGE_KEY = 'astra_hotkey_bindings';
@@ -289,4 +332,13 @@ export const hotkeyLabel = {
   openSettings: () => formatHotkeyBinding(getHotkeyBindings().openSettings),
   openAgentConstructor: () => formatHotkeyBinding(getHotkeyBindings().openAgentConstructor),
   openTranscription: () => formatHotkeyBinding(getHotkeyBindings().openTranscription),
+  activateVoiceAssistant: () =>
+    formatHotkeyBinding(getHotkeyBindings().activateVoiceAssistant),
+  deactivateVoiceAssistant: () =>
+    formatHotkeyBinding(getHotkeyBindings().deactivateVoiceAssistant),
+  openSkillsSidebar: () => formatHotkeyBinding(getHotkeyBindings().openSkillsSidebar),
+  openKnowledgeBasesSidebar: () =>
+    formatHotkeyBinding(getHotkeyBindings().openKnowledgeBasesSidebar),
+  openGallery: () => formatHotkeyBinding(getHotkeyBindings().openGallery),
+  openAdmin: () => formatHotkeyBinding(getHotkeyBindings().openAdmin),
 } as const;

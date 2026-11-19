@@ -1271,7 +1271,7 @@ export function defineSidebarSuite(
         expect(screen.queryByText('Помощь')).toBeNull();
       });
 
-      it('«Помощь» открывает диалог со ссылками на Onyx', () => {
+      it('«Помощь» открывает диалог с контактом Telegram', () => {
         renderSidebar({ isDarkMode: false });
         clickText('Иван Петров');
         hoverText('Справка');
@@ -1279,12 +1279,13 @@ export function defineSidebarSuite(
         flush();
         const dlg = dialog();
         expect(within(dlg).getByText('По возникающим вопросам обращаться:')).toBeInTheDocument();
-        const news = within(dlg).getByText('AstraChat News').closest('a') as HTMLAnchorElement;
-        const support = within(dlg).getByText('AstraChat Support').closest('a') as HTMLAnchorElement;
-        expect(news.href).toContain('https://xlnk.ms/join/channel/');
-        expect(support.href).toContain('https://xlnk.ms/join/chat/');
-        expect(news).toHaveAttribute('target', '_blank');
-        expect(news).toHaveAttribute('rel', 'noopener noreferrer');
+        expect(within(dlg).getByText(/Telegram:/)).toBeInTheDocument();
+        const telegram = within(dlg).getByText('@NeKonnn').closest('a') as HTMLAnchorElement;
+        expect(telegram.href).toBe('https://t.me/NeKonnn');
+        expect(telegram).toHaveAttribute('target', '_blank');
+        expect(telegram).toHaveAttribute('rel', 'noopener noreferrer');
+        const qr = within(dlg).getByAltText('QR-код Telegram @NeKonnn') as HTMLImageElement;
+        expect(qr.src).toContain('/static/support/telegram-qr.png');
         fireEvent.click(within(dlg).getByLabelText('Закрыть'));
         flush();
         expect(screen.queryByRole('dialog')).toBeNull();

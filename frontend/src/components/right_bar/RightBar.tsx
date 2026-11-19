@@ -48,7 +48,9 @@ import {
   SidebarRailTranscribeIcon,
 } from '../../constants/sidebarRailIcons';
 import {
+  ASTRA_OPEN_ADMIN,
   ASTRA_OPEN_AGENT_CONSTRUCTOR,
+  ASTRA_OPEN_GALLERY,
   ASTRA_OPEN_KNOWLEDGE_BASES_SIDEBAR,
   ASTRA_OPEN_SKILLS_SIDEBAR,
   ASTRA_OPEN_TRANSCRIPTION_SIDEBAR,
@@ -216,17 +218,40 @@ export default function RightBar({
         openSection('transcription');
       });
     };
+    const onGallery = () => {
+      closeAllSections();
+      navigate('/gallery');
+    };
+    const onAdmin = () => {
+      if (!user?.is_admin) return;
+      closeAllSections();
+      navigate('/admin');
+    };
     window.addEventListener(ASTRA_OPEN_AGENT_CONSTRUCTOR, onAgent);
     window.addEventListener(ASTRA_OPEN_SKILLS_SIDEBAR, onSkills);
     window.addEventListener(ASTRA_OPEN_KNOWLEDGE_BASES_SIDEBAR, onKnowledgeBases);
     window.addEventListener(ASTRA_OPEN_TRANSCRIPTION_SIDEBAR, onTranscription);
+    window.addEventListener(ASTRA_OPEN_GALLERY, onGallery);
+    window.addEventListener(ASTRA_OPEN_ADMIN, onAdmin);
     return () => {
       window.removeEventListener(ASTRA_OPEN_AGENT_CONSTRUCTOR, onAgent);
       window.removeEventListener(ASTRA_OPEN_SKILLS_SIDEBAR, onSkills);
       window.removeEventListener(ASTRA_OPEN_KNOWLEDGE_BASES_SIDEBAR, onKnowledgeBases);
       window.removeEventListener(ASTRA_OPEN_TRANSCRIPTION_SIDEBAR, onTranscription);
+      window.removeEventListener(ASTRA_OPEN_GALLERY, onGallery);
+      window.removeEventListener(ASTRA_OPEN_ADMIN, onAdmin);
     };
-  }, [openConstructorSidebar, openSkillsSidebar, openKnowledgeBasesSidebar, openSection, setHidden, setOpen]);
+  }, [
+    openConstructorSidebar,
+    openSkillsSidebar,
+    openKnowledgeBasesSidebar,
+    openSection,
+    setHidden,
+    setOpen,
+    closeAllSections,
+    navigate,
+    user?.is_admin,
+  ]);
 
   const panelIsLight = isSidebarPanelLight(panelBg);
 

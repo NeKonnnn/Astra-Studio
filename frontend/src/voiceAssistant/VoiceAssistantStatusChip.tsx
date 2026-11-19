@@ -14,6 +14,7 @@ import HeadsetMicIcon from '@mui/icons-material/HeadsetMic';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import type { VoiceAssistantStatus } from './types';
 import {
   VA_HISTORY_CHANGED,
@@ -21,6 +22,7 @@ import {
   loadVaHistory,
   type VaHistoryEntry,
 } from './conversationHistory';
+import { ASTRA_OPEN_SETTINGS_SECTION } from '../constants/hotkeys';
 
 const PHASE_LABEL: Record<VoiceAssistantStatus['phase'], string> = {
   idle: 'Выкл',
@@ -262,6 +264,22 @@ export default function VoiceAssistantStatusChip({ status, enabled }: Props) {
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 1 }}>
           <Chip icon={icon} label={PHASE_LABEL[status.phase]} color={color} size="small" />
           <Box sx={{ flex: 1 }} />
+          <Tooltip title="Настройки голосового помощника">
+            <IconButton
+              data-va-no-drag
+              size="small"
+              onClick={(e) => {
+                e.stopPropagation();
+                window.dispatchEvent(
+                  new CustomEvent(ASTRA_OPEN_SETTINGS_SECTION, {
+                    detail: { section: 'voiceAssistant' },
+                  }),
+                );
+              }}
+            >
+              <SettingsOutlinedIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
           <Tooltip title={historyOpen ? 'Свернуть историю' : 'История'}>
             <IconButton
               data-va-no-drag

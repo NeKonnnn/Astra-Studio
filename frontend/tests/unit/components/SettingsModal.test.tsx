@@ -16,11 +16,11 @@ jest.mock('@/components/settings', () => {
     GeneralSettings: stub('general'),
     ProfileSettings: stub('profile'),
     ModelsSettings: stub('models'),
-    RAGSettings: stub('rag'),
     TranscriptionSettings: stub('transcription'),
     AboutSettings: stub('about'),
     ChatSettings: stub('chats'),
     InterfaceSettings: stub('interface'),
+    VoiceAssistantSettings: stub('voiceAssistant'),
   };
 });
 
@@ -30,7 +30,6 @@ const TITLES: Array<[string, string]> = [
   ['Интерфейс', 'interface'],
   ['Чаты', 'chats'],
   ['Модели', 'models'],
-  ['RAG', 'rag'],
   ['Транскрибация', 'transcription'],
   ['О приложении', 'about'],
 ];
@@ -61,8 +60,8 @@ describe('SettingsModal', () => {
   });
 
   it('initialSection выбирается при открытии; неизвестный раздел игнорируется', () => {
-    const { unmount } = setup({ initialSection: 'rag' });
-    expect(screen.getByTestId('section-rag')).toBeInTheDocument();
+    const { unmount } = setup({ initialSection: 'transcription' });
+    expect(screen.getByTestId('section-transcription')).toBeInTheDocument();
     unmount();
     setup({ initialSection: 'nope' });
     expect(screen.getByTestId('section-general')).toBeInTheDocument();
@@ -85,7 +84,7 @@ describe('SettingsModal', () => {
     const { unmount } = setup();
     unmount();
     expect(() =>
-      window.dispatchEvent(new CustomEvent(ASTRA_OPEN_SETTINGS_SECTION, { detail: { section: 'rag' } })),
+      window.dispatchEvent(new CustomEvent(ASTRA_OPEN_SETTINGS_SECTION, { detail: { section: 'about' } })),
     ).not.toThrow();
   });
 
@@ -95,8 +94,9 @@ describe('SettingsModal', () => {
     expect(h.onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('в навигации восемь разделов', () => {
+  it('в навигации нет раздела RAG', () => {
     setup();
     for (const [title] of TITLES) expect(screen.getByText(title)).toBeInTheDocument();
+    expect(screen.queryByText('RAG')).toBeNull();
   });
 });
