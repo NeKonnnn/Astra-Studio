@@ -4,17 +4,18 @@ from app.models.schemas import ChatResponse, Message
 
 logger = None
 
+
 class BaseLLMHandler(ABC):
     """Абстрактный базовый класс для всех LLM handlers."""
-    
+
     def __init__(self):
         self.is_initialized = False
-    
+
     @abstractmethod
     async def initialize(self):
         """Асинхронная инициализация модели."""
         pass
-    
+
     @abstractmethod
     def is_loaded(self) -> bool:
         """Проверка, загружена ли модель."""
@@ -23,7 +24,7 @@ class BaseLLMHandler(ABC):
     def is_model_id_loaded(self, model_id: Optional[str]) -> bool:
         """Для llama.cpp-пула: проверка конкретного id; vLLM — достаточно is_loaded()."""
         return self.is_loaded()
-    
+
     @abstractmethod
     async def generate_response(
         self,
@@ -36,12 +37,8 @@ class BaseLLMHandler(ABC):
     ) -> Union[ChatResponse, AsyncGenerator[str, None]]:
         """Универсальный метод для генерации ответа."""
         pass
-    
+
     @abstractmethod
     async def cleanup(self):
         """Очистка ресурсов модели."""
         pass
-
-
-
-

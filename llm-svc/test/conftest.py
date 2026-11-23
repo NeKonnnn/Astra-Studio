@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi.testclient import TestClient
 import os
 
@@ -12,6 +12,7 @@ def test_environment():
 
     # Сбрасываем настройки перед началом тестов
     from app.core.config import reset_settings
+
     settings = reset_settings()
 
     yield settings
@@ -21,64 +22,51 @@ def test_environment():
         del os.environ["CONFIG_PATH"]
 
 
-@pytest.fixture(scope="session")
-def mock_llama_instance():
-    """Общий мок handler для API-тестов (не патчит класс LlamaHandler)."""
-    instance = MagicMock()
-    instance.is_loaded.return_value = True
-    instance.model_name = "test-model"
-    instance.initialized = True
-    instance.model_path = "/tmp/test.gguf"
+@pytest.fixture(scope="session", autouse=True)
+def global_mock_llama():
+    """Глобальный мок LlamaHandler на уровне сессии."""
+    with patch("app.dependencies.LlamaHandler") as mock_handler:
+        # Создаем асинхронный мок для экземпляра
+        instance = MagicMock()
+        instance.is_loaded.return_value = True
+        instance.model_name = "test-model"
+        instance.initialized = True
 
-    async def generate_response(*args, **kwargs):
-        return {
-            "id": "test-id",
-            "created": 1234567890,
-            "model": "test-model",
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": "Test response from mock handler",
-                    },
-                    "finish_reason": "stop",
-                }
-            ],
-            "usage": {
-                "prompt_tokens": 10,
-                "completion_tokens": 20,
-                "total_tokens": 30,
-            },
-        }
+        # Мок для асинхронного метода generate_response, принимаем любые аргументы
+        async def generate_response(*args, **kwargs):
+            return {
+                "id": "test-id",
+                "created": 1234567890,
+                "model": "test-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "Test response from mock handler"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+            }
 
-    instance.generate_response = AsyncMock(side_effect=generate_response)
-    instance.initialize = AsyncMock()
-    instance.cleanup = AsyncMock()
-    instance.is_model_id_loaded = MagicMock(return_value=True)
-    instance.get_loaded_model_ids = MagicMock(return_value=["test-model"])
-    instance.load_model = AsyncMock(return_value=True)
-    instance.load_model_by_name = AsyncMock(return_value=True)
-    return instance
+        instance.generate_response = AsyncMock(side_effect=generate_response)
+        instance.initialize = AsyncMock()
+        instance.cleanup = AsyncMock()
+        instance.is_model_id_loaded = MagicMock(return_value=True)
+        instance.get_loaded_model_ids = MagicMock(return_value=["test-model"])
+
+        mock_handler.return_value = instance
+        mock_handler.get_instance.return_value = instance
+
+        yield instance
 
 
 @pytest.fixture(scope="session")
-def test_app(mock_llama_instance):
+def test_app():
     """Создание тестового приложения с переопределенными зависимостями."""
     from app.main import create_application
-    from app.api.dependencies import get_llama_service, get_llm_handler_without_loaded_gate
-    from app.llm_dependencies import get_llm_handler
 
     app = create_application()
-
-    async def _override_handler():
-        return mock_llama_instance
-
-    app.dependency_overrides[get_llm_handler] = _override_handler
-    app.dependency_overrides[get_llama_service] = _override_handler
-    app.dependency_overrides[get_llm_handler_without_loaded_gate] = _override_handler
     yield app
-    app.dependency_overrides.clear()
 
 
 @pytest.fixture

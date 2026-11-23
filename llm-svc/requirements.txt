@@ -18,7 +18,7 @@ passlib[bcrypt]==1.7.4
 python-ldap==3.4.4
 
 # LLM зависимости
-llama-cpp-python>=0.3.28
+llama-cpp-python>=0.3.16
 
 # vllm не в этом файле: только Dockerfile.cuda (иначе тяжёлая CPU-сборка и конфликты torch).
 

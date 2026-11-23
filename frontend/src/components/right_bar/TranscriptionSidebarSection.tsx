@@ -261,12 +261,11 @@ export default function TranscriptionSidebarSection({ open }: TranscriptionSideb
             fullWidth
             startIcon={<LiveIcon sx={{ fontSize: '0.85rem !important' }} />}
             onClick={() => {
+              // Только открыть раздел «Живые сессии» — запись стартует кнопкой «Начать запись»
               if (window.location.pathname.startsWith('/live-sessions')) {
-                window.dispatchEvent(new CustomEvent('astrachat:live-session-start'));
                 return;
               }
-              // Полный переход: вложенный SPA-Routes здесь часто не монтирует экран до F5
-              window.location.assign('/live-sessions?start=1');
+              window.location.assign('/live-sessions');
             }}
             disabled={isTranscribing}
             sx={{

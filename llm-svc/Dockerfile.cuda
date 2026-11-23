@@ -2,7 +2,7 @@
 # Использование: docker compose build llm-service  (если в compose указан этот файл)
 # Требуется: NVIDIA GPU + NVIDIA Container Toolkit (nvidia-docker2).
 
-ARG CUDA_VERSION=12.8
+ARG CUDA_VERSION=12.2
 FROM nvidia/cuda:${CUDA_VERSION}.0-devel-ubuntu22.04
 
 # devel вместо runtime — нужен nvcc для сборки vllm и llama.cpp если потребуется
@@ -28,8 +28,6 @@ RUN apt-get update && apt-get install -y \
     cmake \
     gcc \
     g++ \
-    gcc-12 \
-    g++-12 \
     libopenblas-dev \
     git \
     pkg-config \
@@ -60,14 +58,12 @@ RUN pip install --no-cache-dir \
 # Шаг 2: vllm — ставим после torch, он подхватит уже установленный torch
 RUN pip install --no-cache-dir vllm>=0.6.0
 
-# Шаг 3: остальные зависимости (llama-cpp ставим отдельно, иначе pip перезапишет CUDA-сборку CPU-колесом)
-COPY requirements.txt .
-RUN grep -v '^llama-cpp-python' requirements.txt > requirements-no-llama.txt && \
-    pip install --no-cache-dir --prefer-binary -r requirements-no-llama.txt
+# Шаг 3: llama-cpp-python (собираем из исходников, чтобы избежать musl-колёс)
+RUN pip install --no-cache-dir --no-binary=llama-cpp-python llama-cpp-python==0.3.16
 
-# Шаг 4: llama-cpp-python CPU wheel (Qwen3.5 / qwen35 >= 0.3.17).
-# cu121 падает с exit 132 на RTX 50xx (sm_120) даже при gpu_layers=0 — используем CPU-сборку.
-RUN pip install --no-cache-dir --force-reinstall llama-cpp-python==0.3.28
+# Шаг 4: остальные зависимости
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefer-binary -r requirements.txt
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

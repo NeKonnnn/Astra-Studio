@@ -17,14 +17,14 @@ cors:
   allow_headers: ["*"]
 
 urls:
-  frontend_port_1: "http://localhost:3000"
-  frontend_port_1_ipv4: "http://127.0.0.1:3000"
+  frontend_port: "http://localhost:3000"
+  frontend_port_ipv4: "http://127.0.0.1:3000"
   frontend_port_2: "http://localhost:3001"
   frontend_port_2_ipv4: "http://127.0.0.1:3001"
   frontend_port_3: "http://localhost:5173"
   frontend_port_3_ipv4: "http://127.0.0.1:5173"
-  backend_port_1: "http://localhost:8000"
-  backend_port_1_ipv4: "http://127.0.0.1:8000"
+  backend_port: "http://localhost:8000"
+  backend_port_ipv4: "http://127.0.0.1:8000"
   backend_port_2: "http://localhost:8080"
   backend_port_2_ipv4: "http://127.0.0.1:8080"
 
@@ -35,7 +35,7 @@ model:
   # Для GGUF моделей (llama.cpp):
   # path: "/app/models/llm/Qwen3-Coder-30B-A3B-Instruct-Q8_0.gguf"
   # path: "/app/models/llm/Qwen3.5-9B-UD-Q8_K_XL.gguf"
-  path: "/app/models/llm/Qwen3.5-4B-UD-Q8_K_XL.gguf"
+  path: "/app/models/llm/qwen2.5-7b-instruct-q3_k_m.gguf"
   # Для HuggingFace моделей (vLLM) - указывайте путь к папке с моделью:
   # Альтернатива: Qwen3-VL поддерживается vLLM
   # path: "/app/models/llm/Qwen3-Omni-30B-A3B-Instruct-AWQ-4bit"  
@@ -48,12 +48,11 @@ model:
   
   # name: "qwen-coder-30b"
   # Совпадает со stem файла path (иначе старт ищет несуществующий Qwen3.5-9B.gguf)
-  name: "Qwen3.5-4B-UD-Q8_K_XL"
+  name: "qwen2.5-7b-instruct-q3_k_m"
   ctx_size: 8192
-  # gpu_layers: 0 = CPU, -1 = все слои на GPU.
-  # RTX 50xx (sm_120): cu121-колесо llama-cpp падает с exit 132 — пока оставляем CPU.
-  # Когда появится cu124-сборка, можно вернуть -1.
-  gpu_layers: 0
+  # gpu_layers: 0 = только CPU. Для моделей 30B+ на CPU нужно ~32 ГБ RAM, иначе загрузка может зависнуть.
+  # Если есть NVIDIA GPU — укажите gpu_layers: -1 (все слои на GPU) для быстрой загрузки и работы.
+  gpu_layers: -1  # -1 = все слои на GPU
   verbose: false
   # name: "qwen3-vl-30b-awq"  # Изменено на Qwen3-VL (поддерживается vLLM)
   # # Выбор бэкенда: "llama.cpp" или "vllm"

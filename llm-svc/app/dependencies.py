@@ -7,10 +7,11 @@ async def get_llama_service() -> BaseLLMHandler:
     backend = settings.model.backend.lower()
     if backend == "vllm":
         from app.llm_dependencies import get_llm_handler
-        
+
         return await get_llm_handler()
     else:
         from app.services.models_service import LlamaService
+
         return await LlamaService.get_instance()
 
 
@@ -19,8 +20,10 @@ async def cleanup_llama_service() -> None:
     backend = settings.model.backend.lower()
     if backend == "vllm":
         from app.llm_dependencies import cleanup_llm_handler
+
         await cleanup_llm_handler()
     else:
         from app.services.models_service import LlamaService
+
         service = await LlamaService.get_instance()
         await service.cleanup()

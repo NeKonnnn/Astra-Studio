@@ -17,13 +17,14 @@ import {
   List,
   ListItemButton,
   ListItemText,
-  Paper,
   Stack,
   Switch,
   Tab,
   Tabs,
   TextField,
   Typography,
+  alpha,
+  useTheme,
 } from '@mui/material';
 import {
   ArrowBack,
@@ -44,6 +45,44 @@ import * as api from './api';
 import type { LiveSegment, LiveSessionCard, LiveSessionDetail } from './types';
 import type { LiveSessionPrefs } from './api';
 import { useDualTrackCapture } from './useDualTrackCapture';
+import {
+  getWorkZoneBackgroundColor,
+  getWorkZoneCustomImage,
+  isWorkZoneAnimatedMode,
+} from '../constants/workZoneBackground';
+import { useWorkZoneBgMode } from '../hooks/useWorkZoneBgMode';
+import WorkZoneStarrySky from '../components/WorkZoneStarrySky';
+import WorkZoneSnowfall from '../components/WorkZoneSnowfall';
+import {
+  getSidebarPanelBackground,
+  isSidebarPanelLight,
+} from '../constants/sidebarPanelColor';
+
+/** Секция рабочей зоны без «карточки»: заголовок + поток контента. */
+function WorkspaceSection({
+  title,
+  hint,
+  children,
+}: {
+  title: string;
+  hint?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <Box sx={{ pt: 2.5 }}>
+      <Stack direction="row" spacing={1} alignItems="baseline" sx={{ mb: 1 }}>
+        <Typography
+          variant="overline"
+          sx={{ letterSpacing: '0.08em', color: 'text.secondary', lineHeight: 1.2 }}
+        >
+          {title}
+        </Typography>
+        {hint}
+      </Stack>
+      {children}
+    </Box>
+  );
+}
 
 function mergeSegmentTexts(a: string, b: string): string {
   const at = (a || '').trim();
@@ -511,40 +550,178 @@ export default function LiveSessionsPage() {
     }
   }, [selected?.id]);
 
+  const theme = useTheme();
+  const isDarkMode = theme.palette.mode === 'dark';
+  const borderSubtle = alpha(theme.palette.divider, theme.palette.mode === 'dark' ? 0.5 : 1);
+  const workZoneMode = useWorkZoneBgMode();
+  const workZoneAnimated = isWorkZoneAnimatedMode(workZoneMode);
+  const workZoneBgColor = getWorkZoneBackgroundColor(isDarkMode, workZoneMode);
+  const workZoneCustomImage = getWorkZoneCustomImage();
+  const sessionsPanelBg = getSidebarPanelBackground(isDarkMode);
+  const sessionsPanelText = isSidebarPanelLight(sessionsPanelBg)
+    ? 'rgba(0,0,0,0.88)'
+    : 'rgba(255,255,255,0.92)';
+
   return (
-    <Box sx={{ p: { xs: 2, md: 3 }, maxWidth: 1400, mx: 'auto' }}>
-      <Stack
-        direction={{ xs: 'column', md: 'row' }}
-        justifyContent="space-between"
-        alignItems={{ xs: 'stretch', md: 'center' }}
-        spacing={2}
-        sx={{ mb: 2 }}
+    <Box
+      sx={{
+        display: 'flex',
+        flexDirection: { xs: 'column', md: 'row' },
+        flex: 1,
+        minHeight: 0,
+        height: '100%',
+        overflow: 'hidden',
+        // Не залезать под свёрнутый rail левой/правой панели (main margin ±64px).
+        pl: 'var(--left-sidebar-rail-overlap, 0px)',
+        pr: 'var(--right-sidebar-rail-overlap, 0px)',
+        backgroundColor: workZoneBgColor,
+        ...(workZoneMode === 'custom' && workZoneCustomImage
+          ? {
+              backgroundImage: `url("${workZoneCustomImage}")`,
+              backgroundSize: 'cover',
+              backgroundPosition: 'center',
+              backgroundRepeat: 'no-repeat',
+            }
+          : {}),
+        position: 'relative',
+        color: isDarkMode ? 'white' : '#333',
+      }}
+    >
+      {workZoneMode === 'starry' ? <WorkZoneStarrySky isDarkMode={isDarkMode} /> : null}
+      {workZoneMode === 'snowfall' ? <WorkZoneSnowfall isDarkMode={isDarkMode} /> : null}
+
+      {/* Список сессий — как колонка чатов, без Paper */}
+      <Box
+        sx={{
+          width: { xs: '100%', md: 300 },
+          minWidth: { md: 280 },
+          flexShrink: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          borderRight: { md: `1px solid ${borderSubtle}` },
+          borderBottom: { xs: `1px solid ${borderSubtle}`, md: 'none' },
+          bgcolor: sessionsPanelBg,
+          color: sessionsPanelText,
+          maxHeight: { xs: 280, md: 'none' },
+          zIndex: 1,
+          overflow: 'hidden',
+        }}
       >
-        <Box>
-          <Typography variant="h4" sx={{ fontWeight: 700, letterSpacing: '-0.02em' }}>
-            Живые сессии
-          </Typography>
-          <Typography color="text.secondary" sx={{ mt: 0.5, maxWidth: 720 }}>
-            Запись звонка без бота: микрофон + системный звук вкладки/экрана → живая стенограмма
-            (WhisperX) → после стопа диаризация и бриф. Загрузка файлов/YouTube — в панели «Транскрибация».
-          </Typography>
-        </Box>
-        <Stack direction="row" spacing={1} alignItems="center">
-          <Button
-            variant="outlined"
-            startIcon={<ArrowBack />}
-            onClick={() => {
-              window.location.assign('/');
+        <Box sx={{ px: 1.5, pt: 1.5, pb: 0.5, minWidth: 0 }}>
+          <Stack direction="row" alignItems="center" spacing={0.5} sx={{ mb: 1, minWidth: 0 }}>
+            <Button
+              size="small"
+              startIcon={<ArrowBack fontSize="small" />}
+              onClick={() => window.location.assign('/')}
+              sx={{
+                color: 'inherit',
+                flexShrink: 0,
+                textTransform: 'none',
+                minWidth: 0,
+                px: 0.75,
+                opacity: 0.85,
+                '&:hover': { opacity: 1, bgcolor: alpha(theme.palette.common.white, 0.08) },
+              }}
+            >
+              К чату
+            </Button>
+            <Typography
+              variant="subtitle1"
+              sx={{ fontWeight: 600, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+            >
+              Живые сессии
+            </Typography>
+            <IconButton
+              size="small"
+              onClick={() => setPrefsOpen(true)}
+              title="Настройки"
+              sx={{ color: 'inherit', flexShrink: 0 }}
+            >
+              <SettingsOutlined fontSize="small" />
+            </IconButton>
+          </Stack>
+          <Tabs
+            value={tab}
+            onChange={(_, v) => setTab(v)}
+            variant="fullWidth"
+            sx={{
+              minHeight: 36,
+              minWidth: 0,
+              '& .MuiTab-root': {
+                minHeight: 36,
+                py: 0.5,
+                px: 0.5,
+                fontSize: '0.8rem',
+                minWidth: 0,
+              },
             }}
           >
-            В чат
-          </Button>
-          <IconButton onClick={() => setPrefsOpen(true)} title="Настройки записи">
-            <SettingsOutlined />
-          </IconButton>
+            <Tab label="Архив" />
+            <Tab label="Корзина" />
+          </Tabs>
+          <TextField
+            size="small"
+            fullWidth
+            placeholder="Поиск…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            InputProps={{
+              startAdornment: <SearchIcon fontSize="small" sx={{ mr: 1, opacity: 0.5 }} />,
+            }}
+            sx={{
+              mt: 1,
+              '& .MuiOutlinedInput-root': {
+                bgcolor: alpha(theme.palette.common.white, isSidebarPanelLight(sessionsPanelBg) ? 0.55 : 0.08),
+                color: 'inherit',
+                '& fieldset': { borderColor: 'transparent' },
+                '&:hover fieldset': { borderColor: borderSubtle },
+              },
+            }}
+          />
+        </Box>
+        <Box sx={{ flex: 1, overflow: 'auto', py: 0.5, minWidth: 0 }}>
+          {loading ? (
+            <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+              <CircularProgress size={24} />
+            </Box>
+          ) : (
+            <List dense disablePadding sx={{ minWidth: 0 }}>
+              {items.map((item) => (
+                <ListItemButton
+                  key={item.id}
+                  selected={selected?.id === item.id}
+                  onClick={() => void openSession(item.id)}
+                  sx={{ minWidth: 0, alignItems: 'flex-start' }}
+                >
+                  <ListItemText
+                    primary={item.title}
+                    secondary={`${statusLabel(item.status)} · ${formatDuration(item.duration_ms)}`}
+                    primaryTypographyProps={{
+                      noWrap: true,
+                      fontSize: '0.9rem',
+                      sx: { overflow: 'hidden', textOverflow: 'ellipsis' },
+                    }}
+                    secondaryTypographyProps={{
+                      noWrap: true,
+                      fontSize: '0.75rem',
+                      sx: { overflow: 'hidden', textOverflow: 'ellipsis' },
+                    }}
+                    sx={{ my: 0, minWidth: 0 }}
+                  />
+                </ListItemButton>
+              ))}
+              {!items.length && (
+                <Typography sx={{ px: 2.5, py: 2, fontSize: '0.85rem', opacity: 0.7 }}>
+                  Пока пусто — нажмите «Начать запись».
+                </Typography>
+              )}
+            </List>
+          )}
+        </Box>
+        <Box sx={{ p: 1.5, borderTop: `1px solid ${borderSubtle}` }}>
           <Button
+            fullWidth
             variant="contained"
-            size="large"
             color="error"
             startIcon={<FiberManualRecord />}
             disabled={busy || recording}
@@ -552,146 +729,100 @@ export default function LiveSessionsPage() {
           >
             Начать запись
           </Button>
-        </Stack>
-      </Stack>
+        </Box>
+      </Box>
 
-      {!recording && guideStep < 3 && (
-        <Alert severity="info" sx={{ mb: 2 }}>
-          <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
-            Как пользоваться
-          </Typography>
-          <ol style={{ margin: 0, paddingLeft: 18 }}>
-            <li>Нажмите <b>Начать запись</b> (кнопка «Живая запись» в сайдбаре делает то же самое).</li>
-            <li>Разрешите <b>микрофон</b>.</li>
-            <li>
-              В окне шаринга выберите <b>вкладку браузера</b> с звонком (Meet / Zoom Web / Teams Web)
-              и галочку <b>«Также транслировать звук вкладки»</b> — либо <b>весь экран</b> с
-              «Share system audio». Шаринг <b>окна</b> приложения (Zoom.exe и т.п.) звук не даёт —
-              так устроен браузер.
-            </li>
-            <li>Говорите — справа появляются сегменты. По окончании — <b>Стоп и обработать</b>.</li>
-          </ol>
-        </Alert>
-      )}
-
-      {recording && (
-        <Paper
-          elevation={0}
-          sx={{
-            mb: 3,
-            p: 2,
-            border: '1px solid',
-            borderColor: 'error.light',
-            bgcolor: 'background.paper',
-          }}
-        >
-          <Stack
-            direction={{ xs: 'column', sm: 'row' }}
-            spacing={2}
-            alignItems={{ xs: 'stretch', sm: 'center' }}
+      {/* Рабочая зона — тот же фон, что у чатов */}
+      <Box
+        sx={{
+          flex: 1,
+          minWidth: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+          position: 'relative',
+          zIndex: workZoneAnimated ? 1 : 0,
+          backgroundColor: workZoneAnimated || workZoneMode === 'custom' ? 'transparent' : workZoneBgColor,
+        }}
+      >
+        {recording && (
+          <Box
+            sx={{
+              px: { xs: 2, md: 3 },
+              py: 1.5,
+              borderBottom: `1px solid ${alpha(theme.palette.error.main, 0.35)}`,
+              bgcolor: alpha(theme.palette.error.main, theme.palette.mode === 'dark' ? 0.08 : 0.04),
+            }}
           >
-            <Chip
-              color="error"
-              label={capture.phase === 'paused' ? 'Пауза' : 'REC'}
-              size="small"
-            />
-            <Typography sx={{ fontVariantNumeric: 'tabular-nums', minWidth: 72 }}>
-              {formatDuration(capture.elapsedMs)}
-            </Typography>
-            <LevelBar value={capture.levels.local} label="Микрофон" />
-            <LevelBar
-              value={capture.levels.remote}
-              label={capture.hasRemote ? 'Системный звук' : 'Нет remote'}
-            />
-            <Box sx={{ flex: 1 }} />
-            <Button
-              startIcon={capture.phase === 'paused' ? <PlayArrow /> : <Pause />}
-              onClick={() => void togglePause()}
-              disabled={busy}
+            <Stack
+              direction={{ xs: 'column', sm: 'row' }}
+              spacing={2}
+              alignItems={{ xs: 'stretch', sm: 'center' }}
             >
-              {capture.phase === 'paused' ? 'Продолжить' : 'Пауза'}
-            </Button>
-            <Button
-              variant="contained"
-              color="inherit"
-              startIcon={<Stop />}
-              onClick={() => void finishCapture()}
-              disabled={busy}
+              <Chip
+                color="error"
+                label={capture.phase === 'paused' ? 'Пауза' : 'REC'}
+                size="small"
+              />
+              <Typography sx={{ fontVariantNumeric: 'tabular-nums', minWidth: 72 }}>
+                {formatDuration(capture.elapsedMs)}
+              </Typography>
+              <LevelBar value={capture.levels.local} label="Микрофон" />
+              <LevelBar
+                value={capture.levels.remote}
+                label={capture.hasRemote ? 'Системный звук' : 'Нет remote'}
+              />
+              <Box sx={{ flex: 1 }} />
+              <Button
+                startIcon={capture.phase === 'paused' ? <PlayArrow /> : <Pause />}
+                onClick={() => void togglePause()}
+                disabled={busy}
+              >
+                {capture.phase === 'paused' ? 'Продолжить' : 'Пауза'}
+              </Button>
+              <Button
+                variant="contained"
+                color="inherit"
+                startIcon={<Stop />}
+                onClick={() => void finishCapture()}
+                disabled={busy}
+              >
+                Стоп и обработать
+              </Button>
+            </Stack>
+            {!capture.hasRemote && (
+              <Typography variant="caption" color="warning.main" sx={{ display: 'block', mt: 1 }}>
+                Звук собеседника не захвачен — шарьте вкладку звонка с галочкой звука или весь экран
+                (не окно Zoom/Teams).
+              </Typography>
+            )}
+          </Box>
+        )}
+
+        <Box sx={{ flex: 1, overflow: 'auto', px: { xs: 2, md: 4 }, py: { xs: 2, md: 3 } }}>
+          {!recording && guideStep < 3 && !selected && (
+            <Typography
+              variant="body2"
+              color="text.secondary"
+              sx={{ mb: 3, maxWidth: 560, lineHeight: 1.55 }}
             >
-              Стоп и обработать
-            </Button>
-          </Stack>
-          {!capture.hasRemote && (
-            <Alert severity="warning" sx={{ mt: 2 }}>
-              Звук собеседника не захвачен (только микрофон). Причина чаще всего: выбран шаринг{' '}
-              <b>окна</b> — браузер не отдаёт из него audio. Остановите запись и начните снова:
-              шарьте <b>вкладку</b> звонка с галочкой звука или <b>весь экран</b> (Chrome/Edge на
-              Windows).
-            </Alert>
-          )}
-          {prefs.auto_stop_on_capture_end && (
-            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
-              Auto-stop включён: если закрыть шаринг экрана/звука — запись завершится сама.
+              Запись звонка без бота: микрофон + звук вкладки/экрана → стенограмма → бриф.
+              Нажмите «Начать запись», разрешите микрофон и шарьте вкладку собеседника со звуком
+              (Chrome/Edge). Файлы и YouTube — в панели «Транскрибация».
             </Typography>
           )}
-        </Paper>
-      )}
 
-      <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} alignItems="stretch">
-        <Paper sx={{ width: { xs: '100%', md: 360 }, flexShrink: 0, p: 1.5 }}>
-          <Tabs value={tab} onChange={(_, v) => setTab(v)} variant="fullWidth">
-            <Tab label="Архив" />
-            <Tab label="Корзина" />
-          </Tabs>
-          <TextField
-            size="small"
-            fullWidth
-            placeholder="Поиск по брифу и стенограмме"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            InputProps={{ startAdornment: <SearchIcon fontSize="small" sx={{ mr: 1, opacity: 0.6 }} /> }}
-            sx={{ my: 1.5 }}
-          />
-          {loading ? (
-            <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
-              <CircularProgress size={28} />
-            </Box>
-          ) : (
-            <List dense sx={{ maxHeight: '60vh', overflow: 'auto' }}>
-              {items.map((item) => (
-                <ListItemButton
-                  key={item.id}
-                  selected={selected?.id === item.id}
-                  onClick={() => void openSession(item.id)}
-                >
-                  <ListItemText
-                    primary={item.title}
-                    secondary={`${statusLabel(item.status)} · ${formatDuration(item.duration_ms)}`}
-                    primaryTypographyProps={{ noWrap: true }}
-                    secondaryTypographyProps={{ noWrap: true }}
-                  />
-                </ListItemButton>
-              ))}
-              {!items.length && (
-                <Typography color="text.secondary" sx={{ p: 2 }}>
-                  Пока пусто — нажмите «Начать запись».
-                </Typography>
-              )}
-            </List>
-          )}
-        </Paper>
-
-        <Paper sx={{ flex: 1, p: 2.5, minHeight: 420 }}>
           {!selected ? (
-            <Box sx={{ py: 8, textAlign: 'center' }}>
-              <Typography variant="h6">Выберите сессию или начните новую запись</Typography>
-              <Typography color="text.secondary" sx={{ mt: 1 }}>
-                После остановки AstraStudio прогонит аудио через STT/диаризацию, сохранит сегменты
-                в PostgreSQL и соберёт бриф (для длинных встреч — сначала сводки частей).
+            <Box sx={{ py: { xs: 4, md: 10 }, maxWidth: 480 }}>
+              <Typography variant="h5" sx={{ fontWeight: 600, letterSpacing: '-0.02em' }}>
+                Выберите сессию или начните новую
+              </Typography>
+              <Typography color="text.secondary" sx={{ mt: 1.25, lineHeight: 1.6 }}>
+                После стопа — WhisperX, диаризация и бриф. Для длинных встреч сначала сводки частей.
               </Typography>
             </Box>
           ) : (
-            <Stack spacing={2}>
+            <Box sx={{ maxWidth: 860 }}>
               <Stack direction="row" spacing={1} alignItems="center">
                 <TextField
                   fullWidth
@@ -708,10 +839,10 @@ export default function LiveSessionsPage() {
                   }}
                   InputProps={{
                     sx: { fontSize: 22, fontWeight: 600 },
-                    disableUnderline: false,
+                    disableUnderline: true,
                   }}
                 />
-                <Chip size="small" label={statusLabel(selected.status)} />
+                <Chip size="small" variant="outlined" label={statusLabel(selected.status)} />
                 <IconButton onClick={() => void openSession(selected.id)} title="Обновить">
                   <Refresh />
                 </IconButton>
@@ -746,7 +877,7 @@ export default function LiveSessionsPage() {
                 )}
               </Stack>
 
-              <Stack direction="row" spacing={1} flexWrap="wrap">
+              <Stack direction="row" spacing={0.5} flexWrap="wrap" sx={{ mt: 1, mb: 0.5 }}>
                 <Button
                   size="small"
                   startIcon={<PersonOutline />}
@@ -756,7 +887,6 @@ export default function LiveSessionsPage() {
                     for (const id of speakerIds) {
                       if (!(id in next)) next[id] = '';
                     }
-                    // Live dual-track без диаризации — можно задать «Вы» / «Собеседник»
                     if (!speakerIds.length) {
                       next['Вы'] = next['Вы'] || '';
                       next['Собеседник'] = next['Собеседник'] || '';
@@ -776,7 +906,7 @@ export default function LiveSessionsPage() {
                     window.location.assign('/');
                   }}
                 >
-                  В чат: стенограмма
+                  К чату: стенограмма
                 </Button>
                 <Button
                   size="small"
@@ -787,7 +917,7 @@ export default function LiveSessionsPage() {
                     window.location.assign('/');
                   }}
                 >
-                  В чат: бриф
+                  К чату: бриф
                 </Button>
                 <Button
                   size="small"
@@ -813,82 +943,96 @@ export default function LiveSessionsPage() {
                 </Button>
               </Stack>
 
-              <Divider />
+              <Divider sx={{ borderColor: borderSubtle, my: 1 }} />
 
-              <Typography variant="subtitle2">Бриф</Typography>
-              <Paper variant="outlined" sx={{ p: 2, whiteSpace: 'pre-wrap', minHeight: 120 }}>
-                {selected.brief_status === 'writing' || selected.status === 'processing' ? (
-                  <Stack direction="row" spacing={1} alignItems="center">
-                    <CircularProgress size={18} />
-                    <Typography color="text.secondary">Готовим бриф…</Typography>
-                  </Stack>
-                ) : selected.brief_markdown ? (
-                  selected.brief_markdown
-                ) : selected.status === 'live' || selected.status === 'paused' ? (
-                  <Typography color="text.secondary">
-                    Бриф появится после «Стоп и обработать» — саммари встречи (суть, решения, задачи).
-                  </Typography>
-                ) : selected.brief_status === 'failed' ? (
-                  <Typography color="error">
-                    Не удалось собрать бриф. Нажмите «Пересобрать бриф».
-                  </Typography>
-                ) : (
-                  <Typography color="text.secondary">
-                    Бриф пуст (мало текста в стенограмме или LLM не ответил). Попробуйте
-                    «Пересобрать бриф».
-                  </Typography>
-                )}
-              </Paper>
+              <WorkspaceSection title="Бриф">
+                <Box sx={{ whiteSpace: 'pre-wrap', lineHeight: 1.65, minHeight: 72 }}>
+                  {selected.brief_status === 'writing' || selected.status === 'processing' ? (
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      <CircularProgress size={18} />
+                      <Typography color="text.secondary">Готовим бриф…</Typography>
+                    </Stack>
+                  ) : selected.brief_markdown ? (
+                    <Typography component="div" sx={{ whiteSpace: 'pre-wrap' }}>
+                      {selected.brief_markdown}
+                    </Typography>
+                  ) : selected.status === 'live' || selected.status === 'paused' ? (
+                    <Typography color="text.secondary">
+                      Появится после «Стоп и обработать».
+                    </Typography>
+                  ) : selected.brief_status === 'failed' ? (
+                    <Typography color="error">
+                      Не удалось собрать бриф. Нажмите «Пересобрать бриф».
+                    </Typography>
+                  ) : (
+                    <Typography color="text.secondary">
+                      Пусто — мало стенограммы или LLM не ответил. Попробуйте «Пересобрать бриф».
+                    </Typography>
+                  )}
+                </Box>
+              </WorkspaceSection>
 
-              <Typography variant="subtitle2">Мои заметки</Typography>
-              <TextField
-                multiline
-                minRows={3}
-                fullWidth
-                value={selected.user_notes || ''}
-                onChange={(e) =>
-                  setSelected((s) => (s ? { ...s, user_notes: e.target.value } : s))
+              <WorkspaceSection title="Заметки">
+                <TextField
+                  multiline
+                  minRows={2}
+                  fullWidth
+                  variant="standard"
+                  value={selected.user_notes || ''}
+                  onChange={(e) =>
+                    setSelected((s) => (s ? { ...s, user_notes: e.target.value } : s))
+                  }
+                  onBlur={() => {
+                    void api
+                      .updateSession(selected.id, { user_notes: selected.user_notes })
+                      .catch(() => undefined);
+                  }}
+                  placeholder="Личные пометки к сессии"
+                  InputProps={{ disableUnderline: true }}
+                  sx={{
+                    px: 0,
+                    py: 0.5,
+                    borderRadius: 1,
+                    bgcolor: alpha(theme.palette.action.hover, 0.35),
+                    '& .MuiInputBase-root': { px: 1.5, py: 1 },
+                  }}
+                />
+              </WorkspaceSection>
+
+              <WorkspaceSection
+                title="Стенограмма"
+                hint={
+                  recording ? (
+                    <Typography variant="caption" color="text.secondary">
+                      обновляется по мере речи…
+                    </Typography>
+                  ) : undefined
                 }
-                onBlur={() => {
-                  void api
-                    .updateSession(selected.id, { user_notes: selected.user_notes })
-                    .catch(() => undefined);
-                }}
-                placeholder="Личные пометки к сессии"
-              />
-
-              <Stack direction="row" spacing={1} alignItems="center">
-                <Typography variant="subtitle2">Стенограмма</Typography>
-                {recording && (
-                  <Typography variant="caption" color="text.secondary">
-                    обновляется по мере речи…
-                  </Typography>
-                )}
-              </Stack>
-              <Paper
-                variant="outlined"
-                sx={{
-                  p: 2,
-                  maxHeight: 420,
-                  overflow: 'auto',
-                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                  fontSize: 13,
-                  whiteSpace: 'pre-wrap',
-                }}
               >
-                {transcriptText || (
-                  <Typography color="text.secondary">
-                    {recording
-                      ? 'Ждём первые фрагменты речи…'
-                      : 'Сегментов пока нет'}
-                  </Typography>
-                )}
-                <div ref={transcriptEndRef} />
-              </Paper>
-            </Stack>
+                <Box
+                  sx={{
+                    maxHeight: 'min(52vh, 520px)',
+                    overflow: 'auto',
+                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                    fontSize: 13,
+                    lineHeight: 1.55,
+                    whiteSpace: 'pre-wrap',
+                    color: 'text.primary',
+                    pb: 2,
+                  }}
+                >
+                  {transcriptText || (
+                    <Typography color="text.secondary" sx={{ fontFamily: 'inherit' }}>
+                      {recording ? 'Ждём первые фрагменты речи…' : 'Сегментов пока нет'}
+                    </Typography>
+                  )}
+                  <div ref={transcriptEndRef} />
+                </Box>
+              </WorkspaceSection>
+            </Box>
           )}
-        </Paper>
-      </Stack>
+        </Box>
+      </Box>
 
       <Dialog open={prefsOpen} onClose={() => setPrefsOpen(false)} fullWidth maxWidth="sm">
         <DialogTitle>Настройки живых сессий</DialogTitle>

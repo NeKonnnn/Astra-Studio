@@ -1,14 +1,13 @@
 from llama_cpp import Llama
 from typing import List, Dict, Any, Optional, Callable, AsyncGenerator, Union
 from collections import OrderedDict
-import inspect
 import os
 import json
 import asyncio
 import time
 import logging
 
-from app.models.schemas import ChatResponse, ChatChoice, Message, AssistantMessage, UsageInfo, SystemMessage, UserMessage
+from app.models.schemas import ChatResponse, ChatChoice, Message, AssistantMessage, UsageInfo
 from app.utils import convert_to_dict_messages, format_messages_for_llama, estimate_tokens
 from app.core.config import settings
 from app.services.base_llm_handler import BaseLLMHandler
@@ -16,12 +15,8 @@ from app.utils.gguf_paths import resolve_gguf_path
 
 logger = logging.getLogger(__name__)
 
-# 27B Q8 (~30 ГБ) на CPU (gpu_layers=0) легко грузится дольше 10 мин.
-MODEL_LOAD_TIMEOUT = int(os.environ.get("LLM_MODEL_LOAD_TIMEOUT", "1800"))
+MODEL_LOAD_TIMEOUT = int(os.environ.get("LLM_MODEL_LOAD_TIMEOUT", "600"))
 MAX_LOADED_MODELS = max(1, int(os.environ.get("LLM_MAX_LOADED_MODELS", "4")))
-# Несколько независимых Llama на одну модель — параллельные стримы из разных чатов.
-# Каждая реплика держит свой KV-кэш; веса GGUF обычно mmap-ятся с диска.
-INFERENCE_REPLICAS = max(1, int(os.environ.get("LLM_INFERENCE_REPLICAS", "2")))
 
 
 class _Slot:
@@ -36,8 +31,7 @@ class LlamaHandler(BaseLLMHandler):
 
     def __init__(self):
         super().__init__()
-        # model_id → список реплик (у каждой свой gen_lock / Llama)
-        self._model_slots: "OrderedDict[str, List[_Slot]]" = OrderedDict()
+        self._model_slots: "OrderedDict[str, _Slot]" = OrderedDict()
         self._primary_model_id: Optional[str] = None
         self._config_model_path = settings.model.path
         self._config_model_name = settings.model.name
@@ -48,45 +42,23 @@ class LlamaHandler(BaseLLMHandler):
         self._model_switch_lock = asyncio.Lock()
         self.is_initialized = False
 
-    def _replicas(self, model_id: str) -> List[_Slot]:
-        return list(self._model_slots.get(model_id) or [])
-
-    def _primary_slot(self, model_id: Optional[str] = None) -> Optional[_Slot]:
-        mid = model_id or self._primary_model_id
-        if mid and mid in self._model_slots and self._model_slots[mid]:
-            return self._model_slots[mid][0]
-        if self._model_slots:
-            first_list = next(iter(self._model_slots.values()))
-            if first_list:
-                return first_list[0]
-        return None
-
-    async def _acquire_replica(self, model_id: str) -> _Slot:
-        """Берёт свободную реплику модели; если все заняты — ждёт освобождения."""
-        while True:
-            replicas = self._replicas(model_id)
-            if not replicas:
-                raise ValueError(f"Model '{model_id}' is not loaded")
-            free = [s for s in replicas if not s.gen_lock.locked()]
-            if not free:
-                await asyncio.sleep(0.02)
-                continue
-            # Берём первую свободную. Между проверкой и acquire возможен race —
-            # тогда просто подождём этот lock (корректно, хоть и не оптимально).
-            slot = free[0]
-            await slot.gen_lock.acquire()
-            return slot
-
     @property
     def model(self) -> Optional[Llama]:
-        slot = self._primary_slot()
-        return slot.llama if slot else None
+        pid = self._primary_model_id
+        if pid and pid in self._model_slots:
+            return self._model_slots[pid].llama
+        if self._model_slots:
+            first = next(iter(self._model_slots.values()))
+            return first.llama
+        return None
 
     @property
     def model_path(self) -> Optional[str]:
-        slot = self._primary_slot()
-        if slot:
-            return slot.path
+        pid = self._primary_model_id
+        if pid and pid in self._model_slots:
+            return self._model_slots[pid].path
+        if self._model_slots:
+            return next(iter(self._model_slots.values())).path
         return self._config_model_path
 
     @property
@@ -142,9 +114,7 @@ class LlamaHandler(BaseLLMHandler):
         for k in self._model_slots.keys():
             if k.lower() == low:
                 return k
-        raise ValueError(
-            f"Model '{chat_model_id}' is not loaded (loaded: {list(self._model_slots.keys())})"
-        )
+        raise ValueError(f"Model '{chat_model_id}' is not loaded (loaded: {list(self._model_slots.keys())})")
 
     def _touch_lru(self, slot_id: str) -> None:
         if slot_id in self._model_slots:
@@ -165,31 +135,8 @@ class LlamaHandler(BaseLLMHandler):
             n_threads_batch=7,
             n_ctx=self.n_ctx,
             n_gpu_layers=self.n_gpu_layers,
-            use_mmap=True,
             verbose=True,
         )
-
-    async def _instantiate_replicas(self, model_path: str, count: int) -> List[_Slot]:
-        """Грузит до `count` независимых Llama; при OOM на N-й оставляет уже загруженные."""
-        n = max(1, int(count))
-        slots: List[_Slot] = []
-        for i in range(n):
-            try:
-                llama = await self._instantiate_llama(model_path)
-                slots.append(_Slot(llama, model_path))
-            except Exception as e:
-                if slots:
-                    logger.warning(
-                        "Replica %s/%s failed for %s (%s) — оставляем %s реплик(и)",
-                        i + 1,
-                        n,
-                        model_path,
-                        e,
-                        len(slots),
-                    )
-                    break
-                raise
-        return slots
 
     async def _instantiate_llama(self, model_path: str) -> Llama:
         loop = asyncio.get_event_loop()
@@ -240,101 +187,21 @@ class LlamaHandler(BaseLLMHandler):
             )
         return clamped
 
-    def _count_prompt_tokens(self, llama: Llama, dict_msgs: List[Dict[str, Any]]) -> int:
-        formatted = format_messages_for_llama(dict_msgs)
-        try:
-            return len(llama.tokenize(formatted.encode("utf-8"), add_bos=True))
-        except Exception as e:
-            logger.debug("tokenize failed: %s", e)
-            return max(estimate_tokens(formatted), 1)
-
-    def _dict_to_message(self, d: Dict[str, Any]) -> Message:
-        role = str(d.get("role") or "user")
-        content = d.get("content", "")
-        if role == "system":
-            return SystemMessage(content=str(content or ""))
-        if role == "assistant":
-            return AssistantMessage(content=str(content) if content is not None else None)
-        return UserMessage(content=content if content is not None else "")
-
-    def _fit_messages_to_context(
-        self,
-        llama: Llama,
-        messages: List[Message],
-        max_tokens: int,
-        slot_id: str,
-    ) -> List[Message]:
-        """Обрезает историю/контент, чтобы prompt + max_tokens поместились в n_ctx."""
-        n_ctx = self._get_llama_n_ctx(llama)
-        reserved = 32
-        min_gen = 64
-        min_prompt = 512
-        # Не резервировать под генерацию больше, чем позволяет окно (иначе budget промпта ~256 токенов)
-        max_tokens = min(max_tokens, max(min_gen, n_ctx - min_prompt - reserved))
-        budget = n_ctx - max_tokens - reserved
-
-        dict_msgs = convert_to_dict_messages(messages)
-        original_tokens = self._count_prompt_tokens(llama, dict_msgs)
-        if original_tokens <= budget:
-            return messages
-
-        system = [m for m in dict_msgs if m.get("role") == "system"]
-        rest = [m for m in dict_msgs if m.get("role") != "system"]
-
-        while self._count_prompt_tokens(llama, system + rest) > budget and rest:
-            if len(rest) > 1:
-                rest.pop(0)
-                continue
-            m = dict(rest[0])
-            content = m.get("content", "")
-            if not isinstance(content, str):
-                content = str(content or "")
-            while content and self._count_prompt_tokens(
-                llama, system + [{**m, "content": content}]
-            ) > budget:
-                if len(content) <= 200:
-                    content = content[:100]
-                    break
-                content = content[: max(200, len(content) * 3 // 4)]
-            m["content"] = content
-            rest = [m]
-            break
-
-        trimmed = system + rest
-        new_tokens = self._count_prompt_tokens(llama, trimmed)
-        logger.warning(
-            "Context trim slot=%s n_ctx=%s budget=%s tokens %s -> %s (messages %s -> %s)",
-            slot_id,
-            n_ctx,
-            budget,
-            original_tokens,
-            new_tokens,
-            len(dict_msgs),
-            len(trimmed),
-        )
-        if new_tokens > budget:
-            raise ValueError(
-                f"Prompt too long for context window ({new_tokens} tokens, budget={budget}, n_ctx={n_ctx})"
-            )
-        return [self._dict_to_message(d) for d in trimmed]
-
     async def initialize(self):
         if self._model_slots:
             self.is_initialized = True
             return
-        # Модель не грузим при старте — иначе долгий I/O и риск падения контейнера.
-        # Список файлов: GET /v1/models, загрузка: POST /v1/models/load
         if not os.path.isfile(self._config_model_path):
             logger.warning(
-                f"Default model file not found: {self._config_model_path}. "
-                "Use POST /v1/models/load."
+                f"Model file not found at {self._config_model_path}. "
+                "Service starts without LLM until POST /v1/models/load."
             )
-        else:
-            logger.info(
-                f"LLM handler ready. Default model '{self._config_model_name}' — "
-                "load via POST /v1/models/load or from chat."
-            )
-        self.is_initialized = False
+            self.is_initialized = False
+            return
+        ok = await self.load_model_by_name(self._config_model_name)
+        self.is_initialized = ok
+        if ok and self._primary_model_id is None:
+            self._primary_model_id = self.normalize_model_id(self._config_model_name)
 
     async def _try_create_completion(
         self,
@@ -354,50 +221,8 @@ class LlamaHandler(BaseLLMHandler):
                 "max_tokens": max_tokens,
                 "stream": stream,
             }
-            if enable_thinking is None:
-                return llama.create_chat_completion(**kwargs)
-
-            # llama-cpp-python 0.3.x: create_chat_completion НЕ принимает enable_thinking
-            # и не пробрасывает **kwargs. Но chat handler / Jinja-шаблон — да.
-            # У Qwen3.5 в tokenizer.chat_template мышление только при
-            # `enable_thinking is true` (не как у старого Qwen3).
-            thinking_flag = bool(enable_thinking)
-            try:
-                params = inspect.signature(llama.create_chat_completion).parameters
-                if "enable_thinking" in params or any(
-                    p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
-                ):
-                    kwargs["enable_thinking"] = thinking_flag
-                    return llama.create_chat_completion(**kwargs)
-            except (TypeError, ValueError):
-                pass
-
-            handler = getattr(llama, "chat_handler", None)
-            if handler is None:
-                try:
-                    from llama_cpp import llama_chat_format
-
-                    chat_format = getattr(llama, "chat_format", None)
-                    handlers = getattr(llama, "_chat_handlers", None) or {}
-                    handler = handlers.get(chat_format) if chat_format else None
-                    if handler is None and chat_format:
-                        handler = llama_chat_format.get_chat_completion_handler(chat_format)
-                except Exception as exc:
-                    logger.debug("resolve chat_handler failed: %s", exc)
-                    handler = None
-
-            if handler is not None:
-                logger.info(
-                    "Passing enable_thinking=%r via chat_handler (template kwargs)",
-                    thinking_flag,
-                )
-                return handler(llama=llama, enable_thinking=thinking_flag, **kwargs)
-
-            logger.warning(
-                "enable_thinking=%r ignored: create_chat_completion and chat_handler "
-                "cannot receive this template kwarg",
-                thinking_flag,
-            )
+            if enable_thinking is not None:
+                kwargs["enable_thinking"] = bool(enable_thinking)
             return llama.create_chat_completion(**kwargs)
 
         return await self._run_in_executor(lambda: create_completion(convert_to_dict_messages))
@@ -422,81 +247,37 @@ class LlamaHandler(BaseLLMHandler):
             raise ValueError("Model not loaded")
         slot_id = self._resolve_slot_id(chat_model_id)
         self._touch_lru(slot_id)
-        # Предварительный clamp по primary-реплике (n_ctx одинаков у всех копий).
-        probe = self._primary_slot(slot_id)
-        if probe is None:
-            raise ValueError("Model not loaded")
+        slot = self._model_slots[slot_id]
         temperature = temperature or settings.generation.default_temperature
         max_tokens = max_tokens or settings.generation.default_max_tokens
-        reserved = 32
-        min_gen = 64
-        n_ctx = self._get_llama_n_ctx(probe.llama)
-        prompt_tokens = self._count_prompt_tokens(
-            probe.llama, convert_to_dict_messages(messages)
-        )
-        if prompt_tokens + max_tokens + reserved > n_ctx:
-            max_tokens = max(min_gen, n_ctx - prompt_tokens - reserved)
-            logger.warning(
-                "Clamping max_tokens for prompt fit (slot=%s n_ctx=%s ~prompt_tokens=%s -> max_tokens=%s)",
-                slot_id,
-                n_ctx,
-                prompt_tokens,
-                max_tokens,
-            )
-        messages = self._fit_messages_to_context(probe.llama, messages, max_tokens, slot_id)
-        max_tokens = self._clamp_max_tokens_for_request(
-            probe.llama, messages, max_tokens, slot_id
-        )
+        max_tokens = self._clamp_max_tokens_for_request(slot.llama, messages, max_tokens, slot_id)
         start_time = time.time()
 
-        # llama.cpp НЕ потокобезопасен на одном Llama: lock на реплику на весь стрим.
-        # Несколько реплик (LLM_INFERENCE_REPLICAS) позволяют параллельные чаты.
-        if stream:
-            async def stream_generator():
-                slot = await self._acquire_replica(slot_id)
-                try:
-                    stream_result = await self._try_create_completion(
-                        slot.llama,
-                        messages,
-                        temperature,
-                        max_tokens,
-                        stream=True,
-                        enable_thinking=enable_thinking,
-                    )
-                    logger.info(
-                        "Stream [%s] started in %.2fs (replicas=%s)",
-                        slot_id,
-                        time.time() - start_time,
-                        len(self._replicas(slot_id)),
-                    )
+        async with slot.gen_lock:
+            if stream:
+                stream_result = await self._try_create_completion(
+                    slot.llama,
+                    messages,
+                    temperature,
+                    max_tokens,
+                    stream=True,
+                    enable_thinking=enable_thinking,
+                )
+
+                async def stream_generator():
                     try:
                         while True:
-                            chunk = await self._run_in_executor(
-                                lambda: next(stream_result, None)
-                            )
+                            chunk = await self._run_in_executor(lambda: next(stream_result, None))
                             if chunk is None:
                                 break
                             yield f"data: {json.dumps(chunk)}\n\n"
                     except StopIteration:
                         pass
-                    except ValueError as e:
-                        logger.error("Stream error [%s]: %s", slot_id, e)
-                        err_payload = {
-                            "error": {
-                                "message": str(e),
-                                "type": "context_length_exceeded",
-                            }
-                        }
-                        yield f"data: {json.dumps(err_payload)}\n\n"
                     finally:
                         yield "data: [DONE]\n\n"
-                finally:
-                    slot.gen_lock.release()
 
-            return stream_generator()
-
-        slot = await self._acquire_replica(slot_id)
-        try:
+                logger.info(f"Stream [{slot_id}] started in {time.time() - start_time:.2f}s")
+                return stream_generator()
             response = await self._try_create_completion(
                 slot.llama,
                 messages,
@@ -507,8 +288,6 @@ class LlamaHandler(BaseLLMHandler):
             )
             logger.info(f"Response [{slot_id}] in {time.time() - start_time:.2f}s")
             return self._format_response(response, slot_id)
-        finally:
-            slot.gen_lock.release()
 
     def _format_response(self, raw_response: Dict[str, Any], response_model_id: str) -> ChatResponse:
         choice = raw_response["choices"][0]
@@ -536,13 +315,12 @@ class LlamaHandler(BaseLLMHandler):
 
     async def cleanup(self):
         async with self._registry_lock:
-            groups = list(self._model_slots.values())
+            slots = list(self._model_slots.values())
             self._model_slots.clear()
             self._primary_model_id = None
             self.is_initialized = False
-        for group in groups:
-            for s in group:
-                await self._dispose_slot(s)
+        for s in slots:
+            await self._dispose_slot(s)
         logger.info("All model slots cleaned up")
 
     async def load_model(self, model_name: str) -> bool:
@@ -558,18 +336,13 @@ class LlamaHandler(BaseLLMHandler):
                 self._primary_model_id = dname
                 return
         try:
-            replicas = await self._instantiate_replicas(dpath, INFERENCE_REPLICAS)
+            llama = await self._instantiate_llama(dpath)
             async with self._registry_lock:
-                self._model_slots[dname] = replicas
+                self._model_slots[dname] = _Slot(llama, dpath)
                 self._model_slots.move_to_end(dname)
                 self._primary_model_id = dname
                 self.is_initialized = True
-            logger.info(
-                "Restored default model %s after failed load of %s (replicas=%s)",
-                dname,
-                failed_id,
-                len(replicas),
-            )
+            logger.info(f"Restored default model {dname} after failed load of {failed_id}")
         except Exception as e:
             logger.error(f"Failed to restore default model: {e}")
 
@@ -587,30 +360,29 @@ class LlamaHandler(BaseLLMHandler):
             async with self._registry_lock:
                 if model_id in self._model_slots:
                     self._model_slots.move_to_end(model_id)
-                    # Явный /load — делаем выбранную модель primary (не оставляем старый default).
-                    self._primary_model_id = model_id
+                    if self._primary_model_id is None:
+                        self._primary_model_id = model_id
                     self.is_initialized = True
-                    logger.info(f"Model {model_id} already in pool (LRU touch, set primary)")
+                    logger.info(f"Model {model_id} already in pool (LRU touch)")
                     return True
 
-            victim_group: Optional[List[_Slot]] = None
+            victim_slot: Optional[_Slot] = None
             evicted_id: Optional[str] = None
             async with self._registry_lock:
                 if len(self._model_slots) >= MAX_LOADED_MODELS:
-                    evicted_id, victim_group = self._model_slots.popitem(last=False)
+                    evicted_id, victim_slot = self._model_slots.popitem(last=False)
                     if self._primary_model_id == evicted_id:
                         self._primary_model_id = next(iter(self._model_slots.keys()), None)
 
         # Дальше — долгий I/O/CPU; без удержания _model_switch_lock, чтобы не блокировать
         # /v1/health, чат с уже загруженной моделью и второй параллельный /load
 
-        if victim_group is not None:
+        if victim_slot is not None:
             logger.info(f"LRU evict from pool: {evicted_id} (max={MAX_LOADED_MODELS})")
-            for victim_slot in victim_group:
-                await self._dispose_slot(victim_slot)
+            await self._dispose_slot(victim_slot)
 
         try:
-            new_replicas = await self._instantiate_replicas(model_path, INFERENCE_REPLICAS)
+            new_llama = await self._instantiate_llama(model_path)
         except Exception as e:
             logger.error(f"Failed to load model {model_id}: {e}")
             async with self._model_switch_lock:
@@ -621,27 +393,24 @@ class LlamaHandler(BaseLLMHandler):
         async with self._model_switch_lock:
             async with self._registry_lock:
                 if model_id in self._model_slots:
-                    dispose_after.extend(new_replicas)
+                    dispose_after.append(_Slot(new_llama, model_path))
                     self._model_slots.move_to_end(model_id)
-                    self._primary_model_id = model_id
+                    if self._primary_model_id is None:
+                        self._primary_model_id = model_id
                     self.is_initialized = True
                     logger.info(f"Model {model_id} уже в пуле (параллельная загрузка), отбрасываем дубликат")
                 else:
                     while len(self._model_slots) >= MAX_LOADED_MODELS:
                         ev2, vic2 = self._model_slots.popitem(last=False)
-                        dispose_after.extend(vic2)
+                        dispose_after.append(vic2)
                         if self._primary_model_id == ev2:
                             self._primary_model_id = next(iter(self._model_slots.keys()), None)
-                    self._model_slots[model_id] = new_replicas
+                    self._model_slots[model_id] = _Slot(new_llama, model_path)
                     self._model_slots.move_to_end(model_id)
-                    self._primary_model_id = model_id
+                    if self._primary_model_id is None:
+                        self._primary_model_id = model_id
                     self.is_initialized = True
-                    logger.info(
-                        "Pool load OK: %s (models=%s replicas=%s)",
-                        model_id,
-                        len(self._model_slots),
-                        len(new_replicas),
-                    )
+                    logger.info(f"Pool load OK: {model_id} (total loaded: {len(self._model_slots)})")
 
         for s in dispose_after:
             await self._dispose_slot(s)
@@ -649,7 +418,7 @@ class LlamaHandler(BaseLLMHandler):
 
     async def trim_pool_to_config_default(self) -> bool:
         """
-        Оставить в RAM только модель из config 
+        Оставить в RAM только модель из config
         Остальные GGUF выгружаются после выхода из multi-LLM на бэкенде
         """
         dname = self.normalize_model_id(settings.model.name)
@@ -659,7 +428,7 @@ class LlamaHandler(BaseLLMHandler):
             async with self._registry_lock:
                 keys_to_remove = [k for k in self._model_slots.keys() if k != dname]
                 for k in keys_to_remove:
-                    to_dispose.extend(self._model_slots.pop(k))
+                    to_dispose.append(self._model_slots.pop(k))
             for slot in to_dispose:
                 await self._dispose_slot(slot)
 
@@ -668,17 +437,13 @@ class LlamaHandler(BaseLLMHandler):
 
             if not have_default and os.path.isfile(dpath):
                 try:
-                    replicas = await self._instantiate_replicas(dpath, INFERENCE_REPLICAS)
+                    new_llama = await self._instantiate_llama(dpath)
                     async with self._registry_lock:
-                        self._model_slots[dname] = replicas
+                        self._model_slots[dname] = _Slot(new_llama, dpath)
                         self._primary_model_id = dname
                         self._model_slots.move_to_end(dname)
                         self.is_initialized = True
-                    logger.info(
-                        "trim_pool: загружена модель из конфига %s (replicas=%s)",
-                        dname,
-                        len(replicas),
-                    )
+                    logger.info(f"trim_pool: загружена модель из конфига {dname}")
                 except Exception as e:
                     logger.error(f"trim_pool: не удалось загрузить дефолт {dname}: {e}")
                     async with self._registry_lock:

@@ -3,6 +3,7 @@ from app.services.base_llm_handler import BaseLLMHandler
 from app.llm_dependencies import get_llm_handler
 from app.core.security import verify_api_key
 
+
 async def get_llama_service(
     llm_handler: BaseLLMHandler = Depends(get_llm_handler),
 ) -> BaseLLMHandler:

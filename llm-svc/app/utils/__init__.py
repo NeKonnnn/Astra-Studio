@@ -1,6 +1,7 @@
 """
 Утилиты для конвертации сообщений и хелперы.
 """
+
 import json
 import hashlib
 import asyncio
@@ -26,27 +27,18 @@ def _content_str(msg: Message) -> str:
     if c is None:
         return ""
     if isinstance(c, list):
-        return " ".join(
-            item.get("text", str(item)) if isinstance(item, dict) else str(item)
-            for item in c
-        )
+        return " ".join(item.get("text", str(item)) if isinstance(item, dict) else str(item) for item in c)
     return str(c)
 
 
 def convert_to_chat_completion_messages(messages: List[Message]) -> List[Dict[str, Any]]:
     """Преобразование сообщений в список словарей для create_chat_completion (llama-cpp)."""
-    return [
-        {"role": _role_str(msg), "content": _content_str(msg)}
-        for msg in messages
-    ]
+    return [{"role": _role_str(msg), "content": _content_str(msg)} for msg in messages]
 
 
 def convert_to_dict_messages(messages: List[Message]) -> List[Dict[str, Any]]:
     """Преобразование сообщений в словари для обратной совместимости."""
-    return [
-        {"role": _role_str(msg), "content": _content_str(msg)}
-        for msg in messages
-    ]
+    return [{"role": _role_str(msg), "content": _content_str(msg)} for msg in messages]
 
 
 def generate_response_id(messages: list) -> str:

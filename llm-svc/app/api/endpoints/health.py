@@ -4,9 +4,9 @@ from app.models.schemas import HealthResponse
 from app.services.llama_handler import LlamaHandler
 from app.api.dependencies import get_llm_handler_without_loaded_gate
 
-
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
 
 @router.get("/health", response_model=HealthResponse)
 async def health_check(

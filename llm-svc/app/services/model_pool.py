@@ -4,9 +4,13 @@ from typing import List
 from app.exceptions import ServiceUnavailableError, ModelNotLoadedError, PoolExhaustedError
 from .model_context import ModelContext
 import logging
+
 logger = logging.getLogger(__name__)
+
+
 class ModelPool:
     """Пул моделей для обработки запросов с отслеживанием активных запросов"""
+
     def __init__(self, pool_size: int = 1):
         self.pool_size = pool_size
         self._contexts: List[ModelContext] = []
@@ -17,6 +21,7 @@ class ModelPool:
         self._initialization_failed = False
         self._active_requests = 0  # Счетчик активных запросов
         self._max_active_requests = pool_size  # Максимальное количество одновременных запросов
+
     async def initialize(self) -> None:
         async with self._lock:
             logger.info(f"Initializing model pool with {self.pool_size} instances")
@@ -39,21 +44,22 @@ class ModelPool:
                     else:
                         self._available.append(self._contexts[i])
                         successful_init += 1
-                
+
                 if successful_init == 0:
                     logger.warning("No models initialized successfully. Service will start in degraded mode.")
                     # self._initialization_failed = True # Не ставим флаг сбоя, чтобы не падал main.py
                     # raise ServiceUnavailableError("No models could be initialized") # Не рейзим ошибку
-                    self._initialized = True # Считаем инициализированным (но пустым)
+                    self._initialized = True  # Считаем инициализированным (но пустым)
                 else:
                     self._initialized = True
-                
+
                 self._max_active_requests = successful_init
                 logger.info(f"Model pool initialized with {successful_init}/{self.pool_size} instances")
             except Exception as e:
                 self._initialization_failed = True
                 logger.error(f"Model pool initialization failed: {e}")
                 raise ServiceUnavailableError(f"Service initialization failed: {str(e)}")
+
     async def acquire(self) -> ModelContext:
         """Получение модели из пула с проверкой лимита одновременных запросов"""
         async with self._lock:
@@ -73,6 +79,7 @@ class ModelPool:
             self._active_requests += 1
             logger.info(f"Acquired model context [Ctx-{context.context_id}]. Active requests: {self._active_requests}")
             return context
+
     async def release(self, context: ModelContext) -> None:
         """Возврат модели в пул с гарантированным освобождением семафора"""
         async with self._lock:
@@ -121,24 +128,28 @@ class ModelPool:
             self._active_requests = 0
             self._initialized = False
             self._initialization_failed = False
+
     @property
     def is_ready(self) -> bool:
         """Проверка готовности пула - есть ли доступные инстансы"""
         return self._initialized and not self._initialization_failed and len(self._available) > 0
+
     @property
     def available_count(self) -> int:
         """Количество доступных моделей"""
         return len(self._available)
+
     @property
     def total_count(self) -> int:
         """Общее количество моделей"""
         return len(self._contexts)
+
     @property
     def active_requests_count(self) -> int:
         """Количество активных запросов"""
         return self._active_requests
+
     @property
     def max_concurrent_requests(self) -> int:
         """Максимальное количество одновременных запросов"""
         return self._max_active_requests
-
