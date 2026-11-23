@@ -1,0 +1,11 @@
+# Local development overrides — hot-reload backend sources.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.gpu.yml up -d
+#
+# Do NOT use with docker-compose.release.yml for end-user installs
+# (bind-mount would hide the prebuilt image code).
+
+services:
+  astrachat-backend:
+    volumes:
+      - ./backend:/app
