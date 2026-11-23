@@ -1,0 +1,61 @@
+# Prebuilt images from GHCR — только для one-liner / production pull.
+# Локальная разработка: НЕ подключайте этот файл (оставьте обычный docker compose build
+# + при необходимости docker-compose.dev.yml для hot-reload backend).
+#
+# Пример:
+#   docker compose -f docker-compose.yml -f docker-compose.release.yml \
+#     -f docker-compose.gpu.yml --profile speech --profile vision pull
+#   docker compose -f docker-compose.yml -f docker-compose.release.yml \
+#     -f docker-compose.gpu.yml --profile speech --profile vision up -d
+#
+# ASTRA_HOST_ROOT_ON_HOST — абсолютный путь к install dir на хосте
+# (нужен Docker Engine для bind в helper-контейнер обновлений).
+
+services:
+  # ASTRA_LLM_VARIANT=cuda|cpu (install.sh выставляет по автодетекту)
+  llm-service:
+    image: ghcr.io/nekonnnn/astrastudio-llm-${ASTRA_LLM_VARIANT:-cuda}:${ASTRA_VERSION:-latest}
+
+  comfyui:
+    image: ghcr.io/nekonnnn/astrastudio-comfyui:${ASTRA_VERSION:-latest}
+
+  stt-service:
+    image: ghcr.io/nekonnnn/astrastudio-stt:${ASTRA_VERSION:-latest}
+
+  tts-service:
+    image: ghcr.io/nekonnnn/astrastudio-tts:${ASTRA_VERSION:-latest}
+
+  omnivoice-service:
+    image: ghcr.io/nekonnnn/astrastudio-omnivoice:${ASTRA_VERSION:-latest}
+
+  ocr-service:
+    image: ghcr.io/nekonnnn/astrastudio-ocr:${ASTRA_VERSION:-latest}
+
+  diarization-service:
+    image: ghcr.io/nekonnnn/astrastudio-diarization:${ASTRA_VERSION:-latest}
+
+  astrachat-backend:
+    image: ghcr.io/nekonnnn/astrastudio-backend:${ASTRA_VERSION:-latest}
+    environment:
+      - ASTRA_UPDATES_ENABLED=${ASTRA_UPDATES_ENABLED:-true}
+      - ASTRA_HOST_ROOT=/astra-host
+      - ASTRA_HOST_ROOT_ON_HOST=${ASTRA_HOST_ROOT_ON_HOST:-${ASTRA_HOST_ROOT:-}}
+      - ASTRA_VERSION=${ASTRA_VERSION:-latest}
+      - ASTRA_GITHUB_REPO=${ASTRA_GITHUB_REPO:-NeKonnnn/Astra-Studio}
+      - ASTRA_GITHUB_REF=${ASTRA_GITHUB_REF:-main}
+      - ASTRA_PROFILE=${ASTRA_PROFILE:-full}
+      - ASTRA_LLM_VARIANT=${ASTRA_LLM_VARIANT:-cuda}
+    volumes:
+      # Каталог установки на хосте (git + compose + scripts/update.sh)
+      - ${ASTRA_HOST_ROOT_ON_HOST:-.}:/astra-host
+      # Управление Docker с хоста для self-update
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  rag-models:
+    image: ghcr.io/nekonnnn/astrastudio-rag-models:${ASTRA_VERSION:-latest}
+
+  svc-rag:
+    image: ghcr.io/nekonnnn/astrastudio-svc-rag:${ASTRA_VERSION:-latest}
+
+  astrachat-frontend:
+    image: ghcr.io/nekonnnn/astrastudio-frontend:${ASTRA_VERSION:-latest}
