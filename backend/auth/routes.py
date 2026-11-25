@@ -44,6 +44,10 @@ from backend.auth.local_auth import (
     register_local_user,
 )
 from backend.auth.mock_users import authenticate_mock
+from backend.auth.registration_policy import (
+    get_registration_policy,
+    is_registration_enabled,
+)
 from backend.auth.login_lockout import (
     assert_login_not_locked,
     build_cef_sec003_extra,
@@ -224,6 +228,12 @@ async def login_lockout_policy():
     return get_lockout_policy()
 
 
+@router.get("/registration-policy")
+async def registration_policy():
+    """Публичная политика локальной регистрации (вкл/выкл, требования к паролю)."""
+    return get_registration_policy()
+
+
 @router.get("/session-policy")
 async def session_policy():
     """Параметры абсолютного таймаута сессии с момента входа (для frontend)."""
@@ -240,9 +250,16 @@ async def server_instance():
 async def register(credentials: LoginRequest, request: Request, response: Response):
     """
     Регистрация локального пользователя (username + password) в PostgreSQL.
-    По умолчанию is_admin=True — полный доступ к админ-ресурсам.
+
+    Включена по умолчанию (AUTH_REGISTRATION_ENABLED=true). Новые пользователи
+    получают is_admin=false; первый пользователь может стать admin при bootstrap.
     После создания сразу выдаётся сессия (как при login).
     """
+    if not is_registration_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Регистрация отключена администратором",
+        )
     username = (credentials.username or "").strip()
     logger.debug("auth register start user=%s", username)
     try:

@@ -9,12 +9,16 @@ from typing import Any, Dict, Optional
 
 import bcrypt
 
+from backend.auth.registration_policy import get_registration_policy
 from backend.settings.logging import get_logger
 
 logger = get_logger(__name__)
 
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,64}$")
-MIN_PASSWORD_LENGTH = 4
+
+
+def _min_password_length() -> int:
+    return int(get_registration_policy()["min_password_length"])
 
 
 def hash_password(password: str) -> str:
@@ -47,10 +51,11 @@ def validate_username(username: str) -> Optional[str]:
 
 
 def validate_password(password: str) -> Optional[str]:
+    min_len = _min_password_length()
     if not password:
         return "Укажите пароль"
-    if len(password) < MIN_PASSWORD_LENGTH:
-        return f"Пароль должен быть не короче {MIN_PASSWORD_LENGTH} символов"
+    if len(password) < min_len:
+        return f"Пароль должен быть не короче {min_len} символов"
     if len(password.encode("utf-8")) > 72:
         # bcrypt обрезает до 72 байт — лучше не принимать такие пароли молча
         return "Пароль слишком длинный (максимум 72 байта)"
@@ -65,7 +70,7 @@ def profile_from_row(row: Dict[str, Any]) -> Dict[str, Any]:
         "email": None,
         "full_name": username,
         "is_active": bool(row.get("is_active", True)),
-        "is_admin": bool(row.get("is_admin", True)),
+        "is_admin": bool(row.get("is_admin", False)),
         "auth_source": "local",
         "auth_method": "local",
         "groups": [],
@@ -111,10 +116,18 @@ async def fetch_local_user_profile(username: str) -> Optional[Dict[str, Any]]:
     return profile_from_row(row)
 
 
-async def register_local_user(username: str, password: str) -> Dict[str, Any]:
+async def register_local_user(
+    username: str,
+    password: str,
+    *,
+    is_admin: Optional[bool] = None,
+) -> Dict[str, Any]:
     """
-    Создать локального пользователя с is_admin=True по умолчанию.
-    Бросает ValueError с текстом для клиента при ошибках валидации/занятости.
+    Создать локального пользователя.
+
+    is_admin по умолчанию берётся из политики (обычно False).
+    Если локальных пользователей ещё нет и bootstrap_admin=True — первый
+    пользователь становится админом (безопасный bootstrap после установки).
     """
     err = validate_username(username)
     if err:
@@ -124,6 +137,7 @@ async def register_local_user(username: str, password: str) -> Dict[str, Any]:
         raise ValueError(err)
 
     uname = username.strip()
+    policy = get_registration_policy()
     try:
         from backend.database.init_db import get_local_user_repository
 
@@ -138,8 +152,16 @@ async def register_local_user(username: str, password: str) -> Dict[str, Any]:
     if existing:
         raise ValueError("Пользователь с таким именем уже существует")
 
+    want_admin = bool(policy["default_is_admin"]) if is_admin is None else bool(is_admin)
+    if policy["bootstrap_admin"]:
+        total = await repo.count_users()
+        if total == 0:
+            want_admin = True
+
     password_hash = hash_password(password)
-    row = await repo.create_user(uname, password_hash, is_admin=True, is_active=True)
+    row = await repo.create_user(
+        uname, password_hash, is_admin=want_admin, is_active=True
+    )
     if not row:
         raise ValueError("Пользователь с таким именем уже существует")
     return profile_from_row(row)

@@ -11,6 +11,7 @@ import os
 import re
 import uuid
 import base64
+from contextlib import nullcontext
 from PIL import Image
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -705,22 +706,35 @@ class LLMClient:
             is_thinking_requested(request_extra),
         )
         try:
-            request_timeout = httpx.Timeout(
-                self.timeout, connect=10.0, read=self.timeout, write=10.0
-            )
-            async with httpx.AsyncClient(
-                verify=self._verify, timeout=request_timeout
-            ) as client:
-                response = await client.post(
-                    f"{base}/v1/chat/completions",
-                    headers=self._get_headers(),
-                    json=payload,
-                )
-                response.raise_for_status()
-                return response.json()
-        except Exception:
-            logger.exception("Ошибка чата LLM")
+            from backend.middleware.rate_limit import consume_llm_quota
+
+            consume_llm_quota(None)
+        except PermissionError:
             raise
+        except Exception:
+            pass
+        try:
+            from backend.observability.metrics import timed_llm
+        except Exception:
+            timed_llm = None  # type: ignore[assignment]
+        with timed_llm() if timed_llm else nullcontext():
+            try:
+                request_timeout = httpx.Timeout(
+                    self.timeout, connect=10.0, read=self.timeout, write=10.0
+                )
+                async with httpx.AsyncClient(
+                    verify=self._verify, timeout=request_timeout
+                ) as client:
+                    response = await client.post(
+                        f"{base}/v1/chat/completions",
+                        headers=self._get_headers(),
+                        json=payload,
+                    )
+                    response.raise_for_status()
+                    return response.json()
+            except Exception:
+                logger.exception("Ошибка чата LLM")
+                raise
 
     async def get_transcription_health(self) -> Dict[str, Any]:
         """Проверка состояния STT (WhisperX)"""

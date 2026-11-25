@@ -8,22 +8,20 @@ logger = logging.getLogger(__name__)
 # Глобальный экземпляр обработчика LLM
 _llm_handler = None
 
-
 async def get_llm_handler() -> BaseLLMHandler:
     """Получение глобального экземпляра обработчика LLM на основе конфигурации."""
     global _llm_handler
     if _llm_handler is None:
         backend = settings.model.backend.lower()
-
+        
         print("=" * 80)
         print("🔧 LLM BACKEND SELECTION")
         print("=" * 80)
         print(f"📋 Configured backend: {settings.model.backend}")
-
+        
         if backend == "vllm":
             try:
                 from app.services.vllm_handler import VLLMHandler
-
                 print("✅ Selected backend: vLLM")
                 print("   - High performance inference engine")
                 print("   - Optimized for GPU acceleration")
@@ -48,9 +46,9 @@ async def get_llm_handler() -> BaseLLMHandler:
             print("✅ Selected backend: llama.cpp (default)")
             logger.warning(f"Unknown backend '{backend}', falling back to llama.cpp")
             _llm_handler = LlamaHandler.get_instance()
-
+        
         print("=" * 80)
-
+        
         try:
             await _llm_handler.initialize()
         except Exception as e:
@@ -64,16 +62,18 @@ async def get_llm_handler() -> BaseLLMHandler:
                 logger.warning("vLLM initialization failed, falling back to llama.cpp")
                 _llm_handler = LlamaHandler.get_instance()
                 await _llm_handler.initialize()
-            else:
+            elif backend == "vllm":
                 raise
+            else:
+                logger.warning(
+                    "llama.cpp started without a loaded model; list/load via /v1/models"
+                )
     return _llm_handler
-
 
 # Обратная совместимость
 async def get_llama_handler() -> BaseLLMHandler:
     """Получение глобального экземпляра обработчика LLM (обратная совместимость)."""
     return await get_llm_handler()
-
 
 async def cleanup_llm_handler():
     """Очистка глобального экземпляра обработчика LLM."""
@@ -81,7 +81,6 @@ async def cleanup_llm_handler():
     if _llm_handler is not None:
         await _llm_handler.cleanup()
         _llm_handler = None
-
 
 # Обратная совместимость
 async def cleanup_llama_handler():

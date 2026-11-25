@@ -361,13 +361,90 @@ class AuditConfig(BaseModel):
 
 
 class SecurityConfig(BaseModel):
-    """Конфигурация безопасности"""
+    """Конфигурация безопасности и rate limiting.
+
+    Исторически флаги жили только в Settings/YAML и нигде не читались кодом —
+    middleware не было. Теперь ENV перекрывает YAML:
+
+      RATE_LIMITING_ENABLED / SECURITY_RATE_LIMITING_ENABLED
+      RATE_LIMITING_REQUESTS_PER_MINUTE
+      SECURITY_ENABLED, SECURITY_API_KEY, SECURITY_API_KEY_HEADER
+    """
 
     enabled: bool = False
     api_key: Optional[str] = None
     api_key_header: str = "X-API-Key"
     rate_limiting_enabled: bool = False
     rate_limiting_requests_per_minute: int = 60
+
+    @model_validator(mode="before")
+    @classmethod
+    def load_from_yaml_or_env(cls, data: Any) -> dict:
+        result = dict(data) if isinstance(data, dict) else {}
+
+        def _as_bool(raw: Any) -> Optional[bool]:
+            if raw is None or not str(raw).strip():
+                return None
+            return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+        env_enabled = _get_env_value("SECURITY_ENABLED")
+        parsed = _as_bool(env_enabled)
+        if parsed is not None:
+            result["enabled"] = parsed
+
+        env_key = _get_env_value("SECURITY_API_KEY")
+        if env_key is not None and str(env_key).strip():
+            result["api_key"] = str(env_key).strip()
+
+        env_header = _get_env_value("SECURITY_API_KEY_HEADER")
+        if env_header is not None and str(env_header).strip():
+            result["api_key_header"] = str(env_header).strip()
+
+        env_rl = _get_env_value("RATE_LIMITING_ENABLED") or _get_env_value(
+            "SECURITY_RATE_LIMITING_ENABLED"
+        )
+        parsed_rl = _as_bool(env_rl)
+        if parsed_rl is not None:
+            result["rate_limiting_enabled"] = parsed_rl
+
+        env_rpm = _get_env_value_int("RATE_LIMITING_REQUESTS_PER_MINUTE")
+        if env_rpm is not None:
+            result["rate_limiting_requests_per_minute"] = max(1, int(env_rpm))
+        return result
+
+
+class QuotasConfig(BaseModel):
+    """Квоты на пользователя (раньше отсутствовали и в конфиге, и в коде).
+
+    ENV:
+      QUOTAS_ENABLED
+      QUOTA_LLM_REQUESTS_PER_DAY
+      QUOTA_RAG_SEARCHES_PER_DAY
+    """
+
+    enabled: bool = False
+    llm_requests_per_day: int = 500
+    rag_searches_per_day: int = 1000
+
+    @model_validator(mode="before")
+    @classmethod
+    def load_from_env(cls, data: Any) -> dict:
+        result = dict(data) if isinstance(data, dict) else {}
+        env_enabled = _get_env_value("QUOTAS_ENABLED")
+        if env_enabled is not None and str(env_enabled).strip():
+            result["enabled"] = str(env_enabled).strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+        env_llm = _get_env_value_int("QUOTA_LLM_REQUESTS_PER_DAY")
+        if env_llm is not None:
+            result["llm_requests_per_day"] = max(1, int(env_llm))
+        env_rag = _get_env_value_int("QUOTA_RAG_SEARCHES_PER_DAY")
+        if env_rag is not None:
+            result["rag_searches_per_day"] = max(1, int(env_rag))
+        return result
 
 
 class LoginLockoutConfig(BaseModel):
@@ -1211,6 +1288,7 @@ class Settings(BaseModel):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     audit: AuditConfig = Field(default_factory=AuditConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
+    quotas: QuotasConfig = Field(default_factory=QuotasConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     websocket: WebSocketConfig = Field(default_factory=WebSocketConfig)
     files: FilesConfig = Field(default_factory=FilesConfig)

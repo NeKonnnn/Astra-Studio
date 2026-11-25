@@ -25,7 +25,7 @@ import AdminPluginsPanel from '../components/admin/AdminPluginsPanel';
 import AdminMcpPanel from '../components/admin/AdminMcpPanel';
 import AdminUsagePanel from '../components/admin/AdminUsagePanel';
 import AdminSessionsPanel from '../components/admin/AdminSessionsPanel';
-import AdminStubPanel from '../components/admin/AdminStubPanel';
+import AdminUsersPanel from '../components/admin/AdminUsersPanel';
 import { getWorkZoneBackgroundColor } from '../constants/workZoneBackground';
 import { useWorkZoneBgMode } from '../hooks/useWorkZoneBgMode';
 import { useAuth } from '../contexts/AuthContext';
@@ -376,13 +376,7 @@ export default function AdminHubPage() {
             <AdminUsagePanel isDarkMode={isDarkMode} entityType={usageEntity} />
           ) : null}
 
-          {section === 'users' && (
-            <AdminStubPanel
-              isDarkMode={isDarkMode}
-              title="Управление пользователями"
-              description="Блокировка учётных записей и выдача прав (LDAP/Keycloak / локальные). Таблица и действия — на следующей итерации."
-            />
-          )}
+          {section === 'users' && <AdminUsersPanel isDarkMode={isDarkMode} />}
           {section === 'agents' && <AdminAgentsPanel isDarkMode={isDarkMode} />}
           {section === 'skills' && <AdminSkillsPanel isDarkMode={isDarkMode} />}
           {section === 'knowledge-bases' && (

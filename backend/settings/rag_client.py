@@ -996,16 +996,39 @@ class RagClient:
         document_id: Optional[int] = None,
         use_reranking: Optional[bool] = None,
     ) -> List[Tuple[str, float, Optional[int], Optional[int]]]:
-        return await self._search_with_pipeline(
-            "/search",
-            query,
-            k,
-            log_tag="/search",
-            document_id=document_id,
-            use_reranking=use_reranking,
-            strategy=strategy,
-            project_id=None,
-        )
+        try:
+            from backend.middleware.rate_limit import consume_rag_quota
+
+            consume_rag_quota(None)
+        except PermissionError:
+            raise
+        except Exception:
+            pass
+        try:
+            from backend.observability.metrics import timed_rag
+
+            with timed_rag("documents"):
+                return await self._search_with_pipeline(
+                    "/search",
+                    query,
+                    k,
+                    log_tag="/search",
+                    document_id=document_id,
+                    use_reranking=use_reranking,
+                    strategy=strategy,
+                    project_id=None,
+                )
+        except ImportError:
+            return await self._search_with_pipeline(
+                "/search",
+                query,
+                k,
+                log_tag="/search",
+                document_id=document_id,
+                use_reranking=use_reranking,
+                strategy=strategy,
+                project_id=None,
+            )
 
     async def get_confidence_report(self) -> Dict[str, Any]:
         return await self._request("GET", "/documents/report/confidence")

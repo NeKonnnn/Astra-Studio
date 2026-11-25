@@ -107,6 +107,7 @@ export const API_ENDPOINTS = {
   AUTH_SESSION_POLICY: '/api/auth/session-policy',
   AUTH_SERVER_INSTANCE: '/api/auth/server-instance',
   AUTH_REGISTER: '/api/auth/register',
+  AUTH_REGISTRATION_POLICY: '/api/auth/registration-policy',
   AUTH_SSO_PROVIDERS: '/api/auth/sso/providers',
   AUTH_SSO_KEYCLOAK_LOGIN: '/api/auth/sso/keycloak/login',
   AUTH_SSO_KEYCLOAK_EXCHANGE: '/api/auth/sso/keycloak/exchange',
@@ -139,6 +140,8 @@ export const API_ENDPOINTS = {
   ADMIN_AUTH_STATS: '/api/admin/auth-stats',
   ADMIN_USAGE: '/api/admin/usage',
   ADMIN_EXPORT: '/api/admin/export',
+  ADMIN_USERS: '/api/admin/users',
+  ADMIN_REGISTRATION_POLICY: '/api/admin/registration-policy',
 };
 
 // Для обратной совместимости (deprecated - используйте getSettings())

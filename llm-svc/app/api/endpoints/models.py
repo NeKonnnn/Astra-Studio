@@ -17,7 +17,6 @@ from app.utils.gguf_paths import list_gguf_models
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-
 @router.get("/models", response_model=ModelsListResponse)
 async def list_models(
     llama_service: BaseLLMHandler = Depends(get_llm_handler_without_loaded_gate),
@@ -31,9 +30,13 @@ async def list_models(
     except Exception as e:
         logger.error(f"Error scanning models tree: {e}")
     if not models_list and llama_service.is_loaded() and llama_service.model_name:
-        models_list.append({"id": llama_service.model_name, "object": "model", "owned_by": "local", "permissions": []})
+        models_list.append({
+            "id": llama_service.model_name,
+            "object": "model",
+            "owned_by": "local",
+            "permissions": []
+        })
     return ModelsListResponse(data=models_list)
-
 
 @router.get("/models/current", response_model=ModelInfoResponse)
 async def get_current_model_info(
@@ -55,9 +58,8 @@ async def get_current_model_info(
         file_size=file_size,
         file_size_mb=file_size_mb,
         file_exists=file_exists,
-        config_name=settings.model.name,
+        config_name=settings.model.name
     )
-
 
 @router.post("/models/load", response_model=ModelLoadResponse)
 async def load_model(
@@ -71,14 +73,19 @@ async def load_model(
     try:
         success = await llama_service.load_model(model_name)
         if success:
-            rid = LlamaHandler.normalize_model_id(model_name) if isinstance(llama_service, LlamaHandler) else model_name
+            rid = (
+                LlamaHandler.normalize_model_id(model_name)
+                if isinstance(llama_service, LlamaHandler)
+                else model_name
+            )
             return ModelLoadResponse(
                 success=True,
                 message=f"Model '{rid}' loaded successfully",
                 model_name=rid,
             )
         return ModelLoadResponse(
-            success=False, message=f"Failed to load model '{model_name}' (file not found or load error)"
+            success=False,
+            message=f"Failed to load model '{model_name}' (file not found or load error)"
         )
     except Exception as e:
         logger.exception(f"Error loading model {model_name}")

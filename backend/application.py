@@ -50,6 +50,8 @@ from backend.routes.voice_assistant import router as voice_assistant_router
 from backend.routes.internal_rag import router as internal_rag_router
 from backend.routes.image_generation import router as image_generation_router
 from backend.routes.coding_agent import router as coding_agent_router
+from backend.middleware.metrics_middleware import MetricsMiddleware
+from backend.middleware.rate_limit import RateLimitMiddleware
 from backend.settings.cef_logger.cef_audit_middleware import CefAuditMiddleware
 from backend.settings.cef_logger.cef_logger import configure_cef_logging, log_cef_event
 from backend.settings.logging import (
@@ -296,7 +298,21 @@ app.add_middleware(
     allow_methods=settings.cors.allow_methods,
     allow_headers=settings.cors.allow_headers,
 )
+# Порядок: последний add_middleware = самый внешний при входящем запросе.
 app.add_middleware(CefAuditMiddleware)
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(MetricsMiddleware)
+
+
+@app.get("/metrics")
+async def prometheus_metrics():
+    """Prometheus scrape endpoint (продуктовые метрики HTTP/LLM/RAG/очереди)."""
+    from fastapi.responses import Response
+
+    from backend.observability.metrics import render_metrics
+
+    body, content_type = render_metrics()
+    return Response(content=body, media_type=content_type)
 
 
 @app.exception_handler(ServiceDisabledError)

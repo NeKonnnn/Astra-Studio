@@ -53,7 +53,7 @@ RUN python3.11 -m pip install --no-cache-dir --timeout 120 --retries 5 \
 # Шаг 2: llama-cpp-python — СБОРКА ИЗ ИСХОДНИКОВ (гарантированно glibc)
 ENV CMAKE_ARGS="-DGGML_METAL=OFF -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS"
 RUN python3.11 -m pip install --no-cache-dir --no-binary llama-cpp-python \
-    llama-cpp-python
+    llama-cpp-python==0.3.28
 
 # Шаг 3: остальные зависимости
 COPY requirements.txt .

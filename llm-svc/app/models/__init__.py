@@ -1,7 +1,6 @@
 """
 Pydantic models module.
 """
-
 from .schemas import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -12,9 +11,8 @@ from .schemas import (
     ToolCall,
     FunctionCall,
     ToolDefinition,
-    MessageRole,
+    MessageRole
 )
-
 __all__ = [
     "ChatCompletionRequest",
     "ChatCompletionResponse",
@@ -25,5 +23,5 @@ __all__ = [
     "ToolCall",
     "FunctionCall",
     "ToolDefinition",
-    "MessageRole",
+    "MessageRole"
 ]

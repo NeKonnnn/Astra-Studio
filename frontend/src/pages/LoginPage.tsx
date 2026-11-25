@@ -45,6 +45,7 @@ export default function LoginPage() {
   const [keycloakSsoEnabled, setKeycloakSsoEnabled] = useState(false);
   const [keycloakLoginUrl, setKeycloakLoginUrl] = useState('');
   const [isSsoRedirecting, setIsSsoRedirecting] = useState(false);
+  const [registrationEnabled, setRegistrationEnabled] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(() => {
     const saved = localStorage.getItem('theme');
     return saved ? saved === 'dark' : false;
@@ -73,6 +74,25 @@ export default function LoginPage() {
           'Не удалось загрузить политику блокировки с backend (GET /api/auth/login-lockout-policy):',
           e,
         );
+      }
+
+      try {
+        const regResp = await fetch(getApiUrl(API_ENDPOINTS.AUTH_REGISTRATION_POLICY));
+        if (regResp.ok) {
+          const regData = await regResp.json();
+          if (!cancelled) {
+            setRegistrationEnabled(!!regData?.registration_enabled);
+            if (!regData?.registration_enabled) {
+              setMode('login');
+            }
+          }
+        }
+      } catch (regError) {
+        console.warn('Не удалось загрузить политику регистрации:', regError);
+        if (!cancelled) {
+          setRegistrationEnabled(false);
+          setMode('login');
+        }
       }
 
       try {
@@ -466,26 +486,28 @@ export default function LoginPage() {
                 )}
               </Button>
 
-              <Button
-                fullWidth
-                type="button"
-                variant="text"
-                disabled={isLoading || isSsoRedirecting}
-                onClick={() => switchMode(isRegisterMode ? 'login' : 'register')}
-                sx={{
-                  mt: 1.5,
-                  textTransform: 'none',
-                  color: isDarkMode ? 'rgba(255,255,255,0.75)' : 'rgba(0,0,0,0.6)',
-                  '&:hover': {
-                    backgroundColor: 'transparent',
-                    color: isDarkMode ? '#fff' : '#000',
-                  },
-                }}
-              >
-                {isRegisterMode
-                  ? 'Уже есть аккаунт? Войти'
-                  : 'Нет аккаунта? Регистрация'}
-              </Button>
+              {registrationEnabled || isRegisterMode ? (
+                <Button
+                  fullWidth
+                  type="button"
+                  variant="text"
+                  disabled={isLoading || isSsoRedirecting || !registrationEnabled}
+                  onClick={() => switchMode(isRegisterMode ? 'login' : 'register')}
+                  sx={{
+                    mt: 1.5,
+                    textTransform: 'none',
+                    color: isDarkMode ? 'rgba(255,255,255,0.75)' : 'rgba(0,0,0,0.6)',
+                    '&:hover': {
+                      backgroundColor: 'transparent',
+                      color: isDarkMode ? '#fff' : '#000',
+                    },
+                  }}
+                >
+                  {isRegisterMode
+                    ? 'Уже есть аккаунт? Войти'
+                    : 'Нет аккаунта? Регистрация'}
+                </Button>
+              ) : null}
             </form>
 
             {keycloakSsoEnabled && !isRegisterMode && (

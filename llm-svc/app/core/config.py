@@ -6,22 +6,16 @@ from typing import List, Optional, Dict, Any, Tuple, Type
 from pydantic import BaseModel, model_validator, ConfigDict
 from pydantic.fields import FieldInfo
 from pydantic_settings import BaseSettings, SettingsConfigDict, PydanticBaseSettingsSource
-
 logger = logging.getLogger(__name__)
 _settings = None
-
-
 class ServerConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8000
     log_level: str = "INFO"
     docs_url: str = "/docs"
     redoc_url: str = "/redoc"
-
-
 class UrlsConfig(BaseModel):
     """Публичные URL (как у backend/frontend); CORS собирается из непустых полей."""
-
     model_config = ConfigDict(extra="ignore")
 
     frontend_port: Optional[str] = None
@@ -41,8 +35,6 @@ class CorsConfig(BaseModel):
     allow_credentials: bool = True
     allow_methods: List[str] = ["*"]
     allow_headers: List[str] = ["*"]
-
-
 class ModelConfig(BaseModel):
     path: str = "/dev/null"
     name: str = "model"
@@ -63,40 +55,28 @@ class ModelConfig(BaseModel):
     gpu_memory_utilization: float = 0.9
     trust_remote_code: bool = False
     quantization: Optional[str] = None  # awq, gptq, fp8 или null
-
-
 class GenerationConfig(BaseModel):
     default_temperature: float = 0.7
     default_max_tokens: int = 256
     stream: bool = False
-
-
 class AppConfig(BaseModel):
     title: str = "Llama CPP API Service"
     description: str = "API service for Llama-based models compatible with OpenAI API"
     version: str = "1.0.0"
-
-
 class MonitoringConfig(BaseModel):
     enabled: bool = False
     prometheus_port: int = 9090
     metrics_path: str = "/metrics"
-
-
 class LoggingConfig(BaseModel):
     level: str = "INFO"
     format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     file: Optional[str] = None
     max_size: int = 10485760
     backup_count: int = 5
-
-
 class CachingConfig(BaseModel):
     enabled: bool = True
     ttl: int = 300
     max_size: int = 1000
-
-
 class VaultConfig(BaseModel):
     role_id: Optional[str] = None
     approle_name: Optional[str] = None
@@ -105,27 +85,20 @@ class VaultConfig(BaseModel):
     tuz_password: Optional[str] = None
     cert_path: Optional[str] = None
     path: Optional[str] = None
-
-
 class SecurityConfig(BaseModel):
     enabled: bool = True
     api_key_header: str = "X-API-Key"
-
-
 class NexusConfig(BaseModel):
     enabled: bool = False
     url: str = ""
     username: Optional[str] = None
     password: Optional[str] = None
     cert_path: Optional[str] = None
-
-
 class YamlConfigSettingsSource(PydanticBaseSettingsSource):
     def __init__(self, settings_cls: Type[BaseSettings], config_path: str):
         super().__init__(settings_cls)
         self.config_path = config_path
         self._data: Dict[str, Any] | None = None
-
     def _load_yaml(self) -> Dict[str, Any]:
         if self._data is not None:
             return self._data
@@ -141,21 +114,16 @@ class YamlConfigSettingsSource(PydanticBaseSettingsSource):
             logger.error(f"Error loading YAML config from {self.config_path}: {e}")
             self._data = {}
         return self._data
-
     def __call__(self) -> Dict[str, Any]:
         return self._load_yaml()
-
     def get_field_value(self, field: "FieldInfo", field_name: str) -> tuple[Any, str, bool]:
         data = self._load_yaml()
         if field_name not in data:
             return None, "", False
         value = data[field_name]
         return value, "yaml", True
-
     def prepare_field_value(self, field_name: str, field: "FieldInfo", value: Any, value_is_complex: bool) -> Any:
         return value
-
-
 def _cors_keys_from_urls() -> Tuple[str, ...]:
     return (
         "frontend_port",
@@ -184,7 +152,11 @@ class Settings(BaseSettings):
     vault: VaultConfig = VaultConfig()
     security: SecurityConfig = SecurityConfig()
     nexus: NexusConfig = NexusConfig()
-    model_config = SettingsConfigDict(env_nested_delimiter="__", extra="ignore", env_file=None)
+    model_config = SettingsConfigDict(
+        env_nested_delimiter="__",
+        extra="ignore",
+        env_file=None
+    )
 
     @model_validator(mode="after")
     def _cors_from_urls(self) -> "Settings":
@@ -201,12 +173,12 @@ class Settings(BaseSettings):
 
     @classmethod
     def settings_customise_sources(
-        cls,
-        settings_cls: Type[BaseSettings],
-        init_settings: PydanticBaseSettingsSource,
-        env_settings: PydanticBaseSettingsSource,
-        dotenv_settings: PydanticBaseSettingsSource,
-        file_secret_settings: PydanticBaseSettingsSource,
+            cls,
+            settings_cls: Type[BaseSettings],
+            init_settings: PydanticBaseSettingsSource,
+            env_settings: PydanticBaseSettingsSource,
+            dotenv_settings: PydanticBaseSettingsSource,
+            file_secret_settings:PydanticBaseSettingsSource
     ) -> Tuple[PydanticBaseSettingsSource, ...]:
         """
         Определение приоритета источников (от самого важного к менее важному)
@@ -215,8 +187,11 @@ class Settings(BaseSettings):
         3. Значения по умолчанию, вшитые в классы - в случае если не указано в других источниках
         """
         config_path = _get_config_path_strategy()
-        return (env_settings, YamlConfigSettingsSource(settings_cls, config_path), init_settings)
-
+        return (
+            env_settings,
+            YamlConfigSettingsSource(settings_cls, config_path),
+            init_settings
+        )
     @classmethod
     def from_yaml(cls, config_path: Optional[str] = None) -> "Settings":
         """Загрузка конфигурации из YAML файла"""
@@ -224,16 +199,12 @@ class Settings(BaseSettings):
             global _MANUAL_CONFIG_PATH
             _MANUAL_CONFIG_PATH = config_path
         return cls()
-
-
 _MANUAL_CONFIG_PATH: Optional[str] = None
-
-
 def _get_config_path_strategy() -> str:
     """Поиск файла конфигурации."""
     # Если задан вручную через from_yaml
     if _MANUAL_CONFIG_PATH:
-        return _MANUAL_CONFIG_PATH
+        return  _MANUAL_CONFIG_PATH
     # Если задан в переменной окружения
     env_path = os.environ.get("CONFIG_PATH")
     if env_path:
@@ -245,7 +216,7 @@ def _get_config_path_strategy() -> str:
         "config/config.yml",
         "../config/config.yml",
         "./config.yml",
-        str(Path(__file__).parent.parent.parent / "config" / config_filename),
+        str(Path(__file__).parent.parent.parent / "config" / config_filename)
     ]
     for path in possible_paths:
         if os.path.exists(path):
@@ -253,23 +224,17 @@ def _get_config_path_strategy() -> str:
     # Конфигурационный файл не найден
     logger.warning(f"Configuration file (.yaml) not found.")
     return ""
-
-
 def get_settings() -> Settings:
     """Получение экземпляра настроек."""
     global _settings
     if _settings is None:
         _settings = Settings.from_yaml()
     return _settings
-
-
 def reset_settings() -> Settings:
     """Сброс и принудительная перезагрузка настроек."""
     global _settings, _MANUAL_CONFIG_PATH
     _settings = None
     _MANUAL_CONFIG_PATH = None
     return get_settings()
-
-
 # Инициализация настроек
 settings = get_settings()

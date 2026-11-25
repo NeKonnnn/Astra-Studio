@@ -76,5 +76,8 @@ tqdm>=4.66.0
 huggingface_hub>=0.26.0
 hf_transfer>=0.1.9
 
+# Observability
+prometheus-client>=0.20.0
+
 # CEF shost: PTR через корпоративный DNS, если kube-dns не знает рабочие станции
 dnspython>=2.6.0
