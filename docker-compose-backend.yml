@@ -133,7 +133,7 @@ services:
 
   # MinIO - для хранения временных файлов (голосовые файлы, транскрибация)
   minio:
-    image: minio/minio:latest
+    image: pgsty/silo:RELEASE.2026-11-12T00-00-00Z
     container_name: astrachat-minio
     ports:
       - "9000:9000"  # API порт
