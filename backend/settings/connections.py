@@ -139,6 +139,38 @@ class MongoDBConnectionConfig(BaseModel):
         extra = "allow"  # Разрешаем дополнительные поля из YAML
 
 
+def _env_or_yaml(
+    data: dict,
+    field: str,
+    env_keys: Union[str, List[str]],
+    *,
+    required: bool = True,
+    as_int: bool = False,
+    as_bool: bool = False,
+) -> Optional[Union[str, int, bool]]:
+    """Секреты и runtime-настройки: ENV перекрывает YAML (Docker/.env > config.yml)."""
+    keys = [env_keys] if isinstance(env_keys, str) else list(env_keys)
+    for key in keys:
+        raw = _get_env_value_int(key) if as_int else _get_env_value(key)
+        if raw is None:
+            continue
+        if as_bool:
+            return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+        if isinstance(raw, str):
+            raw = raw.strip()
+            if not raw or raw.startswith("#"):
+                continue
+        return raw
+    if field in data and data[field] is not None and data[field] != "":
+        val = data[field]
+        if as_bool and not isinstance(val, bool):
+            return str(val).strip().lower() in {"1", "true", "yes", "on"}
+        return val
+    if required:
+        raise ValueError(f"{keys[0]} не задан в ENV или YAML ({field})")
+    return None
+
+
 class PostgreSQLConnectionConfig(BaseModel):
     """Конфигурация подключения к PostgreSQL
     Все значения должны быть заданы в YAML или ENV
@@ -154,67 +186,21 @@ class PostgreSQLConnectionConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def load_from_yaml_or_env(cls, data: dict) -> dict:
-        """Загружает значения из YAML или ENV (приоритет: YAML > ENV)"""
+        """Загружает значения из YAML или ENV (секреты: ENV > YAML)."""
         if not isinstance(data, dict):
             data = {}
         result = _extra_fields(
             data, ("host", "port", "database", "user", "password", "embedding_dim")
         )
-        # Приоритет: YAML > ENV
-        # Host
-        if "host" in data:
-            result["host"] = data["host"]
-        else:
-            host = _get_env_value("POSTGRES_HOST")
-            if host is None:
-                msg = "POSTGRES_HOST не задан в YAML или ENV"
-                raise ValueError(msg)
-            result["host"] = host
-        # Port
-        if "port" in data:
-            result["port"] = data["port"]
-        else:
-            port = _get_env_value_int("POSTGRES_PORT")
-            if port is None:
-                msg = "POSTGRES_PORT не задан в YAML или ENV"
-                raise ValueError(msg)
-            result["port"] = port
-        # Database
-        if "database" in data:
-            result["database"] = data["database"]
-        else:
-            database = _get_env_value("POSTGRES_DB")
-            if database is None:
-                msg = "POSTGRES_DB не задан в YAML или ENV"
-                raise ValueError(msg)
-            result["database"] = database
-        # User
-        if "user" in data:
-            result["user"] = data["user"]
-        else:
-            user = _get_env_value("POSTGRES_USER")
-            if user is None:
-                msg = "POSTGRES_USER не задан в YAML или ENV"
-                raise ValueError(msg)
-            result["user"] = user
-        # Password
-        if "password" in data:
-            result["password"] = data["password"]
-        else:
-            password = _get_env_value("POSTGRES_PASSWORD")
-            if password is None:
-                msg = "POSTGRES_PASSWORD не задан в YAML или ENV"
-                raise ValueError(msg)
-            result["password"] = password
-        # Embedding dim
-        if "embedding_dim" in data:
-            result["embedding_dim"] = data["embedding_dim"]
-        else:
-            embedding_dim = _get_env_value_int("EMBEDDING_DIM")
-            if embedding_dim is None:
-                msg = "EMBEDDING_DIM не задан в YAML или ENV"
-                raise ValueError(msg)
-            result["embedding_dim"] = embedding_dim
+        result["host"] = _env_or_yaml(data, "host", "POSTGRES_HOST")
+        result["port"] = _env_or_yaml(data, "port", "POSTGRES_PORT", as_int=True)
+        result["database"] = _env_or_yaml(data, "database", "POSTGRES_DB")
+        result["user"] = _env_or_yaml(data, "user", "POSTGRES_USER")
+        # Пароль всегда ENV first — иначе случайный POSTGRES_PASSWORD из install ломается YAML "password"
+        result["password"] = _env_or_yaml(data, "password", "POSTGRES_PASSWORD")
+        result["embedding_dim"] = _env_or_yaml(
+            data, "embedding_dim", "EMBEDDING_DIM", as_int=True
+        )
         return result
 
     @property
@@ -248,7 +234,7 @@ class MinIOConnectionConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def load_from_yaml_or_env(cls, data: dict) -> dict:
-        """Загружает значения из YAML или ENV (приоритет: YAML > ENV)"""
+        """Загружает значения из YAML или ENV (секреты/бакеты: ENV > YAML)."""
         if not isinstance(data, dict):
             data = {}
         result = _extra_fields(
@@ -267,87 +253,34 @@ class MinIOConnectionConfig(BaseModel):
                 "ssl_verify",
             ),
         )
-        # Приоритет: YAML > ENV
-        # Endpoint
-        if "endpoint" in data:
-            result["endpoint"] = data["endpoint"]
+        result["endpoint"] = _env_or_yaml(data, "endpoint", "MINIO_ENDPOINT")
+        result["port"] = _env_or_yaml(data, "port", "MINIO_PORT", as_int=True)
+        result["access_key"] = _env_or_yaml(
+            data, "access_key", ["MINIO_ACCESS_KEY", "MINIO_ROOT_USER"]
+        )
+        result["secret_key"] = _env_or_yaml(
+            data, "secret_key", ["MINIO_SECRET_KEY", "MINIO_ROOT_PASSWORD"]
+        )
+        use_ssl = _env_or_yaml(
+            data, "use_ssl", "MINIO_USE_SSL", required=False, as_bool=True
+        )
+        result["use_ssl"] = False if use_ssl is None else use_ssl
+        result["bucket_name"] = _env_or_yaml(data, "bucket_name", "MINIO_BUCKET_NAME")
+        docs = _env_or_yaml(
+            data, "documents_bucket_name", "MINIO_DOCUMENTS_BUCKET_NAME", required=False
+        )
+        if docs:
+            result["documents_bucket_name"] = docs
         else:
-            endpoint = _get_env_value("MINIO_ENDPOINT")
-            if endpoint is None:
-                msg = "MINIO_ENDPOINT не задан в YAML или ENV"
-                raise ValueError(msg)
-            result["endpoint"] = endpoint
-        # Port
-        if "port" in data:
-            result["port"] = data["port"]
-        else:
-            port = _get_env_value_int("MINIO_PORT")
-            if port is None:
-                msg = "MINIO_PORT не задан в YAML или ENV"
-                raise ValueError(msg)
-            result["port"] = port
-        # Access key
-        if "access_key" in data:
-            result["access_key"] = data["access_key"]
-        else:
-            access_key = _get_env_value("MINIO_ACCESS_KEY") or _get_env_value(
-                "MINIO_ROOT_USER"
-            )
-            if access_key is None:
-                msg = "MINIO_ACCESS_KEY или MINIO_ROOT_USER не задан в YAML или ENV"
-                raise ValueError(msg)
-            result["access_key"] = access_key
-        # Secret key
-        if "secret_key" in data:
-            result["secret_key"] = data["secret_key"]
-        else:
-            secret_key = _get_env_value("MINIO_SECRET_KEY") or _get_env_value(
-                "MINIO_ROOT_PASSWORD"
-            )
-            if secret_key is None:
-                msg = "MINIO_SECRET_KEY или MINIO_ROOT_PASSWORD не задан в YAML или ENV"
-                raise ValueError(msg)
-            result["secret_key"] = secret_key
-        # Use SSL
-        if "use_ssl" in data:
-            use_ssl = data["use_ssl"]
-        else:
-            use_ssl_str = _get_env_value("MINIO_USE_SSL")
-            if use_ssl_str is None:
-                msg = "MINIO_USE_SSL не задан в YAML или ENV"
-                raise ValueError(msg)
-            use_ssl = use_ssl_str.lower() == "true"
-        result["use_ssl"] = use_ssl if isinstance(use_ssl, bool) else use_ssl
-        # Bucket name
-        if "bucket_name" in data:
-            result["bucket_name"] = data["bucket_name"]
-        else:
-            bucket_name = _get_env_value("MINIO_BUCKET_NAME")
-            if bucket_name is None:
-                msg = "MINIO_BUCKET_NAME не задан в YAML или ENV"
-                raise ValueError(msg)
-            result["bucket_name"] = bucket_name
-        # Documents bucket name (может быть не задан, используем значение по умолчанию из bucket_name)
-        if "documents_bucket_name" in data:
-            result["documents_bucket_name"] = data["documents_bucket_name"]
-        else:
-            documents_bucket_name = _get_env_value("MINIO_DOCUMENTS_BUCKET_NAME")
-            if documents_bucket_name is None:
-                # Если не задан, используем bucket_name с суффиксом -documents
-                result["documents_bucket_name"] = result.get(
-                    "bucket_name", "astrachat-temp"
-                ).replace("-temp", "-documents")
-            else:
-                result["documents_bucket_name"] = documents_bucket_name
-        # RAG buckets (память / проекты): YAML > ENV > производное от bucket_name
+            result["documents_bucket_name"] = result.get(
+                "bucket_name", "astrachat-temp"
+            ).replace("-temp", "-documents")
+        # RAG buckets: ENV > YAML > производное от bucket_name
         for field, env_name, suffix in (
             ("memory_rag_bucket_name", "MINIO_MEMORY_RAG_BUCKET_NAME", "-memory-rag"),
             ("project_rag_bucket_name", "MINIO_PROJECT_RAG_BUCKET_NAME", "-project-rag"),
         ):
-            if data.get(field):
-                result[field] = data[field]
-                continue
-            env_value = _get_env_value(env_name)
+            env_value = _env_or_yaml(data, field, env_name, required=False)
             if env_value:
                 result[field] = env_value
             else:

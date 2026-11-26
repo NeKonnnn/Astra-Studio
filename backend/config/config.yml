@@ -183,31 +183,25 @@ memory:
   file_path: "/app/memory"
   max_history_length: 100
 
+# Секреты (password / access_key / secret_key / bucket_*) задаются через ENV (.env / compose).
+# ENV имеет приоритет над YAML — иначе one-liner со случайными паролями ломает подключение.
 mongodb:
   host: "mongodb"
   port: 27017
   database: "astrachat"
   user: "admin"
-  password: "password"
 
 postgresql:
   host: "postgresql"
   port: 5432
   database: "astrachat"
   user: "admin"
-  password: "password"
   embedding_dim: 384
 
 minio:
   endpoint: "minio"
   port: 9000
-  access_key: "minioadmin"
-  secret_key: "minioadmin"
   use_ssl: false
-  bucket_name: "memoai-temp"
-  documents_bucket_name: "astrachat-documents"
-  memory_rag_bucket_name: "astrachat-memory-rag"
-  project_rag_bucket_name: "astrachat-project-rag"
 
 # ========================================================
 # ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ (ComfyUI, как Open WebUI)

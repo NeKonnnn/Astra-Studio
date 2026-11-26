@@ -17,6 +17,13 @@ services:
       # Параллельные стримы в разных чатах: независимые Llama-реплики одной модели.
       # При нехватке VRAM поставьте LLM_INFERENCE_REPLICAS=1.
       - LLM_INFERENCE_REPLICAS=${LLM_INFERENCE_REPLICAS:-2}
+      # Ollama/Open WebUI-стиль: прогрев дефолта, idle-unload, потоки CPU.
+      - LLM_EAGER_LOAD=${LLM_EAGER_LOAD:-1}
+      - LLM_WARMUP_ON_LOAD=${LLM_WARMUP_ON_LOAD:-1}
+      - LLM_KEEP_ALIVE_SECONDS=${LLM_KEEP_ALIVE_SECONDS:-0}
+      - LLM_MAX_LOADED_MODELS=${LLM_MAX_LOADED_MODELS:-4}
+      - LLM_N_THREADS=${LLM_N_THREADS:-}
+      - LLM_N_THREADS_BATCH=${LLM_N_THREADS_BATCH:-}
     volumes:
       # Только основной набор весов (на хосте: ./models/llm/… → в контейнере /app/models/llm/…)
       - ./models/llm:/app/models/llm:ro
@@ -378,8 +385,9 @@ services:
       - SVC_OCR_URL=http://ocr-service:8000
       - SVC_LLM_URL=http://llm-service:8000
     depends_on:
+      # service_started: без скачанных RAG-весов health был 503 и ломал весь up
       rag-models:
-        condition: service_healthy
+        condition: service_started
       postgresql:
         condition: service_healthy
       ocr-service:
@@ -464,8 +472,8 @@ services:
     image: pgsty/silo:RELEASE.2026-11-12T00-00-00Z
     container_name: astrachat-minio
     ports:
-      - "9000:9000"  # API порт
-      - "9001:9001"  # Console порт
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
