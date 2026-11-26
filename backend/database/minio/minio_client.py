@@ -418,17 +418,24 @@ class MinIOClient:
 _minio_client: Optional[MinIOClient] = None
 
 
-def get_minio_client() -> Optional[MinIOClient]:
-    """
-    Получает глобальный экземпляр MinIO клиента (singleton)
+def reset_minio_client() -> None:
+    """Сбрасывает singleton — следующий get_minio_client() пересоздаст клиент."""
+    global _minio_client
+    _minio_client = None
 
-    Returns:
-        MinIOClient или None, если MinIO недоступен
+
+def get_minio_client(*, force_reconnect: bool = False) -> Optional[MinIOClient]:
+    """
+    Получает глобальный экземпляр MinIO клиента (singleton).
+
+    force_reconnect=True — пересоздать клиент (после смены пароля / SignatureDoesNotMatch).
     """
     global _minio_client
     if not MINIO_AVAILABLE:
         logger.warning("MinIO библиотека не установлена. Установите: pip install minio")
         return None
+    if force_reconnect:
+        _minio_client = None
     if _minio_client is None:
         try:
             logger.debug("Инициализация MinIO клиента...")
@@ -442,5 +449,6 @@ def get_minio_client() -> Optional[MinIOClient]:
                 exc,
                 exc_info=True,
             )
+            _minio_client = None
             return None
     return _minio_client

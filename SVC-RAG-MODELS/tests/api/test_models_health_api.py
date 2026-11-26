@@ -21,11 +21,11 @@ class TestHealth:
             "embedding_loaded": False, "reranker_loaded": False,
         }
 
-    async def test_unhealthy_when_models_fail(self, client, fake_ml, models_dir):
+    async def test_degraded_when_models_fail(self, client, fake_ml, models_dir):
         r = await client.get("/v1/health")
-        assert r.status_code == 503
+        assert r.status_code == 200
         body = r.json()
-        assert body["status"] == "unhealthy"
+        assert body["status"] == "degraded"
         assert body["embedding_loaded"] is False and body["reranker_loaded"] is False
         assert body["models_dir"] == str(models_dir)
 

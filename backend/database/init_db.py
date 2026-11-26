@@ -350,6 +350,9 @@ def init_minio() -> bool:
     try:
         logger.info("Инициализация MinIO...")
         minio_client = get_minio_client()
+        if minio_client is None:
+            # Повтор после кратковременной недоступности хранилища на старте compose
+            minio_client = get_minio_client(force_reconnect=True)
         if minio_client:
             endpoint = minio_client.endpoint
             bucket_temp = minio_client.bucket_name
@@ -357,10 +360,9 @@ def init_minio() -> bool:
             logger.info(f"Bucket (temp): {bucket_temp}")
             logger.info("MinIO успешно инициализирован")
             return True
-        else:
-            logger.warning("MinIO клиент недоступен")
-            logger.warning("  Будет использоваться локальное хранение файлов")
-            return False
+        logger.warning("MinIO клиент недоступен")
+        logger.warning("  Будет использоваться локальное хранение файлов")
+        return False
     except Exception as e:
         logger.error(f"Ошибка при инициализации MinIO: {e}")
         logger.warning("  Будет использоваться локальное хранение файлов")

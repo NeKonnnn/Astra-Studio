@@ -15,7 +15,7 @@ services:
       - ./models:/app/models:ro  # Монтирование локальных моделей (эмбеддинги и др.)
     environment:
       - PYTHONPATH=/app
-      - LLM_SERVICE_URL=${LLM_SVC_INTERNAL_URL:-http://llm-svc:8000}
+      - LLM_SERVICE_URL=${LLM_SVC_INTERNAL_URL:-http://llm-service:8000}
       - USE_LLM_SVC=${USE_LLM_SVC:-true}
       - LLM_SVC_TIMEOUT=${LLM_SVC_TIMEOUT:-300}
       - LLM_SVC_RETRY_ATTEMPTS=${LLM_SVC_RETRY_ATTEMPTS:-3}

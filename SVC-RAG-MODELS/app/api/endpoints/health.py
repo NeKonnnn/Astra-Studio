@@ -9,7 +9,11 @@ router = APIRouter()
 
 @router.get("/health")
 async def health():
-    # Проверка: жив ли сервис и подняты ли модели
+    """Процесс жив → 200 (compose healthcheck).
+
+    Без скачанных весов возвращаем status=degraded, а не 503 — иначе свежий
+    one-liner не поднимает svc-rag/backend, и UI для загрузки моделей недоступен.
+    """
     if not settings.rag_models.enabled:
         return JSONResponse(
             content={
@@ -22,14 +26,14 @@ async def health():
     handler = await get_rag_models_handler()
     if handler is None:
         return JSONResponse(
-            status_code=503,
             content={
-                "status": "unhealthy",
+                "status": "degraded",
                 "service": "rag-models",
                 "embedding_loaded": False,
                 "reranker_loaded": False,
                 "models_dir": settings.rag_models.models_dir,
-            },
+                "detail": "models not loaded yet — download via UI",
+            }
         )
     return JSONResponse(
         content={

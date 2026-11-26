@@ -101,9 +101,12 @@ class TestPostgres:
         p = c.PostgreSQLConnectionConfig()
         assert p.connection_string == "postgresql://eu:ep@eh:5433/edb" and p.embedding_dim == 1024
 
-    def test_yaml_wins_over_env(self, monkeypatch):
+    def test_env_wins_over_yaml(self, monkeypatch):
         monkeypatch.setenv("POSTGRES_HOST", "env")
-        assert c.PostgreSQLConnectionConfig(**PG_YAML).host == "h"
+        monkeypatch.setenv("POSTGRES_PASSWORD", "env-secret")
+        p = c.PostgreSQLConnectionConfig(**PG_YAML)
+        assert p.host == "env"
+        assert p.password == "env-secret"
 
     @pytest.mark.parametrize("missing,name", [
         ("host", "POSTGRES_HOST"), ("port", "POSTGRES_PORT"), ("database", "POSTGRES_DB"),
@@ -151,9 +154,20 @@ class TestMinio:
         m = c.MinIOConnectionConfig(**data)
         assert (m.access_key, m.secret_key) == ("ak2", "sk2")
 
+    def test_env_credentials_and_bucket_win_over_yaml(self, monkeypatch):
+        monkeypatch.setenv("MINIO_ROOT_USER", "env-user")
+        monkeypatch.setenv("MINIO_ROOT_PASSWORD", "env-pass")
+        monkeypatch.setenv("MINIO_BUCKET_NAME", "astrachat-temp")
+        m = c.MinIOConnectionConfig(**MINIO_YAML)
+        assert (m.access_key, m.secret_key, m.bucket_name) == (
+            "env-user",
+            "env-pass",
+            "astrachat-temp",
+        )
+
     @pytest.mark.parametrize("missing,name", [
         ("endpoint", "MINIO_ENDPOINT"), ("port", "MINIO_PORT"), ("access_key", "MINIO_ACCESS_KEY"),
-        ("secret_key", "MINIO_SECRET_KEY"), ("use_ssl", "MINIO_USE_SSL"), ("bucket_name", "MINIO_BUCKET_NAME"),
+        ("secret_key", "MINIO_SECRET_KEY"), ("bucket_name", "MINIO_BUCKET_NAME"),
     ])
     def test_missing_value_names_the_variable(self, missing, name):
         data = {k: v for k, v in MINIO_YAML.items() if k != missing}

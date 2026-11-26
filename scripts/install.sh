@@ -12,6 +12,7 @@
 #   ASTRA_HF_TOKEN      Hugging Face token (optional)
 #   ASTRA_SKIP_PULL=1   skip docker compose pull
 #   ASTRA_FORCE_BUILD=1 always docker compose build
+#   ASTRA_ALLOW_LOCAL_BUILD=1  on pull failure, build locally (default: abort)
 #   ASTRA_INSTALL_DOCKER=0  do not auto-install Docker/git (default: 1)
 # SPDX-License-Identifier: MIT
 set -e
@@ -299,6 +300,7 @@ export ASTRA_VERSION
 # --- pull or build ---
 step "Fetching container images (ASTRA_VERSION=$ASTRA_VERSION)"
 PULL_OK=0
+ASTRA_ALLOW_LOCAL_BUILD="${ASTRA_ALLOW_LOCAL_BUILD:-0}"
 if [ "$ASTRA_FORCE_BUILD" = "1" ]; then
   warn "ASTRA_FORCE_BUILD=1 — building locally (slow)"
 else
@@ -306,10 +308,14 @@ else
     # shellcheck disable=SC2086
     if $COMPOSE $COMPOSE_RELEASE $PROFILE_ARGS pull; then
       PULL_OK=1
-      ok "Pulled prebuilt images from GHCR"
+      ok "Pulled prebuilt images (GHCR + base images)"
       COMPOSE_FILES="$COMPOSE_RELEASE"
     else
-      warn "GHCR pull failed (images may not be published yet) — falling back to local build"
+      warn "docker compose pull failed (GHCR or third-party image: minio/mongo/postgres/…)"
+      if [ "$ASTRA_FORCE_BUILD" != "1" ] && [ "$ASTRA_ALLOW_LOCAL_BUILD" != "1" ]; then
+        die "Aborting. Fix registry access / image names, or set ASTRA_FORCE_BUILD=1 / ASTRA_ALLOW_LOCAL_BUILD=1 for a local build."
+      fi
+      warn "ASTRA_ALLOW_LOCAL_BUILD/FORCE_BUILD set — falling back to local build"
       COMPOSE_FILES="$COMPOSE_LOCAL"
     fi
   else
