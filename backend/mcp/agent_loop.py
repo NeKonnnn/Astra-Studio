@@ -201,6 +201,7 @@ class McpAgentLoop:
         subagent_ctx=None,
         subagent_config=None,
         should_stop: Optional[StopCheck] = None,
+        stream_callback: Optional[Any] = None,
     ) -> AgentLoopResult:
         all_tools = list(native_tools or []) + list(mcp_tools or [])
         native_n = len(native_tools or [])
@@ -307,6 +308,7 @@ class McpAgentLoop:
                     subagent_ctx=subagent_ctx,
                     subagent_config=subagent_config,
                     should_stop=should_stop,
+                    stream_callback=stream_callback,
                 )
             return await self._run_native(
                 messages=messages,
@@ -323,6 +325,7 @@ class McpAgentLoop:
                 subagent_ctx=subagent_ctx,
                 subagent_config=subagent_config,
                 should_stop=should_stop,
+                stream_callback=stream_callback,
             )
 
     async def _run_native(
@@ -342,6 +345,7 @@ class McpAgentLoop:
         subagent_ctx=None,
         subagent_config=None,
         should_stop: Optional[StopCheck] = None,
+        stream_callback: Optional[Any] = None,
     ) -> AgentLoopResult:
         openai_tools = to_openai_tools(tools)
         working = list(messages)
@@ -442,6 +446,8 @@ class McpAgentLoop:
                         event_callback=event_callback,
                         subagent_ctx=subagent_ctx,
                         subagent_config=subagent_config,
+                        should_stop=should_stop,
+                        stream_callback=stream_callback,
                     )
                 else:
                     log_llm_result(
@@ -768,14 +774,37 @@ class McpAgentLoop:
             messages_count=len(final_messages),
         )
         t_final = time.perf_counter()
-        final = await provider.chat(
-            final_messages,
-            model_id,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            request_extra=req_extra,
-        )
+        streamed = False
+        if stream_callback is not None and hasattr(provider, "stream_chat"):
+
+            def _cb(chunk, acc, stream_role: str = "content"):
+                if _is_stopped(should_stop):
+                    return False
+                return stream_callback(chunk, acc, stream_role)
+
+            final = await provider.stream_chat(
+                final_messages,
+                model_id,
+                _cb,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                request_extra=req_extra,
+            )
+            streamed = True
+        else:
+            final = await provider.chat(
+                final_messages,
+                model_id,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                request_extra=req_extra,
+            )
         content = append_download_links_to_content(final, attachments)
+        if streamed and content != final and stream_callback is not None:
+            try:
+                stream_callback("", content, "content")
+            except TypeError:
+                stream_callback("", content)
         log_llm_result(
             step=limit,
             limit=limit,
@@ -798,6 +827,7 @@ class McpAgentLoop:
             iterations=max_iterations,
             attachments=attachments,
             new_messages=working[len(messages) :],
+            content_streamed=streamed,
         )
 
 

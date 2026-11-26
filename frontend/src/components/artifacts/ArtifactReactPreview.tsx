@@ -1,70 +1,76 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState, useEffect, useCallback } from 'react';
 import { Box } from '@mui/material';
 import { SandpackProvider, SandpackPreview } from '@codesandbox/sandpack-react';
 import { useCommittedContent } from '../../hooks/useCommittedContent';
+import {
+  REACT_ARTIFACT_DEPENDENCIES,
+  buildSandpackFiles,
+  buildSandpackOptions,
+} from '../../utils/sandpackArtifacts';
+import {
+  ARTIFACTS_SELECTION_CHANGED_EVENT,
+  getEffectiveArtifactsSettings,
+} from '../../utils/artifactsSelectionStorage';
+import { AGENT_ARTIFACTS_CHANGED_EVENT } from '../../utils/agentArtifactsEnabled';
+import { useAppContext } from '../../contexts/AppContext';
 
 interface Props {
   content: string;
   isStreaming?: boolean;
 }
 
-function normalizeReactEntry(raw: string): string {
-  let code = (raw || '').trim();
-  if (!code) {
-    return `export default function Empty() { return <div>Empty</div>; }`;
-  }
-  // Убираем fence language leftovers
-  if (code.startsWith('tsx') || code.startsWith('jsx') || code.startsWith('typescript')) {
-    code = code.replace(/^(tsx|jsx|typescript|javascript)\s*\n/, '');
-  }
-  if (!/export\s+default/.test(code)) {
-    // Если есть именованный компонент App / Component — экспортируем его
-    const named = code.match(/(?:function|const)\s+([A-Z][A-Za-z0-9_]*)/);
-    if (named) {
-      code = `${code}\nexport default ${named[1]};`;
-    } else {
-      code = `export default function ArtifactApp() {\n  return (\n${code}\n  );\n}`;
-    }
-  }
-  return code;
-}
-
+/**
+ * React-артефакт через Sandpack (как LibreChat): shadcn shared files при shadcn_enabled.
+ * На стриме не монтируем (remount → Virtuoso #185).
+ */
 export default function ArtifactReactPreview({ content, isStreaming = false }: Props) {
-  // Sandpack на каждый токен → remount Virtuoso → #185. Как HTML: превью только после стрима.
+  const { state: appState } = useAppContext();
+  const chatId = appState.currentChatId;
   const committed = useCommittedContent(content || '', isStreaming, isStreaming ? 1200 : 500);
 
-  const files = useMemo(
-    () => ({
-      '/App.tsx': normalizeReactEntry(committed),
-      '/index.tsx': `import React from "react";
-import { createRoot } from "react-dom/client";
-import App from "./App";
-import "./styles.css";
+  const readShadcn = useCallback(
+    () => Boolean(getEffectiveArtifactsSettings(chatId).shadcn_enabled),
+    [chatId],
+  );
+  const [includeShadcn, setIncludeShadcn] = useState(readShadcn);
 
-const root = createRoot(document.getElementById("root")!);
-root.render(<App />);
-`,
-      '/styles.css': `html, body, #root { margin: 0; min-height: 100%; }
-body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
-`,
-      '/public/index.html': `<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <script src="https://cdn.tailwindcss.com"></script>
-    <title>Artifact</title>
-  </head>
-  <body>
-    <div id="root"></div>
-  </body>
-</html>
-`,
-    }),
-    [committed],
+  useEffect(() => {
+    const sync = () => setIncludeShadcn(readShadcn());
+    sync();
+    window.addEventListener(ARTIFACTS_SELECTION_CHANGED_EVENT, sync as EventListener);
+    window.addEventListener(AGENT_ARTIFACTS_CHANGED_EVENT, sync);
+    window.addEventListener('agentSelected', sync as EventListener);
+    window.addEventListener('storage', sync);
+    return () => {
+      window.removeEventListener(ARTIFACTS_SELECTION_CHANGED_EVENT, sync as EventListener);
+      window.removeEventListener(AGENT_ARTIFACTS_CHANGED_EVENT, sync);
+      window.removeEventListener('agentSelected', sync as EventListener);
+      window.removeEventListener('storage', sync);
+    };
+  }, [readShadcn]);
+
+  const files = useMemo(
+    () => buildSandpackFiles(committed, { includeShadcn }),
+    [committed, includeShadcn],
+  );
+  const options = useMemo(() => buildSandpackOptions(), []);
+  const dependencies = useMemo(
+    () =>
+      includeShadcn
+        ? REACT_ARTIFACT_DEPENDENCIES
+        : {
+            'lucide-react': REACT_ARTIFACT_DEPENDENCIES['lucide-react'],
+            recharts: REACT_ARTIFACT_DEPENDENCIES.recharts,
+            three: REACT_ARTIFACT_DEPENDENCIES.three,
+            'date-fns': REACT_ARTIFACT_DEPENDENCIES['date-fns'],
+            'react-day-picker': REACT_ARTIFACT_DEPENDENCIES['react-day-picker'],
+            clsx: REACT_ARTIFACT_DEPENDENCIES.clsx,
+            'tailwind-merge': REACT_ARTIFACT_DEPENDENCIES['tailwind-merge'],
+            'class-variance-authority': REACT_ARTIFACT_DEPENDENCIES['class-variance-authority'],
+          },
+    [includeShadcn],
   );
 
-  // На стриме Sandpack не монтируем (remount → Virtuoso #185); статус — только в шапке карточки.
   if (isStreaming) {
     return <Box sx={{ width: '100%', height: '100%', minHeight: 240, bgcolor: '#e8eaed' }} />;
   }
@@ -79,22 +85,9 @@ body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
         template="react-ts"
         theme="light"
         files={files}
-        options={{
-          externalResources: ['https://cdn.tailwindcss.com'],
-          recompileMode: 'delayed',
-          recompileDelay: 400,
-        }}
+        options={options}
         customSetup={{
-          dependencies: {
-            'lucide-react': '^0.394.0',
-            recharts: '2.12.7',
-            three: '^0.167.1',
-            'date-fns': '^3.3.1',
-            'react-day-picker': '^8.10.1',
-            clsx: '^2.1.1',
-            'tailwind-merge': '^2.3.0',
-            'class-variance-authority': '^0.7.0',
-          },
+          dependencies,
         }}
       >
         <SandpackPreview

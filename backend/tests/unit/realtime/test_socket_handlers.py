@@ -51,13 +51,17 @@ def _clean_state():
     h._stopped_upto.clear()
     h.stop_generation_flags.clear()
     h.stop_transcription_flags.clear()
+    h._active_generations.clear()
     h._my_generation.set(0)
     h._stream_conversation_id.set(None)
     h._stream_request_id.set(None)
+    h._user_rooms.clear()
     yield
     h._my_generation.set(0)
     h._stream_conversation_id.set(None)
     h._stream_request_id.set(None)
+    h._active_generations.clear()
+    h._user_rooms.clear()
 
 
 @pytest.fixture
@@ -238,6 +242,62 @@ class TestSimpleEvents:
         await sio.handlers["stop_transcription"]("s", {})
 
         assert h.stop_transcription_flags["s"] is True and sio.names() == ["transcription_stopped"]
+
+
+class TestActiveGenerationResume:
+    def test_register_update_list_and_finish(self):
+        h._register_active_generation(
+            user_id="u1",
+            request_id="r1",
+            conversation_id="c1",
+            user_message="привет",
+            user_message_id="m1",
+            sid="old-sid",
+        )
+        h._update_active_generation("r1", accumulated="часть", stream_seq=3)
+        gens = h._list_active_generations_for_user("u1")
+        assert len(gens) == 1
+        assert gens[0]["accumulated"] == "часть" and gens[0]["stream_seq"] == 3
+        assert h._list_active_generations_for_user("u1", "r1")[0]["request_id"] == "r1"
+        assert h._list_active_generations_for_user("other") == []
+        h._finish_active_generation("r1")
+        assert h._list_active_generations_for_user("u1") == []
+
+    def test_gen_room_falls_back_to_user_room_from_snapshot_after_disconnect(self):
+        h._register_active_generation(
+            user_id="alice",
+            request_id="r9",
+            conversation_id="c9",
+            sid="dead-sid",
+        )
+        # как после F5: исходный sid уже вычищен из _user_rooms
+        assert "dead-sid" not in h._user_rooms
+        room = h._gen_room("dead-sid", {"request_id": "r9", "conversation_id": "c9"})
+        assert room == "user:alice"
+
+    async def test_resume_generations_returns_snapshot(self, sio):
+        # Без token — _get_socket_user_context доверяет сессии (как в TestSocketUserContext).
+        sio.sessions["s2"] = {"user": {"user_id": "alice"}}
+        h._register_active_generation(
+            user_id="alice",
+            request_id="r1",
+            conversation_id="c1",
+            user_message="q",
+            user_message_id="um1",
+            sid="old",
+        )
+        h._update_active_generation("r1", accumulated="hello", thinking="t", stream_seq=2)
+
+        await sio.handlers["resume_generations"]("s2", {})
+        name, payload, room = sio.emitted[-1]
+        assert name == "generation_resume" and room == "s2"
+        assert len(payload["generations"]) == 1
+        assert payload["generations"][0]["accumulated"] == "hello"
+        assert payload["generations"][0]["thinking"] == "t"
+
+        await sio.handlers["resume_generations"]("s2", {"request_id": "missing"})
+        assert sio.emitted[-1][1]["generations"] == []
+        assert sio.emitted[-1][1]["request_id"] == "missing"
 
 
 class TestGenerationBookkeeping:

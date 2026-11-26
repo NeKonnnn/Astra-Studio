@@ -68,6 +68,13 @@ RUN grep -v '^llama-cpp-python' requirements.txt > requirements-no-llama.txt && 
 # Шаг 4: llama-cpp-python CPU wheel (Qwen3.5 / qwen35 >= 0.3.17).
 # cu121 падает с exit 132 на RTX 50xx (sm_120) даже при gpu_layers=0 — используем CPU-сборку.
 RUN pip install --no-cache-dir --force-reinstall llama-cpp-python==0.3.28
+# # Шаг 4: llama-cpp-python с CUDA под RTX 50xx (Blackwell sm_120).
+# # Готовые cu121-колёса падают с exit 132 на sm_120 — собираем из исходников с arch=120.
+# # Нужен CUDA Toolkit в образе (devel) и драйвер хоста с поддержкой Blackwell.
+# ENV CMAKE_ARGS="-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120" \
+#     FORCE_CMAKE=1
+# RUN pip install --no-cache-dir --force-reinstall --no-binary=llama-cpp-python \
+#     "llama-cpp-python==0.3.28"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

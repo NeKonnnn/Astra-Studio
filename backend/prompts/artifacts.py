@@ -138,12 +138,16 @@ Rules:
    - SVG: "image/svg+xml" (use viewBox, not fixed width/height when possible)
    - Markdown: "text/markdown" or "text/md"
    - Mermaid: "application/vnd.mermaid"
+   - CSS: "text/css" — stylesheet previewed on a demo card in the browser sandbox.
+   - JavaScript: "text/javascript" — runs in a sandboxed iframe (console + #preview DOM node available as `preview`).
+   - Python: "text/x-python" — runs in-browser via Pyodide (stdlib only unless packages are preloaded). Prefer print() for output.
    - React: "application/vnd.react"
      - Default export, no required props (or defaults for all props).
      - Use Tailwind utility classes. Avoid arbitrary values like h-[600px].
      - Hooks: `import { useState } from "react"`.
      - Available libraries: lucide-react, recharts, three, date-fns, react-day-picker.
      - Do not import libraries that are not listed.
+     - The UI renders a live Sandpack preview (not just source).
 5. Include the complete updated content. Never write "// rest of the code remains the same...".
 6. If unsure whether content qualifies as an artifact, do not create one.
 7. Fence length: use a backtick fence longer than any fence inside the content (default 4 backticks).
@@ -204,6 +208,28 @@ export default function Counter() {
     </div>
   );
 }
+````
+:::
+
+User: напиши python-скрипт, который считает сумму списка
+
+Assistant:
+
+:::artifact{identifier="sum-list" type="text/x-python" title="Сумма списка"}
+````python
+nums = [1, 2, 3, 4, 5]
+print(sum(nums))
+````
+:::
+
+User: покажи простой JS в песочнице
+
+Assistant:
+
+:::artifact{identifier="js-hello" type="text/javascript" title="Hello JS"}
+````javascript
+preview.innerHTML = '<strong>Hello</strong>';
+console.log('ready');
 ````
 :::
 """.strip()

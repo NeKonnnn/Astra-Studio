@@ -83,6 +83,9 @@ class AgentLoopResult:
     # Сообщения, которые цикл добавил к входным (вызовы инструментов и их 
     # результаты), - чтобы повтор хода продолжил с них, а не с начала.
     new_messages: List[Dict[str, Any]] = field(default_factory=list)
+    # True, если финальный ответ уже ушёл в UI через stream_callback —
+    # handlers не должны повторно слать весь текст одним chat_chunk.
+    content_streamed: bool = False
 
 
 @dataclass

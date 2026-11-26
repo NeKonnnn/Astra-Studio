@@ -92,6 +92,7 @@ async def maybe_run_mcp_agent(
     subagent_config=None,
     agent_profile: Optional[dict] = None,
     should_stop: Optional[StopCheck] = None,
+    stream_callback: Optional[Any] = None,
 ) -> Optional[AgentLoopResult]:
     platform = get_mcp_platform()
     sub_ctx = subagent_ctx
@@ -204,6 +205,7 @@ async def maybe_run_mcp_agent(
             subagent_ctx=sub_ctx,
             subagent_config=sub_cfg,
             should_stop=should_stop,
+            stream_callback=stream_callback,
         )
 
     result = await _run_loop()
@@ -231,6 +233,7 @@ async def run_mcp_for_chat(
     inline_attachments: Optional[List[Any]] = None,
     user_question: Optional[str] = None,
     should_stop: Optional[StopCheck] = None,
+    stream_callback: Optional[Any] = None,
 ) -> Optional[AgentLoopResult]:
     """
     Единая точка входа MCP для socket и REST chat (B-40).
@@ -266,4 +269,5 @@ async def run_mcp_for_chat(
         subagent_ctx=sub_ctx,
         subagent_config=sub_cfg,
         should_stop=should_stop,
+        stream_callback=stream_callback,
     )

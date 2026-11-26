@@ -128,6 +128,9 @@ _PRESENTATION_SKILL_HINTS = (
 
 def _make_throttled_ui_stream_cb(sio, sid, loop) -> Tuple[Callable, Callable]:
     """sync callback для LLM-потока + async flush перед chat_complete."""
+    # ContextVar в _pump (другая задача) может быть пуст — фиксируем id при создании.
+    bound_cid = _stream_conversation_id.get()
+    bound_rid = _stream_request_id.get()
     lock = threading.Lock()
     state: Dict[str, Any] = {
         "last_emit_at": 0.0,
@@ -143,31 +146,32 @@ def _make_throttled_ui_stream_cb(sio, sid, loop) -> Tuple[Callable, Callable]:
             state["stream_seq"] = int(state["stream_seq"] or 0) + 1
             stream_seq = int(state["stream_seq"])
         with logged_suppress(logger):
+            raw = {
+                "chunk": chunk,
+                "accumulated": acc,
+                "stream_seq": stream_seq,
+            }
             if stream_role == "reasoning":
-                await sio.emit(
-                    "chat_thinking",
-                    _stream_ids_payload(
-                        {
-                            "chunk": chunk,
-                            "accumulated": acc,
-                            "thinking": chunk,
-                            "stream_role": "reasoning",
-                            "stream_seq": stream_seq,
-                        }
-                    ),
-                    room=sid,
+                raw["thinking"] = chunk
+                raw["stream_role"] = "reasoning"
+            if bound_cid:
+                raw["conversation_id"] = bound_cid
+            if bound_rid:
+                raw["request_id"] = bound_rid
+            payload = _stream_ids_payload(raw)
+            event = "chat_thinking" if stream_role == "reasoning" else "chat_chunk"
+            await sio.emit(event, payload, room=_gen_room(sid, payload))
+            if stream_role == "reasoning":
+                _update_active_generation(
+                    payload.get("request_id") or bound_rid,
+                    thinking=acc if isinstance(acc, str) else chunk,
+                    stream_seq=stream_seq,
                 )
             else:
-                await sio.emit(
-                    "chat_chunk",
-                    _stream_ids_payload(
-                        {
-                            "chunk": chunk,
-                            "accumulated": acc,
-                            "stream_seq": stream_seq,
-                        }
-                    ),
-                    room=sid,
+                _update_active_generation(
+                    payload.get("request_id") or bound_rid,
+                    accumulated=acc if isinstance(acc, str) else "",
+                    stream_seq=stream_seq,
                 )
 
     async def _pump() -> None:
@@ -399,14 +403,30 @@ def _gen_room(sid, payload: Optional[dict] = None) -> str:
     иначе — только в этот сокет.
 
     События без conversation_id/request_id нельзя ретранслировать на другие
-    вкладки того же пользователя — иначе стоп заденет чужой стрим."""
+    вкладки того же пользователя — иначе стоп заденет чужой стрим.
+
+    После F5 исходный sid пропадает из `_user_rooms` — тогда комнату берём
+    из снимка активной генерации (`user:{user_id}`).
+    """
     if payload is not None:
         has_ids = payload.get("conversation_id") or payload.get("request_id")
+        rid = payload.get("request_id")
     else:
         has_ids = _stream_conversation_id.get() or _stream_request_id.get()
+        rid = _stream_request_id.get()
     if not has_ids:
         return sid
-    return _user_rooms.get(sid, sid)
+    room = _user_rooms.get(sid)
+    if room:
+        return room
+    key = _active_generation_key(rid)
+    if key:
+        with _active_generations_lock:
+            snap = _active_generations.get(key)
+            uid = (snap or {}).get("user_id")
+            if uid:
+                return f"user:{uid}"
+    return sid
 
 
 # Номер генерации на сокет. Флаг остановки один на сокет, а генераций в один
@@ -486,6 +506,141 @@ def _generation_stopped(sid: str) -> bool:
 def _forget_generation(sid: str) -> None:
     _generation_seq.pop(sid, None)
     _stopped_upto.pop(sid, None)
+
+
+# ---------------------------------------------------------------------------
+# Active generation snapshots (F5 / новая вкладка → frontend resume_generations)
+# ---------------------------------------------------------------------------
+_active_generations: Dict[str, Dict[str, Any]] = {}
+_active_generations_lock = threading.Lock()
+
+
+def _active_generation_key(request_id: Optional[str]) -> Optional[str]:
+    rid = str(request_id or "").strip()
+    return rid or None
+
+
+def _register_active_generation(
+    *,
+    user_id: Optional[str],
+    request_id: Optional[str],
+    conversation_id: Optional[str],
+    user_message: str = "",
+    user_message_id: Optional[str] = None,
+    regenerate: bool = False,
+    assistant_message_id: Optional[str] = None,
+    sid: Optional[str] = None,
+) -> None:
+    """Запомнить идущую генерацию, чтобы после F5 фронт получил снимок."""
+    key = _active_generation_key(request_id)
+    uid = str(user_id or "").strip()
+    cid = str(conversation_id or "").strip()
+    if not key or not uid or not cid:
+        return
+    with _active_generations_lock:
+        _active_generations[key] = {
+            "request_id": key,
+            "conversation_id": cid,
+            "user_id": uid,
+            "accumulated": "",
+            "thinking": "",
+            "stream_seq": 0,
+            "started_at": time.time(),
+            "user_message": user_message or "",
+            "user_message_id": str(user_message_id).strip() if user_message_id else None,
+            "regenerate": bool(regenerate),
+            "assistant_message_id": str(assistant_message_id).strip() if assistant_message_id else None,
+            "mcp_events": [],
+            "agent_update": None,
+            "sid": sid,
+        }
+
+
+def _update_active_generation(
+    request_id: Optional[str],
+    *,
+    accumulated: Optional[str] = None,
+    thinking: Optional[str] = None,
+    stream_seq: Optional[int] = None,
+    mcp_event: Optional[dict] = None,
+    agent_update: Optional[dict] = None,
+) -> None:
+    key = _active_generation_key(request_id)
+    if not key:
+        return
+    with _active_generations_lock:
+        snap = _active_generations.get(key)
+        if not snap:
+            return
+        if accumulated is not None:
+            snap["accumulated"] = accumulated
+        if thinking is not None:
+            snap["thinking"] = thinking
+        if stream_seq is not None:
+            try:
+                snap["stream_seq"] = max(int(snap.get("stream_seq") or 0), int(stream_seq))
+            except (TypeError, ValueError):
+                pass
+        if isinstance(mcp_event, dict) and mcp_event:
+            events = snap.setdefault("mcp_events", [])
+            events.append(dict(mcp_event))
+            # не раздуваем бесконечно
+            if len(events) > 200:
+                del events[:-200]
+        if isinstance(agent_update, dict) and agent_update:
+            snap["agent_update"] = dict(agent_update)
+
+
+def _finish_active_generation(request_id: Optional[str] = None, *, sid: Optional[str] = None) -> None:
+    key = _active_generation_key(request_id)
+    with _active_generations_lock:
+        if key:
+            _active_generations.pop(key, None)
+            return
+        if sid:
+            for k, snap in list(_active_generations.items()):
+                if snap.get("sid") == sid:
+                    _active_generations.pop(k, None)
+
+
+def _list_active_generations_for_user(
+    user_id: Optional[str],
+    request_id: Optional[str] = None,
+) -> list:
+    uid = str(user_id or "").strip()
+    if not uid:
+        return []
+    asked = _active_generation_key(request_id)
+    out: list = []
+    with _active_generations_lock:
+        for key, snap in _active_generations.items():
+            if snap.get("user_id") != uid:
+                continue
+            if asked and key != asked:
+                continue
+            out.append(
+                {
+                    "request_id": snap.get("request_id"),
+                    "conversation_id": snap.get("conversation_id"),
+                    "accumulated": snap.get("accumulated") or "",
+                    "thinking": snap.get("thinking") or "",
+                    "stream_seq": int(snap.get("stream_seq") or 0),
+                    "started_at": snap.get("started_at"),
+                    "user_message": snap.get("user_message") or "",
+                    "user_message_id": snap.get("user_message_id"),
+                    "regenerate": bool(snap.get("regenerate")),
+                    "assistant_message_id": snap.get("assistant_message_id"),
+                    "mcp_events": list(snap.get("mcp_events") or []),
+                    "agent_update": snap.get("agent_update"),
+                }
+            )
+    return out
+
+
+async def _emit_generation_event(sio, sid: str, event: str, payload: Optional[dict] = None) -> None:
+    """Отправить chat_* / multi_llm_* в комнату пользователя (переживает F5)."""
+    data = _stream_ids_payload(payload)
+    await sio.emit(event, data, room=_gen_room(sid, data))
 
 async def _abort_chat_reindex(
     sio, sid, conversation_id, project_id, current_user
@@ -1050,7 +1205,59 @@ def register_handlers(sio):
                 payload["conversation_id"] = data.get("conversation_id")
             if data.get("request_id"):
                 payload["request_id"] = data.get("request_id")
+                _finish_active_generation(data.get("request_id"), sid=sid)
+            else:
+                _finish_active_generation(sid=sid)
+        else:
+            _finish_active_generation(sid=sid)
         await sio.emit("generation_stopped", payload, room=_gen_room(sid, payload))
+
+    @sio.event
+    async def resume_generations(sid, data):
+        """Снимки идущих генераций пользователя — после F5 / reconnect.
+
+        Фронт (SocketContext) шлёт resume_generations на connect и при
+        «чужом» chat_chunk без локальной сессии.
+        """
+        try:
+            user_ctx = await _get_socket_user_context(sio, sid)
+            if not user_ctx:
+                await sio.emit(
+                    "generation_resume",
+                    {"generations": [], "request_id": ""},
+                    room=sid,
+                )
+                return
+            user_id = user_ctx.get("user_id")
+            asked = ""
+            if isinstance(data, dict):
+                asked = str(data.get("request_id") or "").strip()
+            gens = _list_active_generations_for_user(user_id, asked or None)
+            await sio.emit(
+                "generation_resume",
+                {"generations": gens, "request_id": asked},
+                room=sid,
+            )
+            if gens:
+                logger.info(
+                    "resume_generations: sid=%s user=%s asked=%r count=%s",
+                    sid,
+                    user_id,
+                    asked or None,
+                    len(gens),
+                )
+        except Exception:
+            logger.exception("resume_generations failed sid=%s", sid)
+            await sio.emit(
+                "generation_resume",
+                {
+                    "generations": [],
+                    "request_id": str((data or {}).get("request_id") or "")
+                    if isinstance(data, dict)
+                    else "",
+                },
+                room=sid,
+            )
 
     @sio.event
     async def stop_transcription(sid, data):
@@ -1126,6 +1333,16 @@ def register_handlers(sio):
                 mem_mod.set_current_conversation_id(conversation_id)
             request_id = data.get("request_id", None)
             stream_id_tokens = _bind_stream_ids(conversation_id, request_id)
+            _register_active_generation(
+                user_id=(validated_user or {}).get("user_id"),
+                request_id=request_id,
+                conversation_id=conversation_id,
+                user_message=user_message,
+                user_message_id=user_message_id,
+                regenerate=bool(data.get("regenerate")),
+                assistant_message_id=data.get("assistant_message_id"),
+                sid=sid,
+            )
             use_kb_rag = bool(data.get("use_kb_rag", False))
             use_memory_library_rag = bool(data.get("use_memory_library_rag", False))
             _raw_inline_ctx = data.get("inline_context") or ""
@@ -2176,6 +2393,30 @@ async def _handle_multi_llm(
                         _model_events.append(event)
                         await sio.emit("chat_mcp_event", _stream_ids_payload(event), room=sid)
 
+                    _ml_loop = asyncio.get_running_loop()
+
+                    def _mcp_multi_stream_cb(chunk, acc, stream_role: str = "content"):
+                        if _generation_stopped(sid):
+                            return False
+                        if stream_role in ("heartbeat", "reasoning") or not streaming:
+                            return True
+                        # fire-and-forget emit из sync callback стрима
+                        asyncio.run_coroutine_threadsafe(
+                            sio.emit(
+                                "multi_llm_chunk",
+                                _stream_ids_payload(
+                                    {
+                                        "model": model_name,
+                                        "chunk": chunk,
+                                        "accumulated": acc,
+                                    }
+                                ),
+                                room=sid,
+                            ),
+                            _ml_loop,
+                        )
+                        return True
+
                     mcp_result = await run_mcp_for_chat(
                         tool_ids=tool_ids,
                         user_message=final_user_message,
@@ -2194,12 +2435,17 @@ async def _handle_multi_llm(
                             data.get("inline_attachments") if isinstance(data, dict) else None
                         ),
                         should_stop=lambda: _generation_stopped(sid),
+                        stream_callback=_mcp_multi_stream_cb if streaming else None,
                     )
                     if _generation_stopped(sid):
                         return None
                     if mcp_result is not None:
                         resp = carry_subagent_artifacts(mcp_result.content or "", _model_events)
-                        if streaming and resp:
+                        if (
+                            streaming
+                            and resp
+                            and not getattr(mcp_result, "content_streamed", False)
+                        ):
                             await sio.emit(
                                 "multi_llm_chunk",
                                 _stream_ids_payload({"model": model_name, "chunk": resp, "accumulated": resp}),
@@ -3401,6 +3647,17 @@ async def _handle_direct(
                     _system_output_tokens_floor(),
                 )
 
+            def _mcp_final_stream_cb(chunk, acc, stream_role: str = "content"):
+                """Стрим финального ответа MCP (JSON FC остаётся non-stream)."""
+                if _generation_stopped(sid):
+                    return False
+                if stream_role == "heartbeat":
+                    return True
+                if suppress_ui_stream:
+                    return True
+                visible_acc = f"{stream_prefix}{acc}" if stream_prefix else acc
+                return sync_stream_cb(chunk, visible_acc, stream_role)
+
             with activity_scope(
                 agent_id=_scope_agent_id,
                 agent_name=_scope_agent_name,
@@ -3428,6 +3685,11 @@ async def _handle_direct(
                     # получает его рядом с заданием родителя.
                     user_question=user_message,
                     should_stop=lambda: _generation_stopped(sid),
+                    stream_callback=(
+                        _mcp_final_stream_cb
+                        if streaming and not suppress_ui_stream
+                        else None
+                    ),
                 )
             if _generation_stopped(sid):
                 await sio.emit(
@@ -3556,7 +3818,14 @@ async def _handle_direct(
         )
     elif mcp_result is not None:
         response = mcp_result.content
-        if streaming and response and not suppress_ui_stream:
+        # Финальный ответ уже мог уйти токенами через stream_callback —
+        # повторный dump одним chunk дублировал бы текст в UI.
+        if (
+            streaming
+            and response
+            and not suppress_ui_stream
+            and not getattr(mcp_result, "content_streamed", False)
+        ):
             vis = f"{stream_prefix}{response}" if stream_prefix else response
             await sio.emit("chat_chunk", _stream_ids_payload({"chunk": response, "accumulated": vis}), room=sid)
         logger.info(
@@ -3762,7 +4031,8 @@ async def _handle_direct(
     chat_timer.meta["context_added"] = context_added
     chat_timer.log(logger)
     if emit_complete:
-        await sio.emit("chat_complete", payload, room=sid)
+        await sio.emit("chat_complete", payload, room=_gen_room(sid, payload))
+        _finish_active_generation(payload.get("request_id") or _stream_request_id.get(), sid=sid)
     rag_metrics = await _compute_and_emit_rag_metrics(
         sio,
         sid,

@@ -1,9 +1,12 @@
 /** Открытие артефакта в отдельной вкладке — показываем уже отрисованную схему/диаграмму. */
 
 import {
+  isCssArtifactType,
   isHtmlArtifactType,
+  isJavaScriptArtifactType,
   isMarkdownArtifactType,
   isMermaidArtifactType,
+  isPythonArtifactType,
   isSvgArtifactType,
   prepareMermaidSourceForRender,
   repairMermaidSource,
@@ -11,6 +14,11 @@ import {
   stripMermaidStyling,
 } from './artifacts';
 import { rewriteHtmlArtifactScriptsForOffline } from './htmlArtifactScripts';
+import {
+  buildCssSandboxSrcDoc,
+  buildJsSandboxSrcDoc,
+  buildPythonSandboxSrcDoc,
+} from './codeSandbox';
 
 export function sourceLabelForArtifactType(type: string): string {
   const t = (type || '').toLowerCase();
@@ -19,6 +27,11 @@ export function sourceLabelForArtifactType(type: string): string {
   if (t === 'text/html' || t === 'application/vnd.code-html') return 'HTML';
   if (t === 'image/svg+xml') return 'SVG';
   if (t === 'application/vnd.react' || t === 'application/vnd.ant.react') return 'React';
+  if (t === 'text/css') return 'CSS';
+  if (t === 'text/javascript' || t === 'application/javascript' || t === 'application/x-javascript') {
+    return 'JavaScript';
+  }
+  if (t === 'text/x-python' || t === 'application/x-python' || t === 'text/python') return 'Python';
   return 'код';
 }
 
@@ -223,6 +236,16 @@ export async function buildArtifactViewerDocument(opts: {
       `<div style="max-width:900px;margin:24px auto;padding:24px;background:#fff;border-radius:10px;box-shadow:0 2px 12px rgba(0,0,0,.08)">${simpleMarkdownToHtml(opts.content)}</div>`,
       title,
     );
+  }
+
+  if (isJavaScriptArtifactType(type)) {
+    return buildJsSandboxSrcDoc(opts.content);
+  }
+  if (isCssArtifactType(type)) {
+    return buildCssSandboxSrcDoc(opts.content);
+  }
+  if (isPythonArtifactType(type)) {
+    return buildPythonSandboxSrcDoc(opts.content);
   }
 
   // React и прочее — хотя бы не пустая страница; но пользователь просил схемы

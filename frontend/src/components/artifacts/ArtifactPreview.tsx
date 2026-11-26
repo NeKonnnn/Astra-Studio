@@ -2,9 +2,12 @@ import React from 'react';
 import { Box, Typography } from '@mui/material';
 import type { ChatArtifact } from '../../types/artifacts';
 import {
+  isCssArtifactType,
   isHtmlArtifactType,
+  isJavaScriptArtifactType,
   isMarkdownArtifactType,
   isMermaidArtifactType,
+  isPythonArtifactType,
   isReactArtifactType,
   isSvgArtifactType,
 } from '../../utils/artifacts';
@@ -13,6 +16,7 @@ import ArtifactMarkdownPreview from './ArtifactMarkdownPreview';
 import ArtifactMermaidPreview from './ArtifactMermaidPreview';
 import ArtifactSvgPreview from './ArtifactSvgPreview';
 import ArtifactReactPreview from './ArtifactReactPreview';
+import ArtifactCodeSandboxPreview from './ArtifactCodeSandboxPreview';
 
 interface Props {
   artifact: ChatArtifact;
@@ -44,6 +48,15 @@ export default function ArtifactPreview({ artifact, isStreaming = false }: Props
   }
   if (isReactArtifactType(type)) {
     return <ArtifactReactPreview content={content} isStreaming={streaming} />;
+  }
+  if (isJavaScriptArtifactType(type)) {
+    return <ArtifactCodeSandboxPreview content={content} kind="javascript" isStreaming={streaming} />;
+  }
+  if (isCssArtifactType(type)) {
+    return <ArtifactCodeSandboxPreview content={content} kind="css" isStreaming={streaming} />;
+  }
+  if (isPythonArtifactType(type)) {
+    return <ArtifactCodeSandboxPreview content={content} kind="python" isStreaming={streaming} />;
   }
 
   return (

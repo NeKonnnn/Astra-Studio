@@ -13,6 +13,7 @@ import PluginNavIcon from '@mui/icons-material/Extension';
 import SkillsNavIcon from '../../icons/SkillsIcon';
 import KnowledgeBaseIcon from '../../icons/KnowledgeBaseIcon';
 import McpNavIcon from '../../icons/McpIcon';
+import CloudOutlinedIcon from '@mui/icons-material/CloudOutlined';
 import { SidebarRailAgentIcon } from '../../constants/sidebarRailIcons';
 import { getAdminNavItemSx } from './adminSurfaces';
 
@@ -24,7 +25,8 @@ export type AdminHubSection =
   | 'skills'
   | 'knowledge-bases'
   | 'plugins'
-  | 'mcp';
+  | 'mcp'
+  | 'integrations';
 
 /** Тип сущности для дашборда использования. */
 export type AdminUsageEntityType =
@@ -72,8 +74,13 @@ export const ADMIN_NAV_GROUPS: NavGroup[] = [
         label: 'Базы знаний',
         icon: <KnowledgeBaseIcon sx={{ fontSize: 20 }} />,
       },
-      { id: 'plugins', label: 'Плагины', icon: <PluginNavIcon sx={{ fontSize: 20 }} /> },
-      { id: 'mcp', label: 'MCP', icon: <McpNavIcon sx={{ fontSize: 20 }} /> },
+      { id: 'plugins', label: 'Плагины', icon: <PluginNavIcon fontSize="small" /> },
+      { id: 'mcp', label: 'MCP', icon: <McpNavIcon fontSize="small" /> },
+      {
+        id: 'integrations',
+        label: 'Интеграции',
+        icon: <CloudOutlinedIcon fontSize="small" />,
+      },
     ],
   },
 ];

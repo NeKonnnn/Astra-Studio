@@ -50,6 +50,7 @@ from backend.routes.voice_assistant import router as voice_assistant_router
 from backend.routes.internal_rag import router as internal_rag_router
 from backend.routes.image_generation import router as image_generation_router
 from backend.routes.coding_agent import router as coding_agent_router
+from backend.routes.integrations import router as integrations_router
 from backend.middleware.metrics_middleware import MetricsMiddleware
 from backend.middleware.rate_limit import RateLimitMiddleware
 from backend.settings.cef_logger.cef_audit_middleware import CefAuditMiddleware
@@ -349,6 +350,7 @@ for _r in (
     mcp_router,
     image_generation_router,
     coding_agent_router,
+    integrations_router,
     *([plugins_router] if plugins_router is not None else []),
 ):
     app.include_router(_r)

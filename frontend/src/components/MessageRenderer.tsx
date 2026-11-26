@@ -18,7 +18,13 @@ import {
 } from '../utils/presentationViewer';
 import InlinePresentationViewer from './InlinePresentationViewer';
 import ArtifactCard from './artifacts/ArtifactCard';
-import { sanitizeMermaidSource, splitContentWithArtifacts, hoistPresentationArtifacts, guessCodeLanguage } from '../utils/artifacts';
+import {
+  sanitizeMermaidSource,
+  splitContentWithArtifacts,
+  hoistPresentationArtifacts,
+  guessCodeLanguage,
+  resolveRunnableFenceArtifact,
+} from '../utils/artifacts';
 import {
   looksLikeAsciiArtTable,
   splitTextWithMarkdownTables,
@@ -507,7 +513,9 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
     const text = content || '';
     if (
       text.includes(':::artifact{') ||
-      /```(?:html|htm|xhtml|mermaid|mmd|svg)\b/i.test(text) ||
+      /```(?:html|htm|xhtml|mermaid|mmd|svg|tsx|jsx|javascript|js|typescript|ts|css|python|py)\b/i.test(
+        text,
+      ) ||
       hasDeckSlideClass(text) ||
       isDeckPresentationHtml(text) ||
       (presentationExpected && /```/i.test(text)) ||
@@ -1688,6 +1696,30 @@ const MessageRendererComponent: React.FC<MessageRendererProps> = ({
             autoOpen={Boolean(isStreaming)}
           />
         );
+      }
+
+      // ```tsx / ```js / ```python / ```css без :::artifact → песочница / React preview.
+      if (artifactsAllowed) {
+        const runnable = resolveRunnableFenceArtifact(langLower, code);
+        if (runnable) {
+          const artifact = {
+            id: `fence-${runnable.type}-${messageId || 'msg'}-${index}`,
+            identifier: `code-sandbox-${index}`,
+            type: runnable.type,
+            title: runnable.title,
+            content: code,
+            closed: !streamFenceOpen,
+            messageId,
+          };
+          return (
+            <ArtifactCard
+              key={`fence-artifact-sandbox-${index}`}
+              artifact={artifact}
+              isStreaming={isStreaming}
+              autoOpen={Boolean(isStreaming)}
+            />
+          );
+        }
       }
 
       // Обычный HTML (диаграммы, страницы) → inline-артефакт, НЕ presentation viewer.

@@ -6,6 +6,10 @@ import {
   Tooltip,
   Typography,
   CircularProgress,
+  Menu,
+  MenuItem,
+  ListItemIcon,
+  ListItemText,
 } from '@mui/material';
 import {
   CHAT_INPUT_BORDER_DARK,
@@ -24,6 +28,8 @@ import {
   Square as SquareIcon,
   Description as DocumentIcon,
   PictureAsPdf as PdfIcon,
+  UploadFile as UploadFileIcon,
+  CloudOutlined as CloudOutlinedIcon,
 } from '@mui/icons-material';
 import ToolsIcon from '../icons/ToolsIcon';
 import ComposerExpandIcon from '../icons/ComposerExpandIcon';
@@ -82,6 +88,9 @@ export interface ChatInputBarProps {
   onFileSelect?: (files: FileList) => void;
   attachDisabled?: boolean;
   accept?: string;
+  /** Показать пункт «Яндекс.Диск» в меню вложений (как Google Drive в Open WebUI) */
+  yandexDiskEnabled?: boolean;
+  onYandexDiskClick?: () => void;
 
   /** Вложения к сообщению (MinIO + inline, без RAG) */
   inlineFiles?: InlineAttachment[];
@@ -162,6 +171,8 @@ export default function ChatInputBar({
   onFileSelect,
   attachDisabled = false,
   accept = INLINE_ATTACH_ACCEPT,
+  yandexDiskEnabled = false,
+  onYandexDiskClick,
   uploadedFiles = [],
   onFileRemove,
   isUploading = false,
@@ -909,39 +920,86 @@ export default function ChatInputBar({
 
   // ─── Переиспользуемые кнопки ────────────────────────────────────────────────
 
+  const [attachMenuAnchor, setAttachMenuAnchor] = useState<null | HTMLElement>(null);
+  const showAttachMenu = Boolean(yandexDiskEnabled && onYandexDiskClick && onAttachClick);
+
+  const handleAttachButtonClick = (event: React.MouseEvent<HTMLElement>) => {
+    if (showAttachMenu) {
+      setAttachMenuAnchor(event.currentTarget);
+      return;
+    }
+    onAttachClick?.();
+  };
+
   const attachBtn = onAttachClick ? (
-    <Tooltip title="Прикрепить файл к сообщению">
-      <IconButton
-        size="small"
-        onClick={onAttachClick}
-        disabled={attachDisabled || isUploading}
-        disableRipple
-        sx={{
-          color: inlineFiles.length > 0
-            ? 'primary.main'
-            : isDarkMode ? 'rgba(255, 255, 255, 0.7)' : 'rgba(0, 0, 0, 0.7)',
-          bgcolor: inlineFiles.length > 0
-            ? (isDarkMode ? 'rgba(91,105,255,0.15)' : 'rgba(91,105,255,0.08)')
-            : 'transparent',
-          border: inlineFiles.length > 0
-            ? `1px solid ${isDarkMode ? 'rgba(91,105,255,0.45)' : 'rgba(91,105,255,0.3)'}`
-            : '1px solid transparent',
-          '&:hover:not(:disabled)': {
-            bgcolor: isDarkMode ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.1)',
-            border: `1px solid ${isDarkMode ? 'rgba(255, 255, 255, 0.18)' : 'rgba(0, 0, 0, 0.15)'}`,
-            borderRadius: isClassic ? '8px' : '50%',
-            color: 'primary.main',
-            '& .MuiSvgIcon-root': { color: 'primary.main' },
-          },
-          '&:disabled': {
-            color: isDarkMode ? 'rgba(255, 255, 255, 0.3)' : 'rgba(0, 0, 0, 0.3)',
-          },
-          ...iconButtonSx(isDarkMode, isClassic),
-        }}
-      >
-        <AddIcon sx={{ fontSize: '1.25rem' }} />
-      </IconButton>
-    </Tooltip>
+    <>
+      <Tooltip title="Прикрепить файл к сообщению">
+        <IconButton
+          size="small"
+          onClick={handleAttachButtonClick}
+          disabled={attachDisabled || isUploading}
+          disableRipple
+          aria-haspopup={showAttachMenu ? 'menu' : undefined}
+          aria-expanded={showAttachMenu ? Boolean(attachMenuAnchor) : undefined}
+          sx={{
+            color: inlineFiles.length > 0
+              ? 'primary.main'
+              : isDarkMode ? 'rgba(255, 255, 255, 0.7)' : 'rgba(0, 0, 0, 0.7)',
+            bgcolor: inlineFiles.length > 0
+              ? (isDarkMode ? 'rgba(91,105,255,0.15)' : 'rgba(91,105,255,0.08)')
+              : 'transparent',
+            border: inlineFiles.length > 0
+              ? `1px solid ${isDarkMode ? 'rgba(91,105,255,0.45)' : 'rgba(91,105,255,0.3)'}`
+              : '1px solid transparent',
+            '&:hover:not(:disabled)': {
+              bgcolor: isDarkMode ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.1)',
+              border: `1px solid ${isDarkMode ? 'rgba(255, 255, 255, 0.18)' : 'rgba(0, 0, 0, 0.15)'}`,
+              borderRadius: isClassic ? '8px' : '50%',
+              color: 'primary.main',
+              '& .MuiSvgIcon-root': { color: 'primary.main' },
+            },
+            '&:disabled': {
+              color: isDarkMode ? 'rgba(255, 255, 255, 0.3)' : 'rgba(0, 0, 0, 0.3)',
+            },
+            ...iconButtonSx(isDarkMode, isClassic),
+          }}
+        >
+          <AddIcon sx={{ fontSize: '1.25rem' }} />
+        </IconButton>
+      </Tooltip>
+      {showAttachMenu && (
+        <Menu
+          anchorEl={attachMenuAnchor}
+          open={Boolean(attachMenuAnchor)}
+          onClose={() => setAttachMenuAnchor(null)}
+          anchorOrigin={{ vertical: 'top', horizontal: 'left' }}
+          transformOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+        >
+          <MenuItem
+            onClick={() => {
+              setAttachMenuAnchor(null);
+              onAttachClick();
+            }}
+          >
+            <ListItemIcon>
+              <UploadFileIcon fontSize="small" />
+            </ListItemIcon>
+            <ListItemText primary="С устройства" />
+          </MenuItem>
+          <MenuItem
+            onClick={() => {
+              setAttachMenuAnchor(null);
+              onYandexDiskClick?.();
+            }}
+          >
+            <ListItemIcon>
+              <CloudOutlinedIcon fontSize="small" />
+            </ListItemIcon>
+            <ListItemText primary="Яндекс.Диск" />
+          </MenuItem>
+        </Menu>
+      )}
+    </>
   ) : null;
 
   const settingsBtn = onSettingsClick ? (

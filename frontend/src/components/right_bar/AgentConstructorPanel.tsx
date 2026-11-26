@@ -2328,7 +2328,7 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
           <SectionHeader>Артефакты</SectionHeader>
           <Box sx={{ mt: 1, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
             {[
-              { label: 'Включить артефакты', help: 'Промпт артефактов + HTML/Mermaid/SVG/presentation viewer. Также viewer включается presentation-skill’ом. Уже показанные сообщения сохраняют viewer.', val: artifactsEnabled, set: handleArtifactsEnabledChange, disabled: readOnly },
+              { label: 'Включить артефакты', help: 'Промпт артефактов + live-превью: HTML/CSS/JS/Python/React (Sandpack)/Mermaid/SVG/презентации. Также viewer включается presentation-skill’ом. Уже показанные сообщения сохраняют viewer.', val: artifactsEnabled, set: handleArtifactsEnabledChange, disabled: readOnly },
               { label: 'Включить компоненты shadcn/ui', help: 'Доп. инструкции: модель может использовать shadcn/ui в React-артефактах (нужны включённые артефакты)', val: shadcnEnabled, set: handleShadcnEnabledChange, disabled: readOnly || !artifactsEnabled || userPromptMode },
               { label: 'Режим пользовательского промта', help: 'ВНИМАНИЕ: отключает стандартный промпт артефактов. Для теста оставьте ВЫКЛ. Включайте только если формат :::artifact описан вручную в инструкциях агента.', val: userPromptMode, set: handleUserPromptModeChange, disabled: readOnly || !artifactsEnabled || shadcnEnabled },
             ].map(({ label, help, val, set, disabled }) => (

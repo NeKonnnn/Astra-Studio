@@ -23,6 +23,7 @@ import AdminSkillsPanel from '../components/admin/AdminSkillsPanel';
 import AdminKnowledgeBasesPanel from '../components/admin/AdminKnowledgeBasesPanel';
 import AdminPluginsPanel from '../components/admin/AdminPluginsPanel';
 import AdminMcpPanel from '../components/admin/AdminMcpPanel';
+import AdminIntegrationsPanel from '../components/admin/AdminIntegrationsPanel';
 import AdminUsagePanel from '../components/admin/AdminUsagePanel';
 import AdminSessionsPanel from '../components/admin/AdminSessionsPanel';
 import AdminUsersPanel from '../components/admin/AdminUsersPanel';
@@ -178,6 +179,10 @@ export default function AdminHubPage() {
     mcp: {
       title: 'MCP',
       subtitle: 'Справочник: серверы MCP, статус и verify',
+    },
+    integrations: {
+      title: 'Интеграции',
+      subtitle: 'Статус внешних сервисов (file pickers); настройки через ENV',
     },
   };
 
@@ -384,6 +389,9 @@ export default function AdminHubPage() {
           )}
           {section === 'plugins' && <AdminPluginsPanel isDarkMode={isDarkMode} />}
           {section === 'mcp' && <AdminMcpPanel isDarkMode={isDarkMode} />}
+          {section === 'integrations' && (
+            <AdminIntegrationsPanel isDarkMode={isDarkMode} />
+          )}
         </Box>
       </Box>
     </Box>

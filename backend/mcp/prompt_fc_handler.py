@@ -127,8 +127,14 @@ async def _generate_final_answer(
     temperature: float,
     max_tokens: int,
     request_extra: Dict[str, Any],
-) -> str:
-    """Финальный ответ пользователю; после tools — жёстко опираемся на Tool results."""
+    stream_callback: Optional[Any] = None,
+    should_stop: Optional[Any] = None,
+) -> tuple[str, bool]:
+    """Финальный ответ пользователю; после tools — жёстко опираемся на Tool results.
+
+    Returns:
+        (text, streamed) — streamed=True, если ушёл через provider.stream_chat.
+    """
     messages = _strip_fc_nudges(list(working_messages))
     if tool_calls_executed > 0:
         messages = [{"role": "system", "content": FINAL_ANSWER_SYSTEM}, *messages]
@@ -137,13 +143,34 @@ async def _generate_final_answer(
             {"role": "system", "content": FINAL_ANSWER_FROM_CONTEXT_SYSTEM},
             *messages,
         ]
-    return await provider.chat(
+    if stream_callback is not None and hasattr(provider, "stream_chat"):
+
+        def _cb(chunk, acc, stream_role: str = "content"):
+            if callable(should_stop):
+                try:
+                    if should_stop():
+                        return False
+                except Exception:
+                    pass
+            return stream_callback(chunk, acc, stream_role)
+
+        text = await provider.stream_chat(
+            messages,
+            model_id,
+            _cb,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            request_extra=request_extra,
+        )
+        return (text or ""), True
+    text = await provider.chat(
         messages,
         model_id,
         temperature=temperature,
         max_tokens=max_tokens,
         request_extra=request_extra,
     )
+    return (text or ""), False
 
 
 def _render_tools_prompt(tools: List[McpToolInfo]) -> str:
@@ -196,6 +223,8 @@ async def run_prompt_json_fc(
     event_callback: Optional[McpEventCallback] = None,
     subagent_ctx=None,
     subagent_config=None,
+    should_stop: Optional[Any] = None,
+    stream_callback: Optional[Any] = None,
 ) -> AgentLoopResult:
     settings = get_settings()
     effective_model_path = (
@@ -388,7 +417,7 @@ async def run_prompt_json_fc(
                 # Проза/метки из FC-модели не доверяем как финалу: отвечаем по History
                 # (там уже RAG-контекст). Иначе модель пишет «ничего не нашёл» при hits>0.
                 try:
-                    answer = await _generate_final_answer(
+                    answer, streamed = await _generate_final_answer(
                         provider=provider,
                         model_id=model_id,
                         working_messages=working_messages,
@@ -396,6 +425,8 @@ async def run_prompt_json_fc(
                         temperature=temperature,
                         max_tokens=max_tokens,
                         request_extra=req_extra,
+                        stream_callback=stream_callback,
+                        should_stop=should_stop,
                     )
                     return AgentLoopResult(
                         content=answer or "",
@@ -404,6 +435,7 @@ async def run_prompt_json_fc(
                         iterations=step,
                         new_messages=working_messages[len(messages) :],
                         attachments=attachments,
+                        content_streamed=streamed,
                     )
                 except Exception:
                     log.exception(
@@ -499,7 +531,7 @@ async def run_prompt_json_fc(
                 messages_count=len(working_messages) + (1 if tool_calls_executed else 0),
             )
             t_final = time.perf_counter()
-            final = await _generate_final_answer(
+            final, streamed = await _generate_final_answer(
                 provider=provider,
                 model_id=model_id,
                 working_messages=working_messages,
@@ -507,8 +539,15 @@ async def run_prompt_json_fc(
                 temperature=temperature,
                 max_tokens=max_tokens,
                 request_extra=req_extra,
+                stream_callback=stream_callback,
+                should_stop=should_stop,
             )
             content = append_download_links_to_content(final, attachments)
+            if streamed and content != final and stream_callback is not None:
+                try:
+                    stream_callback("", content, "content")
+                except TypeError:
+                    stream_callback("", content)
             log_llm_result(
                 step=step,
                 limit=limit,
@@ -531,6 +570,7 @@ async def run_prompt_json_fc(
                 iterations=step,
                 attachments=attachments,
                 new_messages=working_messages[len(messages) :],
+                content_streamed=streamed,
             )
 
         # Отбрасываем точные повторы уже выполненных вызовов (модель зацикливается).
@@ -562,7 +602,7 @@ async def run_prompt_json_fc(
                 messages_count=len(working_messages) + 1,
             )
             t_final = time.perf_counter()
-            final = await _generate_final_answer(
+            final, streamed = await _generate_final_answer(
                 provider=provider,
                 model_id=model_id,
                 working_messages=working_messages,
@@ -570,8 +610,15 @@ async def run_prompt_json_fc(
                 temperature=temperature,
                 max_tokens=max_tokens,
                 request_extra=req_extra,
+                stream_callback=stream_callback,
+                should_stop=should_stop,
             )
             content = append_download_links_to_content(final, attachments)
+            if streamed and content != final and stream_callback is not None:
+                try:
+                    stream_callback("", content, "content")
+                except TypeError:
+                    stream_callback("", content)
             log_llm_result(
                 step=step,
                 limit=limit,
@@ -594,6 +641,7 @@ async def run_prompt_json_fc(
                 iterations=step,
                 attachments=attachments,
                 new_messages=working_messages[len(messages) :],
+                content_streamed=streamed,
             )
         calls = filtered_calls
 
@@ -879,7 +927,7 @@ async def run_prompt_json_fc(
         messages_count=len(working_messages) + (1 if tool_calls_executed else 0),
     )
     t_final = time.perf_counter()
-    final = await _generate_final_answer(
+    final, streamed = await _generate_final_answer(
         provider=provider,
         model_id=model_id,
         working_messages=working_messages,
@@ -887,8 +935,15 @@ async def run_prompt_json_fc(
         temperature=temperature,
         max_tokens=max_tokens,
         request_extra=req_extra,
+        stream_callback=stream_callback,
+        should_stop=should_stop,
     )
     content = append_download_links_to_content(final, attachments)
+    if streamed and content != final and stream_callback is not None:
+        try:
+            stream_callback("", content, "content")
+        except TypeError:
+            stream_callback("", content)
     log_llm_result(
         step=limit,
         limit=limit,
@@ -911,4 +966,5 @@ async def run_prompt_json_fc(
         iterations=max_iterations,
         attachments=attachments,
         new_messages=working_messages[len(messages) :],
+        content_streamed=streamed,
     )

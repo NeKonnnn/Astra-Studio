@@ -1278,6 +1278,15 @@ class MicroservicesEnabledConfig(BaseModel):
     model_config = {"extra": "allow"}
 
 
+from backend.settings.integrations_models import (  # noqa: E402
+    IntegrationsConfig,
+    OAuthAppConfig,
+)
+
+# Обратная совместимость для тестов/импортов
+YandexDiskIntegrationConfig = OAuthAppConfig
+
+
 class Settings(BaseModel):
     """Основной класс настроек приложения"""
 
@@ -1306,6 +1315,7 @@ class Settings(BaseModel):
     model_health: ModelHealthConfig = Field(default_factory=ModelHealthConfig)
     mcp: McpPlatformConfig = Field(default_factory=McpPlatformConfig)
     plugins: PluginsPlatformConfig = Field(default_factory=PluginsPlatformConfig)
+    integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
     microservices_enabled: MicroservicesEnabledConfig = Field(
         default_factory=MicroservicesEnabledConfig
     )

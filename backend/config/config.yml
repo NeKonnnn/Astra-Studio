@@ -70,6 +70,23 @@ coding_agent:
       host_hint: "F:/test_CLI"
 
 # ========================================================
+# EXTERNAL INTEGRATIONS (file pickers: Яндекс.Диск и т.п.)
+# Перекрывается ENV: ENABLE_YANDEX_DISK_INTEGRATION, YANDEX_DISK_CLIENT_ID,
+# YANDEX_DISK_REDIRECT_URI
+# ========================================================
+integrations:
+  yandex_disk: { enable: true, client_id: "", redirect_uri: "" }
+  yandex_mail: { enable: true, client_id: "", redirect_uri: "" }
+  yandex_calendar: { enable: true, client_id: "", redirect_uri: "" }
+  yandex_meetings: { enable: true, client_id: "", redirect_uri: "" }
+  google_drive: { enable: true, client_id: "", api_key: "", redirect_uri: "" }
+  gmail: { enable: true, client_id: "", redirect_uri: "" }
+  onedrive: { enable: true, client_id: "", redirect_uri: "" }
+  outlook: { enable: true, client_id: "", redirect_uri: "" }
+  notion: { enable: true, client_id: "", client_secret: "", redirect_uri: "" }
+  github: { enable: true, client_id: "", client_secret: "", redirect_uri: "" }
+
+# ========================================================
 # MCP PLATFORM (универсальная интеграция MCP-серверов)
 # ========================================================
 mcp:

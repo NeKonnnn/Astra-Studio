@@ -8,6 +8,7 @@ import {
   isMermaidArtifactType,
   isReactArtifactType,
   isSvgArtifactType,
+  resolveRunnableFenceArtifact,
   splitContentWithArtifacts,
   stripMermaidStyling,
 } from '@/utils/artifacts';
@@ -46,6 +47,10 @@ describe('type predicates', () => {
     expect(guessCodeLanguage('image/svg+xml')).toBe('xml');
     expect(guessCodeLanguage('text/markdown')).toBe('markdown');
     expect(guessCodeLanguage('application/vnd.react')).toBe('tsx');
+    expect(guessCodeLanguage('text/javascript')).toBe('javascript');
+    expect(guessCodeLanguage('text/css')).toBe('css');
+    expect(guessCodeLanguage('text/x-python')).toBe('python');
+    expect(artifactTypeLabel('text/x-python')).toBe('Python');
     expect(guessCodeLanguage('whatever')).toBe('plaintext');
   });
 });
@@ -96,7 +101,11 @@ describe('splitContentWithArtifacts', () => {
       ['markdown', 'text/markdown'],
       ['md', 'text/markdown'],
       ['tsx', 'application/vnd.react'],
-      ['javascript', 'application/vnd.react'],
+      ['javascript', 'text/javascript'],
+      ['js', 'text/javascript'],
+      ['css', 'text/css'],
+      ['python', 'text/x-python'],
+      ['py', 'text/x-python'],
     ];
     for (const [lang, expected] of cases) {
       const [artifact] = extractArtifactsFromText(fenced('identifier="x"', lang, 'body'));
@@ -117,6 +126,17 @@ describe('splitContentWithArtifacts', () => {
     expect(
       extractArtifactsFromText(fenced('identifier="x"', '', 'export default function App() { return null }'))[0].type,
     ).toBe('application/vnd.react');
+  });
+
+  it('javascript fence with JSX becomes React, plain JS stays javascript', () => {
+    expect(
+      extractArtifactsFromText(
+        fenced('identifier="x"', 'javascript', 'export default function App(){ return <div/> }'),
+      )[0].type,
+    ).toBe('application/vnd.react');
+    expect(
+      extractArtifactsFromText(fenced('identifier="x"', 'javascript', 'console.log(1)'))[0].type,
+    ).toBe('text/javascript');
   });
 
   it('trusts an explicit declared type over inference', () => {
@@ -173,6 +193,31 @@ describe('splitContentWithArtifacts', () => {
 
     // Изоляцию обеспечивает песочница iframe, а не парсер: тело остаётся как есть.
     expect(artifact.content).toContain('<script>alert(1)</script>');
+  });
+});
+
+describe('resolveRunnableFenceArtifact', () => {
+  it('maps sandbox fence languages', () => {
+    expect(resolveRunnableFenceArtifact('tsx', '')).toEqual({
+      type: 'application/vnd.react',
+      title: 'React',
+    });
+    expect(resolveRunnableFenceArtifact('css', '.a{}')).toEqual({
+      type: 'text/css',
+      title: 'CSS',
+    });
+    expect(resolveRunnableFenceArtifact('python', 'print(1)')).toEqual({
+      type: 'text/x-python',
+      title: 'Python',
+    });
+    expect(resolveRunnableFenceArtifact('js', 'console.log(1)')).toEqual({
+      type: 'text/javascript',
+      title: 'JavaScript',
+    });
+    expect(
+      resolveRunnableFenceArtifact('javascript', 'export default function App(){return <div/>}'),
+    ).toEqual({ type: 'application/vnd.react', title: 'React' });
+    expect(resolveRunnableFenceArtifact('mermaid', 'graph TD')).toBeNull();
   });
 });
 

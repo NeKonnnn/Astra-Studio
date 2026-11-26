@@ -78,6 +78,38 @@ function normalizeArtifactInput(text: string): string {
   return (text || '').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 }
 
+export function looksLikeReactSource(body: string): boolean {
+  const s = body || '';
+  if (/<\/?[A-Z][A-Za-z0-9]*/.test(s)) return true; // JSX <Component
+  if (/\bfrom\s+['"]react(?:-dom)?(?:\/client)?['"]/.test(s)) return true;
+  if (/^import\s+React\b/m.test(s)) return true;
+  if (/export\s+default\s+function\s+[A-Z]/.test(s)) return true;
+  return false;
+}
+
+/**
+ * Обычный ```tsx / ```js / ```python без :::artifact → тип для ArtifactCard / песочницы.
+ * null — оставить Monaco CollapsibleCodeBlock.
+ */
+export function resolveRunnableFenceArtifact(
+  fenceLang: string,
+  content: string,
+): { type: string; title: string } | null {
+  const lang = (fenceLang || '').trim().toLowerCase();
+  if (lang === 'tsx' || lang === 'jsx') {
+    return { type: 'application/vnd.react', title: 'React' };
+  }
+  if (lang === 'css') return { type: 'text/css', title: 'CSS' };
+  if (lang === 'python' || lang === 'py') return { type: 'text/x-python', title: 'Python' };
+  if (lang === 'javascript' || lang === 'js' || lang === 'typescript' || lang === 'ts') {
+    if (looksLikeReactSource(content)) {
+      return { type: 'application/vnd.react', title: 'React' };
+    }
+    return { type: 'text/javascript', title: 'JavaScript' };
+  }
+  return null;
+}
+
 function inferArtifactType(content: string, fenceLang: string, declaredType: string): string {
   const declared = (declaredType || '').trim().toLowerCase();
   if (declared && declared !== 'text/plain') return declaredType;
@@ -87,8 +119,12 @@ function inferArtifactType(content: string, fenceLang: string, declaredType: str
   if (lang === 'html' || lang === 'htm') return 'text/html';
   if (lang === 'svg') return 'image/svg+xml';
   if (lang === 'markdown' || lang === 'md') return 'text/markdown';
-  if (lang === 'tsx' || lang === 'jsx' || lang === 'typescript' || lang === 'javascript') {
-    return 'application/vnd.react';
+  if (lang === 'css') return 'text/css';
+  if (lang === 'python' || lang === 'py') return 'text/x-python';
+  if (lang === 'tsx' || lang === 'jsx') return 'application/vnd.react';
+  if (lang === 'typescript' || lang === 'ts' || lang === 'javascript' || lang === 'js') {
+    const body = (content || '').trim();
+    return looksLikeReactSource(body) ? 'application/vnd.react' : 'text/javascript';
   }
 
   const body = (content || '').trim();
@@ -101,8 +137,9 @@ function inferArtifactType(content: string, fenceLang: string, declaredType: str
   }
   if (/^<svg[\s>]/i.test(body)) return 'image/svg+xml';
   if (/<!doctype/i.test(body) || /<html[\s>]/i.test(body)) return 'text/html';
-  if (/^import\s+React|^export\s+default\s+function|^export\s+default\s+/m.test(body)) {
-    return 'application/vnd.react';
+  if (looksLikeReactSource(body)) return 'application/vnd.react';
+  if (/^(def|class|import|from|print)\b/m.test(body) && !/[;{}]/.test(body.slice(0, 200))) {
+    return 'text/x-python';
   }
 
   return declaredType || 'text/plain';
@@ -297,8 +334,13 @@ export function sanitizeArtifactBody(raw: string, fenceLang?: string): string {
   const lang = (fenceLang || '').trim().toLowerCase();
   if (lang && code.toLowerCase().startsWith(lang + '\n')) {
     code = code.slice(lang.length + 1);
-  } else if (/^(mermaid|tsx|jsx|html|svg|markdown|md)\s*\n/i.test(code)) {
-    code = code.replace(/^(mermaid|tsx|jsx|html|svg|markdown|md)\s*\n/i, '');
+  } else if (
+    /^(mermaid|tsx|jsx|html|svg|markdown|md|css|javascript|js|typescript|ts|python|py)\s*\n/i.test(code)
+  ) {
+    code = code.replace(
+      /^(mermaid|tsx|jsx|html|svg|markdown|md|css|javascript|js|typescript|ts|python|py)\s*\n/i,
+      '',
+    );
   }
 
   // Обрезаем всё после первого оставшегося fence внутри
@@ -678,6 +720,11 @@ export function artifactTypeLabel(type: string): string {
   if (t === 'text/markdown' || t === 'text/md') return 'Markdown';
   if (t === 'application/vnd.mermaid') return 'Mermaid';
   if (t === 'application/vnd.react' || t === 'application/vnd.ant.react') return 'React';
+  if (t === 'text/css') return 'CSS';
+  if (t === 'text/javascript' || t === 'application/javascript' || t === 'application/x-javascript') {
+    return 'JavaScript';
+  }
+  if (t === 'text/x-python' || t === 'application/x-python' || t === 'text/python') return 'Python';
   return type || 'Artifact';
 }
 
@@ -704,11 +751,33 @@ export function isSvgArtifactType(type: string): boolean {
   return (type || '').toLowerCase() === 'image/svg+xml';
 }
 
+export function isCssArtifactType(type: string): boolean {
+  return (type || '').toLowerCase() === 'text/css';
+}
+
+export function isJavaScriptArtifactType(type: string): boolean {
+  const t = (type || '').toLowerCase();
+  return t === 'text/javascript' || t === 'application/javascript' || t === 'application/x-javascript';
+}
+
+export function isPythonArtifactType(type: string): boolean {
+  const t = (type || '').toLowerCase();
+  return t === 'text/x-python' || t === 'application/x-python' || t === 'text/python';
+}
+
+/** Типы с runnable-песочницей на фронте (кроме HTML/React — у них свои превью). */
+export function isCodeSandboxArtifactType(type: string): boolean {
+  return isCssArtifactType(type) || isJavaScriptArtifactType(type) || isPythonArtifactType(type);
+}
+
 export function guessCodeLanguage(type: string): string {
   if (isHtmlArtifactType(type)) return 'html';
   if (isSvgArtifactType(type)) return 'xml';
   if (isMarkdownArtifactType(type)) return 'markdown';
   if (isMermaidArtifactType(type)) return 'mermaid';
   if (isReactArtifactType(type)) return 'tsx';
+  if (isCssArtifactType(type)) return 'css';
+  if (isJavaScriptArtifactType(type)) return 'javascript';
+  if (isPythonArtifactType(type)) return 'python';
   return 'plaintext';
 }

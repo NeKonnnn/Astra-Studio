@@ -1091,8 +1091,10 @@ export function SocketProvider({ children }: { children: ReactNode }) {
           role: 'assistant',
           content: combined,
           timestamp: new Date(startedAt).toISOString(),
-          // Текста ещё нет (работают субагенты) - false: тогда виден «думает».
-          isStreaming: Boolean(session.responseAccumulated),
+          // Resume = живая генерация: всегда streaming, иначе после F5 нет
+          // «думает…» / stop / привязки чанков (loadingChatIds одних недостаточно
+          // для lastStreamingAssistant и части UI).
+          isStreaming: true,
           generationStartedAtMs: startedAt,
           ...(calls ? { mcpToolCalls: calls } : {}),
         });
@@ -1103,7 +1105,9 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       session.messageId = messageId;
       session.resumePending = false;
       setChatLoading(chat.id, true);
-      touchStreamActivity(session.requestId, { streamData: Boolean(session.responseAccumulated) });
+      touchStreamActivity(session.requestId, {
+        streamData: Boolean(session.responseAccumulated || session.thinking),
+      });
       // Живой индикатор: вызовы, которые ещё идут (start без end).
       for (const rec of session.mcpToolCalls) {
         if (rec.type !== 'mcp_tool_start') continue;

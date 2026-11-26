@@ -32,6 +32,14 @@ jest.mock('@/components/artifacts/ArtifactReactPreview', () => ({
     <div data-testid="react" data-streaming={String(p.isStreaming)}>{p.content}</div>
   ),
 }));
+jest.mock('@/components/artifacts/ArtifactCodeSandboxPreview', () => ({
+  __esModule: true,
+  default: (p: { content: string; kind: string; isStreaming: boolean }) => (
+    <div data-testid={`sandbox-${p.kind}`} data-streaming={String(p.isStreaming)}>
+      {p.content}
+    </div>
+  ),
+}));
 
 function art(type: string, content = 'тело', closed = true): ChatArtifact {
   return { id: 'a1', identifier: 'x', type, title: 't', content, closed };
@@ -47,6 +55,9 @@ describe('ArtifactPreview', () => {
     ['application/vnd.mermaid', 'mermaid'],
     ['application/vnd.react', 'react'],
     ['application/vnd.ant.react', 'react'],
+    ['text/javascript', 'sandbox-javascript'],
+    ['text/css', 'sandbox-css'],
+    ['text/x-python', 'sandbox-python'],
   ])('тип %s -> превью %s с исходным содержимым', (type, testId) => {
     render(<ArtifactPreview artifact={art(type, 'контент')} />);
     expect(screen.getByTestId(testId)).toHaveTextContent('контент');

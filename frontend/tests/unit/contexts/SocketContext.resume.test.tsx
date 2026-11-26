@@ -235,10 +235,11 @@ describe('generation_resume: подхват генерации после F5', (
     expect(hook.result.current.app.state.loadingChatIds).toEqual([]);
   });
 
-  it('без накопленного текста сообщение создаётся нестримящимся (виден «думает»)', async () => {
+  it('без накопленного текста сообщение всё равно streaming (фаза «думает» после F5)', async () => {
     const { hook, cid, uid } = await readyWithHistory();
     server('generation_resume', { generations: [snapshot(cid, uid, { accumulated: '', thinking: '' })] });
-    expect(assistant(hook, cid)[0]).toMatchObject({ content: '', isStreaming: false });
+    expect(assistant(hook, cid)[0]).toMatchObject({ content: '', isStreaming: true });
+    expect(hook.result.current.app.state.loadingChatIds).toEqual([cid]);
   });
 
   it('вопрос из другой вкладки добавляется в чат перед ответом', async () => {
@@ -464,7 +465,7 @@ describe('generation_resume: подхват генерации после F5', (
     server('generation_resume', {
       generations: [{ request_id: 'r9', conversation_id: cid, accumulated: 5, thinking: 6, stream_seq: 'x', mcp_events: 'no', agent_update: 'no', user_message_id: uid }],
     });
-    expect(assistant(hook, cid)[0]).toMatchObject({ content: '', isStreaming: false });
+    expect(assistant(hook, cid)[0]).toMatchObject({ content: '', isStreaming: true });
   });
 });
 

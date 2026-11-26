@@ -133,9 +133,13 @@ export function buildSandpackOptions(): SandpackProviderProps['options'] {
   };
 }
 
-export function buildSandpackFiles(content: string): SandpackProviderProps['files'] {
+export function buildSandpackFiles(
+  content: string,
+  opts?: { includeShadcn?: boolean },
+): SandpackProviderProps['files'] {
+  const includeShadcn = opts?.includeShadcn !== false;
   return {
-    ...SANDPACK_SHARED_FILES,
+    ...(includeShadcn ? SANDPACK_SHARED_FILES : {}),
     '/App.tsx': normalizeReactEntry(content),
     '/index.tsx': `import React from "react";
 import { createRoot } from "react-dom/client";
@@ -146,5 +150,6 @@ createRoot(document.getElementById("root")!).render(<App />);
     '/styles.css': `html, body, #root { margin: 0; min-height: 100%; }
 body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
 `,
+    '/public/index.html': (SANDPACK_SHARED_FILES as Record<string, string>)['/public/index.html'],
   };
 }

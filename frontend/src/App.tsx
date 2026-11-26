@@ -41,6 +41,8 @@ import SessionTimeoutWatcher from './components/SessionTimeoutWatcher';
 import SessionValidityWatcher from './components/SessionValidityWatcher';
 import LoginPage from './pages/LoginPage';
 import SsoCallbackPage from './pages/SsoCallbackPage';
+import YandexOAuthCallbackPage from './pages/YandexOAuthCallbackPage';
+import IntegrationOAuthCallbackPage from './pages/IntegrationOAuthCallbackPage';
 import ProfilePage from './pages/ProfilePage';
 import CreationsPage from './pages/CreationsPage';
 import ShareViewPage from './pages/ShareViewPage';
@@ -389,6 +391,9 @@ function App() {
                 {/* Публичный маршрут для логина */}
                 <Route path="/login" element={<LoginPage />} />
                 <Route path="/login/sso-callback" element={<SsoCallbackPage />} />
+                {/* OAuth callback Яндекс.Диска (popup, без PrivateRoute) */}
+                <Route path="/oauth/yandex/callback" element={<YandexOAuthCallbackPage />} />
+                <Route path="/oauth/integration/callback" element={<IntegrationOAuthCallbackPage />} />
                 
                 {/* Публичный маршрут для просмотра публичных ссылок */}
                 <Route path="/share/:shareId" element={<ShareViewPage />} />

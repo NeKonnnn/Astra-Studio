@@ -6,6 +6,23 @@ import ArtifactReactPreview from '@/components/artifacts/ArtifactReactPreview';
 const providerProps: any[] = [];
 const previewProps: any[] = [];
 
+jest.mock('@/contexts/AppContext', () => ({
+  useAppContext: () => ({ state: { currentChatId: 'c1' } }),
+}));
+
+jest.mock('@/utils/artifactsSelectionStorage', () => ({
+  ARTIFACTS_SELECTION_CHANGED_EVENT: 'artifacts-selection-changed',
+  getEffectiveArtifactsSettings: () => ({
+    artifacts_enabled: true,
+    shadcn_enabled: true,
+    user_prompt_mode: false,
+  }),
+}));
+
+jest.mock('@/utils/agentArtifactsEnabled', () => ({
+  AGENT_ARTIFACTS_CHANGED_EVENT: 'agent-artifacts-changed',
+}));
+
 jest.mock('@codesandbox/sandpack-react', () => ({
   SandpackProvider: (p: any) => {
     providerProps.push(p);
@@ -49,15 +66,15 @@ describe('ArtifactReactPreview', () => {
     expect(lastFiles()['/App.tsx']).toBe(code);
   });
 
-  it('конфигурирует react-ts шаблон, Tailwind CDN, зависимости и кнопку обновления', () => {
+  it('конфигурирует react-ts шаблон, Tailwind CDN, shadcn-зависимости и кнопку обновления', () => {
     render(<ArtifactReactPreview content="export default 1" />);
     const p = providerProps[0];
     expect(p.template).toBe('react-ts');
     expect(p.theme).toBe('light');
-    expect(p.options.externalResources).toEqual(['https://cdn.tailwindcss.com']);
+    expect(p.options.externalResources).toEqual(['https://cdn.tailwindcss.com/3.4.17#tailwind.js']);
     expect(p.options.recompileMode).toBe('delayed');
     expect(Object.keys(p.customSetup.dependencies)).toEqual(
-      expect.arrayContaining(['recharts', 'lucide-react', 'clsx']),
+      expect.arrayContaining(['recharts', 'lucide-react', 'clsx', '@radix-ui/react-dialog']),
     );
     expect(previewProps[0].showOpenInCodeSandbox).toBe(false);
     expect(previewProps[0].showRefreshButton).toBe(true);
@@ -65,6 +82,7 @@ describe('ArtifactReactPreview', () => {
     expect(files['/index.tsx']).toContain('createRoot(document.getElementById("root")!)');
     expect(files['/styles.css']).toContain('#root');
     expect(files['/public/index.html']).toContain('<div id="root"></div>');
+    expect(files['/components/ui/button.tsx']).toBeTruthy();
   });
 
   it('без export default экспортирует первый именованный компонент (function)', () => {

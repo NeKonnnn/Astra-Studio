@@ -142,6 +142,9 @@ export const API_ENDPOINTS = {
   ADMIN_EXPORT: '/api/admin/export',
   ADMIN_USERS: '/api/admin/users',
   ADMIN_REGISTRATION_POLICY: '/api/admin/registration-policy',
+
+  // External integrations (Yandex Disk picker и т.п.)
+  CONFIG_INTEGRATIONS: '/api/config/integrations',
 };
 
 // Для обратной совместимости (deprecated - используйте getSettings())

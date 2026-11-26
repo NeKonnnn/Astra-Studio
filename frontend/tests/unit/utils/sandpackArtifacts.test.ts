@@ -58,6 +58,17 @@ describe('sandpackArtifacts', () => {
     expect((buildSandpackFiles('') as Record<string, string>)['/App.tsx']).toContain('Empty');
   });
 
+  it('buildSandpackFiles: без shadcn не тащит /components/ui, но оставляет index.html', () => {
+    const files = buildSandpackFiles('export default 1', { includeShadcn: false }) as Record<
+      string,
+      string
+    >;
+    expect(files['/components/ui/button.tsx']).toBeUndefined();
+    expect(files['/lib/utils.ts']).toBeUndefined();
+    expect(files['/public/index.html']).toContain('cdn.tailwindcss.com');
+    expect(files['/App.tsx']).toBe('export default 1');
+  });
+
   it('общие файлы покрывают shadcn-компоненты из генератора', () => {
     const shared = SANDPACK_SHARED_FILES as Record<string, string>;
     const ui = Object.keys(shared).filter((k) => k.startsWith('/components/ui/'));

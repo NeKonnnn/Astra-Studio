@@ -66,6 +66,15 @@ import ModelSelector from '../components/ModelSelector';
 import MessageNavigationBar from '../components/MessageNavigationBar';
 import { ASTRA_INSERT_CHAT_TEXT, ASTRA_INSERT_CHAT_TEXT_KEY } from '../components/right_bar';
 import ChatInputBar, { InlineAttachment } from '../components/ChatInputBar';
+import {
+  authorizeYandexDisk,
+  getYandexDiskCredentials,
+  YandexDiskPickerModal,
+  type YandexDiskPickedFile,
+} from '../integrations/yandex-disk';
+import { launchIntegration, type ListSession } from '../integrations/launch';
+import ItemListPickerModal from '../integrations/shared/ItemListPickerModal';
+import type { ListItem } from '../integrations/types';
 import { prepareInlineImageFile, formatFileSize, dataUrlToFile, getClipboardImageFile } from '../utils/inlineImage';
 import {
   buildOversizedInlineAttachMessage,
@@ -90,8 +99,11 @@ import { default as ThinkingModeIcon } from '../icons/ThinkingModeIcon';
 import { default as ThinkingBulbIcon } from '../icons/ThinkingBulbIcon';
 import ChatGearArtifactsPanel from '../components/ChatGearArtifactsPanel';
 import ChatGearMcpPanel from '../components/ChatGearMcpPanel';
+import ChatGearIntegrationsPanel from '../components/ChatGearIntegrationsPanel';
 import ChatGearCodingPanel from '../components/ChatGearCodingPanel';
 import ChatGearGenerationPanel from '../components/ChatGearGenerationPanel';
+import { GearMenuIntegrationsIcon } from '../integrations/IntegrationIcons';
+import type { IntegrationId } from '../integrations/catalog';
 import {
   isAnyGenerationModeEnabled,
   isImageGenerationModeEnabled,
@@ -1814,7 +1826,7 @@ export default function UnifiedChatPage({
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   /** Раскрытый подпункт меню «Инструменты» (колонка справа, как в LeChat). */
   const [gearToolsPanel, setGearToolsPanel] = useState<
-    'main' | 'agents' | 'artifacts' | 'skills' | 'knowledge-bases' | 'mcp' | 'coding' | 'generation' | 'model-mode'
+    'main' | 'agents' | 'artifacts' | 'skills' | 'knowledge-bases' | 'mcp' | 'integrations' | 'coding' | 'generation' | 'model-mode'
   >('main');
   const gearSubPanelOpen =
     gearToolsPanel === 'agents'
@@ -1823,6 +1835,7 @@ export default function UnifiedChatPage({
     || gearToolsPanel === 'knowledge-bases'
     || gearToolsPanel === 'model-mode'
     || gearToolsPanel === 'mcp'
+    || gearToolsPanel === 'integrations'
     || gearToolsPanel === 'coding'
     || gearToolsPanel === 'generation';
   const [modelThinkingMode, setModelThinkingMode] = useState<ModelThinkingMode>(() => {
@@ -1933,6 +1946,12 @@ export default function UnifiedChatPage({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [inlineAttachments, setInlineAttachments] = useState<InlineAttachment[]>([]);
+  const [yandexDiskEnabled, setYandexDiskEnabled] = useState(false);
+  const [yandexDiskToken, setYandexDiskToken] = useState<string | null>(null);
+  const [yandexDiskPickerOpen, setYandexDiskPickerOpen] = useState(false);
+  const [integrationListSession, setIntegrationListSession] = useState<ListSession | null>(null);
+  const [integrationListLoading, setIntegrationListLoading] = useState(false);
+  const [integrationListError, setIntegrationListError] = useState<string | null>(null);
   const messageRefs = useRef<(HTMLDivElement | null)[]>([]);
   // Флаг: пользователь находится у нижнего края → автоскролл разрешён
   const isAtBottomRef = useRef(true);
@@ -1952,6 +1971,126 @@ export default function UnifiedChatPage({
     const onAttach = () => fileInputRef.current?.click();
     window.addEventListener(ASTRA_TRIGGER_ATTACH, onAttach);
     return () => window.removeEventListener(ASTRA_TRIGGER_ATTACH, onAttach);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const creds = await getYandexDiskCredentials();
+        if (!cancelled) setYandexDiskEnabled(creds.enabled);
+      } catch {
+        if (!cancelled) setYandexDiskEnabled(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleYandexDiskClick = useCallback(async () => {
+    try {
+      const token = await authorizeYandexDisk();
+      setYandexDiskToken(token);
+      setYandexDiskPickerOpen(true);
+      setAnchorEl(null);
+      setGearToolsPanel('main');
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Не удалось авторизоваться в Яндекс.Диске';
+      setAttachErrorBanner(message);
+    }
+  }, []);
+
+  const attachTextAsFile = useCallback(async (name: string, text: string) => {
+    const file = new File([text], name || 'attachment.txt', {
+      type: 'text/plain;charset=utf-8',
+    });
+    await handleMessageAttachRef.current(file);
+  }, []);
+
+  const handleIntegrationClick = useCallback(
+    async (id: IntegrationId) => {
+      try {
+        setAnchorEl(null);
+        setGearToolsPanel('main');
+        setIntegrationListError(null);
+        const outcome = await launchIntegration(id);
+        if (outcome.type === 'yandex-disk') {
+          setYandexDiskToken(outcome.token);
+          setYandexDiskPickerOpen(true);
+          return;
+        }
+        if (outcome.type === 'file') {
+          const file = new File([outcome.blob], outcome.name, {
+            type: outcome.blob.type || 'application/octet-stream',
+          });
+          await handleMessageAttachRef.current(file);
+          return;
+        }
+        if (outcome.type === 'list') {
+          setIntegrationListSession(outcome.session);
+        }
+      } catch (err) {
+        setAttachErrorBanner(
+          err instanceof Error ? err.message : 'Не удалось открыть интеграцию',
+        );
+      }
+    },
+    [],
+  );
+
+  const handleIntegrationListPick = useCallback(
+    async (item: ListItem) => {
+      const session = integrationListSession;
+      if (!session) return;
+      try {
+        setIntegrationListLoading(true);
+        setIntegrationListError(null);
+        if (session.onItem) {
+          const next = await session.onItem(item);
+          if (!next) {
+            setIntegrationListSession(null);
+            return;
+          }
+          if ('kind' in next && next.kind === 'file') {
+            const file = new File([next.file.blob], next.file.name, {
+              type: next.file.blob.type || 'application/octet-stream',
+            });
+            setIntegrationListSession(null);
+            await handleMessageAttachRef.current(file);
+            return;
+          }
+          if ('kind' in next && next.kind === 'text') {
+            setIntegrationListSession(null);
+            await attachTextAsFile(next.item.name, next.item.text);
+            return;
+          }
+          // nested list (GitHub files)
+          setIntegrationListSession(next as ListSession);
+          return;
+        }
+        const picked = await session.loadText(item);
+        setIntegrationListSession(null);
+        await attachTextAsFile(picked.name, picked.text);
+      } catch (err) {
+        setIntegrationListError(
+          err instanceof Error ? err.message : 'Не удалось загрузить элемент',
+        );
+      } finally {
+        setIntegrationListLoading(false);
+      }
+    },
+    [attachTextAsFile, integrationListSession],
+  );
+
+  const handleMessageAttachRef = useRef<(file: File) => Promise<void>>(async () => {});
+
+  const handleYandexDiskPicked = useCallback(async (picked: YandexDiskPickedFile) => {
+    const file = new File([picked.blob], picked.name, {
+      type: picked.blob.type || 'application/octet-stream',
+    });
+    await handleMessageAttachRef.current(file);
   }, []);
 
   useEffect(() => {
@@ -4287,6 +4426,7 @@ export default function UnifiedChatPage({
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
+  handleMessageAttachRef.current = handleMessageAttach;
 
   const handleDragOver = (e: React.DragEvent): void => {
     if (!dataTransferHasFiles(e.dataTransfer)) {
@@ -5445,6 +5585,8 @@ export default function UnifiedChatPage({
                            fileInputRef={fileInputRef}
                            onAttachClick={() => fileInputRef.current?.click()}
                            onFileSelect={(files) => { if (files?.length) handleMessageAttach(files[0]); }}
+                           yandexDiskEnabled={yandexDiskEnabled}
+                           onYandexDiskClick={() => { void handleYandexDiskClick(); }}
                            isUploading={isUploading}
                            uploadingFile={uploadingFile}
                            attachDisabled={isUploading || multiLlmInputBlocked || chatAwaitingTokens}
@@ -5667,6 +5809,8 @@ export default function UnifiedChatPage({
                fileInputRef={fileInputRef}
                onAttachClick={() => fileInputRef.current?.click()}
                onFileSelect={(files) => { if (files?.length) handleMessageAttach(files[0]); }}
+               yandexDiskEnabled={yandexDiskEnabled}
+               onYandexDiskClick={() => { void handleYandexDiskClick(); }}
                isUploading={isUploading}
                uploadingFile={uploadingFile}
                            attachDisabled={isUploading || multiLlmInputBlocked || chatAwaitingTokens}
@@ -5727,7 +5871,7 @@ export default function UnifiedChatPage({
                        gearToolsPaperHeightPx < CHAT_GEAR_MENU_PAPER_MAX_HEIGHT_PX ? 'auto' : 'hidden',
                    }
                  : { maxHeight: CHAT_GEAR_MENU_PAPER_MAX_HEIGHT, overflowY: 'auto' }),
-                ...((gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'knowledge-bases' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation')
+                ...((gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'knowledge-bases' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'integrations' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation')
                 ? CHAT_GEAR_SCROLL_AREA_NO_VISIBLE_SCROLLBAR_SX
                 : {}),
              },
@@ -5739,15 +5883,15 @@ export default function UnifiedChatPage({
              display: 'flex',
              flexDirection: 'row',
              alignItems: 'stretch',
-            gap: gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'knowledge-bases' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation' ? `${CHAT_GEAR_MENU_PANELS_GAP_PX}px` : 0,
+            gap: gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'knowledge-bases' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'integrations' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation' ? `${CHAT_GEAR_MENU_PANELS_GAP_PX}px` : 0,
              width:
-             (gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'knowledge-bases' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation') && gearToolsMenuWidthPx != null
+             (gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'knowledge-bases' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'integrations' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation') && gearToolsMenuWidthPx != null
                  ? `${gearToolsMenuWidthPx}px`
-                : gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'knowledge-bases' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation'
+                : gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'knowledge-bases' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'integrations' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation'
                    ? CHAT_GEAR_MENU_EXPANDED_WIDTH_PX
                    : CHAT_GEAR_MENU_PANEL_WIDTH_PX,
              maxWidth:
-             (gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'knowledge-bases' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation') && gearToolsMenuWidthPx != null
+             (gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'knowledge-bases' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'integrations' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation') && gearToolsMenuWidthPx != null
                  ? `${gearToolsMenuWidthPx}px`
                  : 'min(96vw, 580px)',
              minHeight: gearToolsPaperHeightPx != null ? `${gearToolsPaperHeightPx}px` : undefined,
@@ -5761,7 +5905,7 @@ export default function UnifiedChatPage({
              sx={{
                ...dropdownPanelSx,
                width:
-               gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'knowledge-bases' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation'
+               gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'knowledge-bases' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'integrations' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation'
                   ? CHAT_GEAR_MENU_LEFT_RAIL_WIDTH_PX
                   : '100%',
                flexShrink: 0,
@@ -5929,6 +6073,36 @@ export default function UnifiedChatPage({
               />
             </Box>
             <Box
+              onClick={() => setGearToolsPanel((p) => (p === 'integrations' ? 'main' : 'integrations'))}
+              sx={{
+                ...dropdownItemSx,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1,
+                color: isDarkMode ? 'white' : '#333',
+                bgcolor:
+                  gearToolsPanel === 'integrations'
+                    ? isDarkMode
+                      ? DROPDOWN_ITEM_HOVER_BG_DARK
+                      : DROPDOWN_ITEM_HOVER_BG_LIGHT
+                    : 'transparent',
+              }}
+            >
+              <GearMenuIntegrationsIcon
+                sx={{ fontSize: 18, color: isDarkMode ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.6)', flexShrink: 0 }}
+              />
+              <Typography sx={{ flex: 1, minWidth: 0, fontSize: MENU_ACTION_TEXT_SIZE, whiteSpace: 'nowrap' }}>
+                Интеграции
+              </Typography>
+              <ChevronRightIcon
+                sx={{
+                  ...DROPDOWN_CHEVRON_SX,
+                  flexShrink: 0,
+                  transform: gearToolsPanel === 'integrations' ? 'rotate(90deg)' : 'none',
+                }}
+              />
+            </Box>
+            <Box
               onClick={() => {
                 setGearToolsPanel((p) => (p === 'coding' ? 'main' : 'coding'));
               }}
@@ -6021,7 +6195,7 @@ export default function UnifiedChatPage({
               />
             </Box>
            </Box>
-          {gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'knowledge-bases' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation' ? (
+          {gearToolsPanel === 'agents' || gearToolsPanel === 'artifacts' || gearToolsPanel === 'skills' || gearToolsPanel === 'knowledge-bases' || gearToolsPanel === 'model-mode' || gearToolsPanel === 'mcp' || gearToolsPanel === 'integrations' || gearToolsPanel === 'coding' || gearToolsPanel === 'generation' ? (
              <Box
                sx={{
                  ...dropdownPanelSx,
@@ -6044,6 +6218,13 @@ export default function UnifiedChatPage({
                 <ChatGearKnowledgeBasesPanel isDarkMode={isDarkMode} chatId={currentChat?.id} />
               ) : gearToolsPanel === 'mcp' ? (
                 <ChatGearMcpPanel isDarkMode={isDarkMode} chatId={currentChat?.id} />
+              ) : gearToolsPanel === 'integrations' ? (
+                <ChatGearIntegrationsPanel
+                  isDarkMode={isDarkMode}
+                  onIntegrationClick={(id) => {
+                    void handleIntegrationClick(id);
+                  }}
+                />
               ) : gearToolsPanel === 'coding' ? (
                 <ChatGearCodingPanel
                   isDarkMode={isDarkMode}
@@ -6160,6 +6341,34 @@ export default function UnifiedChatPage({
           onNavigate={scrollToMessage}
         />
       )}
+
+      <YandexDiskPickerModal
+        open={yandexDiskPickerOpen}
+        accessToken={yandexDiskToken}
+        onClose={() => setYandexDiskPickerOpen(false)}
+        onPicked={(file) => {
+          void handleYandexDiskPicked(file);
+        }}
+        onError={(message) => setAttachErrorBanner(message)}
+      />
+
+      <ItemListPickerModal
+        open={Boolean(integrationListSession)}
+        title={integrationListSession?.title || 'Интеграция'}
+        items={integrationListSession?.items || []}
+        loading={integrationListLoading}
+        error={integrationListError}
+        onClose={() => {
+          setIntegrationListSession(null);
+          setIntegrationListError(null);
+        }}
+        onRefresh={() => {
+          setIntegrationListError(null);
+        }}
+        onPick={(item) => {
+          void handleIntegrationListPick(item);
+        }}
+      />
       </Box>
     </Box>
   );
