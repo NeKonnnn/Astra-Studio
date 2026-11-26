@@ -46,10 +46,15 @@ class ModelConfig(BaseModel):
     verbose: bool = False
     # llama.cpp pool параметры
     pool_size: int = 1
-    n_thread: int = 4
-    n_threads_batch: int = 4
+    n_thread: int = 0  # 0 = auto (cpu_count - 1); env LLM_N_THREADS перекрывает
+    n_threads_batch: int = 0  # 0 = как n_thread
     n_batch: int = 512
     n_ubatch: int = 512
+    # Как у Ollama/Open WebUI: прогреть дефолт при старте; idle-unload
+    eager_load: bool = True
+    warmup_on_load: bool = True
+    # Секунды без запросов до выгрузки. <=0 — держать в RAM всегда (keep_alive -1).
+    keep_alive_seconds: int = 300
     # vLLM параметры
     tensor_parallel_size: int = 1
     gpu_memory_utilization: float = 0.9

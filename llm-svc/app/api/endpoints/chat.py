@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from app.models.schemas import ChatRequest
 from app.services.base_llm_handler import BaseLLMHandler
-from app.api.dependencies import get_llama_service, require_api_key
+from app.api.dependencies import get_llm_handler_without_loaded_gate, require_api_key
 import logging
 
 logger = logging.getLogger(__name__)
@@ -22,12 +22,13 @@ def _resolve_enable_thinking(request: ChatRequest):
 @router.post("/chat/completions")
 async def chat_completion(
     request: ChatRequest,
-    llama_service: BaseLLMHandler = Depends(get_llama_service),
+    llama_service: BaseLLMHandler = Depends(get_llm_handler_without_loaded_gate),
     api_key: bool = Depends(require_api_key),
 ):
     """
     Эндпоинт совместимый с OpenAI API для обработки запросов чата.
     Поддерживает как обычные запросы, так и потоковую передачу.
+    Как Ollama/Open WebUI: пустой пул не 503 — грузим модель on-demand.
     """
     enable_thinking = _resolve_enable_thinking(request)
     logger.info(f"Chat request Model: {request.model}, "
@@ -37,17 +38,26 @@ async def chat_completion(
                 f"enable_thinking: {enable_thinking}")
     if not llama_service.is_model_id_loaded(request.model):
         loaded = getattr(llama_service, "get_loaded_model_ids", lambda: [])()
+        target = (request.model or "").strip() or getattr(
+            llama_service, "model_name", None
+        ) or ""
         logger.info(
-            "Model %r not in pool %s — loading on demand",
-            request.model,
+            "Model %r not in pool %s — loading on demand (ollama-style)",
+            target or request.model,
             loaded,
         )
-        load_ok = await llama_service.load_model(request.model)
-        if not load_ok or not llama_service.is_model_id_loaded(request.model):
-            loaded = getattr(llama_service, "get_loaded_model_ids", lambda: [])()
+        load_fn = getattr(llama_service, "load_model", None)
+        if not callable(load_fn) or not target:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=f"Model '{request.model}' is not loaded. Loaded: {loaded}",
+            )
+        load_ok = await load_fn(target)
+        if not load_ok or not llama_service.is_model_id_loaded(target):
+            loaded = getattr(llama_service, "get_loaded_model_ids", lambda: [])()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Model '{target}' is not loaded. Loaded: {loaded}",
             )
     try:
         if request.stream:

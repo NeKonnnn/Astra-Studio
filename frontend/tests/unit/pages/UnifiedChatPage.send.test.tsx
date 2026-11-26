@@ -63,13 +63,31 @@ describe('UnifiedChatPage: отправка сообщения', () => {
     expect(hx.socket.sendMessage).not.toHaveBeenCalled();
   });
 
-  it('пока любой чат генерирует, новая отправка блокируется', () => {
-    hx.state.loadingChatIds = ['c1']; // генерация в текущем чате (чаты генерируют параллельно)
+  it('пока чат генерирует, сообщение ставится в очередь (Open WebUI-like)', () => {
+    hx.state.loadingChatIds = ['c1']; // генерация в текущем чате
     renderPage();
     type('привет');
     fireEvent.click(screen.getByTestId('ib-send'));
     expect(hx.socket.sendMessage).not.toHaveBeenCalled();
     expect(screen.getByTestId('input-bar')).toHaveAttribute('data-show-stop', 'true');
+    expect(input()).toHaveValue('');
+    expect(screen.getByTestId('chat-message-queue')).toBeInTheDocument();
+    expect(screen.getByTestId('chat-message-queue')).toHaveTextContent('привет');
+  });
+
+  it('повторный Enter/клик не заливает очередь копиями одного текста', () => {
+    hx.state.loadingChatIds = ['c1'];
+    renderPage();
+    type('что нового?');
+    fireEvent.click(screen.getByTestId('ib-send'));
+    fireEvent.click(screen.getByTestId('ib-send'));
+    fireEvent.keyPress(input(), { key: 'Enter', charCode: 13, repeat: true });
+    type('что нового?');
+    fireEvent.click(screen.getByTestId('ib-send'));
+    const queue = screen.getByTestId('chat-message-queue');
+    // Один уникальный текст в хвосте, не десятки копий.
+    expect(queue.querySelectorAll('.MuiChip-root').length).toBe(1);
+    expect(hx.socket.sendMessage).not.toHaveBeenCalled();
   });
 
   it('без выбранной модели показывает баннер и не отправляет', () => {
@@ -122,8 +140,7 @@ describe('UnifiedChatPage: отправка сообщения', () => {
     expect(hx.socket.sendMessage).toHaveBeenCalledWith('привет', 'c1', true, undefined, undefined, undefined);
   });
 
-  it('без текущего чата создаёт новый, отправляет в него с задержкой и очищает вложения', () => {
-    jest.useFakeTimers();
+  it('без текущего чата создаёт новый и сразу отправляет в него', () => {
     hx.chat = null;
     renderPage();
     type('первое');
@@ -131,10 +148,6 @@ describe('UnifiedChatPage: отправка сообщения', () => {
     expect(hx.actions.createChat).toHaveBeenCalledWith('Новый чат');
     expect(hx.actions.setCurrentChat).toHaveBeenCalledWith('new-chat');
     expect(input()).toHaveValue('');
-    expect(hx.socket.sendMessage).not.toHaveBeenCalled();
-    act(() => {
-      jest.advanceTimersByTime(60);
-    });
     expect(hx.socket.sendMessage).toHaveBeenCalledWith('первое', 'new-chat', true, undefined, undefined, undefined);
   });
 

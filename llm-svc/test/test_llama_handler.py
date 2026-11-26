@@ -72,3 +72,25 @@ async def test_acquire_replica_waits_when_all_busy(llama_handler):
         await releaser
         if only.gen_lock.locked():
             only.gen_lock.release()
+
+
+@pytest.mark.asyncio
+async def test_unload_model_removes_slot(llama_handler):
+    mock_llama = MagicMock()
+    llama_handler._model_slots["m"] = [_Slot(mock_llama, "/p/m.gguf")]
+    llama_handler._primary_model_id = "m"
+    llama_handler._last_used["m"] = 1.0
+    llama_handler.is_initialized = True
+
+    ok = await llama_handler.unload_model("m")
+    assert ok is True
+    assert "m" not in llama_handler._model_slots
+    assert llama_handler.is_initialized is False
+
+
+def test_touch_lru_updates_last_used(llama_handler):
+    llama_handler._model_slots["m"] = [_Slot(MagicMock(), "/p/m.gguf")]
+    llama_handler._touch_lru("m")
+    assert "m" in llama_handler._last_used
+    assert llama_handler.n_threads >= 1
+    assert llama_handler.n_threads_batch >= 1

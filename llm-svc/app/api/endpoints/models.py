@@ -1,12 +1,14 @@
 import logging
 import os
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
+from fastapi import APIRouter, Body, Depends, HTTPException
 from app.models.schemas import (
     ModelsListResponse,
     ModelInfoResponse,
     ModelLoadRequest,
     ModelLoadResponse,
     ModelPoolTrimResponse,
+    ModelWarmupResponse,
 )
 from app.api.dependencies import get_llm_handler_without_loaded_gate
 from app.services.base_llm_handler import BaseLLMHandler
@@ -116,4 +118,24 @@ async def unload_excess_models(
         )
     except Exception as e:
         logger.exception("unload-excess failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/models/warmup", response_model=ModelWarmupResponse)
+async def warmup_model(
+    request: Optional[ModelLoadRequest] = Body(default=None),
+    llama_service: BaseLLMHandler = Depends(get_llm_handler_without_loaded_gate),
+):
+    """Прогрев модели (1 токен) после load — снижает latency первого пользовательского ответа."""
+    if not isinstance(llama_service, LlamaHandler):
+        return ModelWarmupResponse(
+            success=True,
+            message="Warmup applies only to llama.cpp handler; skipped",
+        )
+    model_name = ((request.model if request else None) or "").strip()
+    try:
+        result = await llama_service.warmup_model(model_name or None)
+        return ModelWarmupResponse(**result)
+    except Exception as e:
+        logger.exception("warmup failed")
         raise HTTPException(status_code=500, detail=str(e))

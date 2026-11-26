@@ -1061,26 +1061,8 @@ export default function ChatInputBar({
     </Tooltip>
   ) : null;
 
-  const stopOrSendBtn = showStopButton && onStopClick ? (
-    <Tooltip title="Прервать генерацию">
-      <IconButton
-        size="small"
-        onClick={onStopClick}
-        color="error"
-        sx={{
-          bgcolor: 'error.main',
-          color: 'white',
-          ...iconButtonSx(isDarkMode, isClassic),
-          '&:hover': { bgcolor: 'error.dark' },
-          animation: 'pulse 2s ease-in-out infinite',
-          '@keyframes pulse': { '0%': { opacity: 1 }, '50%': { opacity: 0.7 }, '100%': { opacity: 1 } },
-        }}
-      >
-        <SquareIcon sx={{ fontSize: '1.25rem' }} />
-      </IconButton>
-    </Tooltip>
-  ) : onSendClick ? (
-    <Tooltip title="Отправить">
+  const sendBtn = onSendClick ? (
+    <Tooltip title={showStopButton ? 'В очередь' : 'Отправить'}>
       <span>
         <IconButton
           size="small"
@@ -1108,6 +1090,30 @@ export default function ChatInputBar({
       </span>
     </Tooltip>
   ) : null;
+
+  // Как Open WebUI: Stop во время генерации, Send рядом — если уже набран следующий текст (в очередь).
+  const stopOrSendBtn = showStopButton && onStopClick ? (
+    <>
+      <Tooltip title="Прервать генерацию">
+        <IconButton
+          size="small"
+          onClick={onStopClick}
+          color="error"
+          sx={{
+            bgcolor: 'error.main',
+            color: 'white',
+            ...iconButtonSx(isDarkMode, isClassic),
+            '&:hover': { bgcolor: 'error.dark' },
+            animation: 'pulse 2s ease-in-out infinite',
+            '@keyframes pulse': { '0%': { opacity: 1 }, '50%': { opacity: 0.7 }, '100%': { opacity: 1 } },
+          }}
+        >
+          <SquareIcon sx={{ fontSize: '1.25rem' }} />
+        </IconButton>
+      </Tooltip>
+      {!sendDisabled ? sendBtn : null}
+    </>
+  ) : sendBtn;
 
   const voiceBtn = onVoiceClick ? (
     <Tooltip title={voiceTooltip}>

@@ -22,6 +22,46 @@ MAX_LOADED_MODELS = max(1, int(os.environ.get("LLM_MAX_LOADED_MODELS", "4")))
 # Несколько независимых Llama на одну модель — параллельные стримы из разных чатов.
 # Каждая реплика держит свой KV-кэш; веса GGUF обычно mmap-ятся с диска.
 INFERENCE_REPLICAS = max(1, int(os.environ.get("LLM_INFERENCE_REPLICAS", "2")))
+KEEP_ALIVE_SWEEP_INTERVAL_SEC = 30.0
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _resolve_n_threads() -> int:
+    env = (os.environ.get("LLM_N_THREADS") or "").strip()
+    if env.isdigit() and int(env) > 0:
+        return int(env)
+    cfg = int(getattr(settings.model, "n_thread", 0) or 0)
+    if cfg > 0:
+        return cfg
+    # Не брать все logical CPUs: на Windows/Docker это часто тормозит load/decode.
+    cpus = os.cpu_count() or 4
+    return max(1, min(8, cpus - 1 if cpus > 1 else 1))
+
+
+def _resolve_n_threads_batch(n_threads: int) -> int:
+    env = (os.environ.get("LLM_N_THREADS_BATCH") or "").strip()
+    if env.isdigit() and int(env) > 0:
+        return int(env)
+    cfg = int(getattr(settings.model, "n_threads_batch", 0) or 0)
+    if cfg > 0:
+        return cfg
+    return n_threads
+
+
+def _resolve_keep_alive_seconds() -> int:
+    env = (os.environ.get("LLM_KEEP_ALIVE_SECONDS") or "").strip()
+    if env:
+        try:
+            return int(env)
+        except ValueError:
+            pass
+    return int(getattr(settings.model, "keep_alive_seconds", 300) or 0)
 
 
 class _Slot:
@@ -43,7 +83,18 @@ class LlamaHandler(BaseLLMHandler):
         self._config_model_name = settings.model.name
         self.n_ctx = settings.model.ctx_size
         self.n_gpu_layers = settings.model.gpu_layers
-        self.verbose = settings.model.verbose
+        self.verbose = bool(settings.model.verbose)
+        self.n_threads = _resolve_n_threads()
+        self.n_threads_batch = _resolve_n_threads_batch(self.n_threads)
+        self.eager_load = _env_flag(
+            "LLM_EAGER_LOAD", bool(getattr(settings.model, "eager_load", True))
+        )
+        self.warmup_on_load = _env_flag(
+            "LLM_WARMUP_ON_LOAD", bool(getattr(settings.model, "warmup_on_load", True))
+        )
+        self.keep_alive_seconds = _resolve_keep_alive_seconds()
+        self._last_used: Dict[str, float] = {}
+        self._keep_alive_task: Optional[asyncio.Task] = None
         self._registry_lock = asyncio.Lock()
         self._model_switch_lock = asyncio.Lock()
         self.is_initialized = False
@@ -149,6 +200,7 @@ class LlamaHandler(BaseLLMHandler):
     def _touch_lru(self, slot_id: str) -> None:
         if slot_id in self._model_slots:
             self._model_slots.move_to_end(slot_id)
+        self._last_used[slot_id] = time.time()
 
     async def _dispose_slot(self, slot: _Slot) -> None:
         try:
@@ -159,14 +211,22 @@ class LlamaHandler(BaseLLMHandler):
         slot.llama = None  # type: ignore
 
     def _build_llama_sync(self, model_path: str) -> Llama:
+        logger.info(
+            "Building Llama path=%s threads=%s batch_threads=%s ctx=%s gpu_layers=%s mmap=1",
+            model_path,
+            self.n_threads,
+            self.n_threads_batch,
+            self.n_ctx,
+            self.n_gpu_layers,
+        )
         return Llama(
             model_path=model_path,
-            n_threads=7,
-            n_threads_batch=7,
+            n_threads=self.n_threads,
+            n_threads_batch=self.n_threads_batch,
             n_ctx=self.n_ctx,
             n_gpu_layers=self.n_gpu_layers,
             use_mmap=True,
-            verbose=True,
+            verbose=self.verbose,
         )
 
     async def _instantiate_replicas(self, model_path: str, count: int) -> List[_Slot]:
@@ -321,20 +381,43 @@ class LlamaHandler(BaseLLMHandler):
     async def initialize(self):
         if self._model_slots:
             self.is_initialized = True
+            self._ensure_keep_alive_loop()
             return
-        # Модель не грузим при старте — иначе долгий I/O и риск падения контейнера.
-        # Список файлов: GET /v1/models, загрузка: POST /v1/models/load
+
+        default_id = self.normalize_model_id(self._config_model_name)
         if not os.path.isfile(self._config_model_path):
             logger.warning(
-                f"Default model file not found: {self._config_model_path}. "
-                "Use POST /v1/models/load."
+                "Default model file not found: %s. "
+                "Load via POST /v1/models/load or first chat (ollama-style).",
+                self._config_model_path,
             )
+            self.is_initialized = False
+            self._ensure_keep_alive_loop()
+            return
+
+        if self.eager_load:
+            logger.info(
+                "Eager-loading default model '%s' (Open WebUI/Ollama-style warm start)",
+                default_id or self._config_model_name,
+            )
+            ok = await self.load_model_by_name(default_id or self._config_model_name)
+            if not ok:
+                logger.warning(
+                    "Eager load failed for %s — chat will load on demand",
+                    default_id,
+                )
+                self.is_initialized = False
+            else:
+                self.is_initialized = True
         else:
             logger.info(
-                f"LLM handler ready. Default model '{self._config_model_name}' — "
-                "load via POST /v1/models/load or from chat."
+                "LLM handler ready (lazy). Default '%s' — load on first chat "
+                "or POST /v1/models/load",
+                self._config_model_name,
             )
-        self.is_initialized = False
+            self.is_initialized = False
+
+        self._ensure_keep_alive_loop()
 
     async def _try_create_completion(
         self,
@@ -534,10 +617,135 @@ class LlamaHandler(BaseLLMHandler):
             ),
         )
 
+    def _ensure_keep_alive_loop(self) -> None:
+        if self.keep_alive_seconds <= 0:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if self._keep_alive_task and not self._keep_alive_task.done():
+            return
+        self._keep_alive_task = loop.create_task(self._keep_alive_loop())
+
+    async def _keep_alive_loop(self) -> None:
+        """Как Ollama keep_alive: выгружать idle-модели после таймаута."""
+        logger.info(
+            "Keep-alive sweeper started (idle=%ss, interval=%ss)",
+            self.keep_alive_seconds,
+            KEEP_ALIVE_SWEEP_INTERVAL_SEC,
+        )
+        while True:
+            try:
+                await asyncio.sleep(KEEP_ALIVE_SWEEP_INTERVAL_SEC)
+                await self._unload_idle_models()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning("Keep-alive sweep error: %s", e)
+
+    async def _unload_idle_models(self) -> None:
+        if self.keep_alive_seconds <= 0:
+            return
+        now = time.time()
+        default_id = self.normalize_model_id(self._config_model_name)
+        idle_ids: List[str] = []
+        async with self._registry_lock:
+            for mid in list(self._model_slots.keys()):
+                # Дефолтную/primary модель не выгружаем — иначе «модель пропала» через keep_alive.
+                if mid == default_id or mid == self._primary_model_id:
+                    continue
+                if len(self._model_slots) <= 1:
+                    continue
+                last = self._last_used.get(mid, 0.0)
+                if last <= 0:
+                    self._last_used[mid] = now
+                    continue
+                replicas = self._model_slots.get(mid) or []
+                if any(s.gen_lock.locked() for s in replicas):
+                    self._last_used[mid] = now
+                    continue
+                if now - last >= self.keep_alive_seconds:
+                    idle_ids.append(mid)
+        for mid in idle_ids:
+            await self.unload_model(mid)
+
+    async def unload_model(self, model_name: str) -> bool:
+        model_id = self.normalize_model_id(model_name)
+        if not model_id:
+            return False
+        to_dispose: List[_Slot] = []
+        async with self._model_switch_lock:
+            async with self._registry_lock:
+                group = self._model_slots.pop(model_id, None)
+                if not group:
+                    return False
+                to_dispose.extend(group)
+                self._last_used.pop(model_id, None)
+                if self._primary_model_id == model_id:
+                    self._primary_model_id = next(iter(self._model_slots.keys()), None)
+                self.is_initialized = bool(self._model_slots)
+        for slot in to_dispose:
+            await self._dispose_slot(slot)
+        logger.info(
+            "Unloaded idle/requested model %s (remaining=%s)",
+            model_id,
+            list(self._model_slots.keys()),
+        )
+        return True
+
+    async def warmup_model(self, model_name: Optional[str] = None) -> Dict[str, Any]:
+        """Короткая генерация после load — прогрев ядер/кэша страниц (как warm request)."""
+        target = self.normalize_model_id(model_name or self.model_name or "")
+        if not target:
+            return {"success": False, "message": "No model to warm up", "elapsed_ms": None}
+        if not self.is_model_id_loaded(target):
+            ok = await self.load_model_by_name(target)
+            if not ok:
+                return {
+                    "success": False,
+                    "message": f"Failed to load '{target}' for warmup",
+                    "elapsed_ms": None,
+                }
+        started = time.time()
+        try:
+            await self.generate_response(
+                messages=[UserMessage(content="ping")],
+                temperature=0.0,
+                max_tokens=1,
+                stream=False,
+                chat_model_id=target,
+                enable_thinking=False,
+            )
+            elapsed_ms = (time.time() - started) * 1000.0
+            logger.info("Warmup OK model=%s in %.0fms", target, elapsed_ms)
+            return {
+                "success": True,
+                "message": f"Warmed up '{target}'",
+                "model_name": target,
+                "elapsed_ms": round(elapsed_ms, 1),
+            }
+        except Exception as e:
+            logger.warning("Warmup failed for %s: %s", target, e)
+            return {
+                "success": False,
+                "message": str(e),
+                "model_name": target,
+                "elapsed_ms": round((time.time() - started) * 1000.0, 1),
+            }
+
     async def cleanup(self):
+        if self._keep_alive_task and not self._keep_alive_task.done():
+            self._keep_alive_task.cancel()
+            try:
+                await self._keep_alive_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._keep_alive_task = None
         async with self._registry_lock:
             groups = list(self._model_slots.values())
             self._model_slots.clear()
+            self._last_used.clear()
             self._primary_model_id = None
             self.is_initialized = False
         for group in groups:
@@ -586,10 +794,9 @@ class LlamaHandler(BaseLLMHandler):
         async with self._model_switch_lock:
             async with self._registry_lock:
                 if model_id in self._model_slots:
-                    self._model_slots.move_to_end(model_id)
-                    # Явный /load — делаем выбранную модель primary (не оставляем старый default).
                     self._primary_model_id = model_id
                     self.is_initialized = True
+                    self._touch_lru(model_id)
                     logger.info(f"Model {model_id} already in pool (LRU touch, set primary)")
                     return True
 
@@ -645,6 +852,13 @@ class LlamaHandler(BaseLLMHandler):
 
         for s in dispose_after:
             await self._dispose_slot(s)
+
+        self._touch_lru(model_id)
+        if self.warmup_on_load:
+            try:
+                await self.warmup_model(model_id)
+            except Exception as e:
+                logger.warning("Post-load warmup skipped for %s: %s", model_id, e)
         return True
 
     async def trim_pool_to_config_default(self) -> bool:

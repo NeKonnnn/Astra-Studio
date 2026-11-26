@@ -150,6 +150,7 @@ import MessageFollowUpSuggestions from '../components/MessageFollowUpSuggestions
 import { getChatInputSuggestions } from '../chat/getChatInputSuggestions';
 import { loadFollowUpSettings } from '../chat/followUpSettings';
 import { useFollowUpSuggestions } from '../hooks/useFollowUpSuggestions';
+import { useChatMessageQueue } from '../hooks/useChatMessageQueue';
 import { formatGenerationDuration, useElapsedSeconds } from '../hooks/useElapsedSeconds';
 import { extractReasoningBlock as extractReasoningBlockShared } from '../utils/reasoningSplit';
 import {
@@ -2214,6 +2215,45 @@ export default function UnifiedChatPage({
     () => (currentChat ? state.loadingChatIds.includes(currentChat.id) : false),
     [currentChat, state.loadingChatIds],
   );
+  const {
+    enqueue: enqueueChatMessage,
+    remove: removeQueuedChatMessage,
+    shift: shiftQueuedChatMessage,
+    peek: peekQueuedChatMessage,
+    getQueue: getChatMessageQueue,
+    getQueueSync: getChatMessageQueueSync,
+    beginDrain: beginChatQueueDrain,
+    endDrain: endChatQueueDrain,
+  } = useChatMessageQueue();
+  const chatMessageQueue = getChatMessageQueue(currentChat?.id);
+  const queueDispatchLockRef = useRef<string | null>(null);
+  /** Синхронный антидубль: key-repeat Enter / двойной клик до setState. */
+  const sendGateRef = useRef(false);
+  const isMultiLlmModeRef = useRef(false);
+  const MAX_CHAT_QUEUE_DEPTH = 20;
+  const enqueueUniqueChatMessage = useCallback(
+    (
+      chatId: string,
+      item: { text: string; inlineAttachments: InlineAttachment[]; expectMultiLlm?: boolean },
+    ) => {
+      const q = getChatMessageQueueSync(chatId);
+      const last = q.length ? q[q.length - 1] : undefined;
+      // Не копим одинаковый хвост от key-repeat Enter.
+      if (
+        last
+        && last.text === item.text
+        && (last.expectMultiLlm === true) === (item.expectMultiLlm === true)
+      ) {
+        return;
+      }
+      if (q.length >= MAX_CHAT_QUEUE_DEPTH) {
+        showNotification('warning', `В очереди уже ${MAX_CHAT_QUEUE_DEPTH} сообщений`);
+        return;
+      }
+      enqueueChatMessage(chatId, item);
+    },
+    [getChatMessageQueueSync, enqueueChatMessage, showNotification],
+  );
 
   const visibleMessages = useMemo(() => {
     // Пустой стримящийся ассистент оставляем видимым и во время загрузки:
@@ -2709,14 +2749,39 @@ export default function UnifiedChatPage({
   // Обновляем ref при изменении зависимостей, но НЕ создаем новую функцию
   useEffect(() => {
     handleSendMessageFromRendererRef.current = (prompt: string) => {
+      if (!currentChat || (!isConnected && !isConnecting && !token)) return;
+      if (sendGateRef.current) return;
+      const busy = currentChatLoading || hasActiveChatStreaming;
+      if (busy) {
+        enqueueUniqueChatMessage(currentChat.id, {
+          text: prompt,
+          inlineAttachments: [],
+          expectMultiLlm: isMultiLlmModeRef.current,
+        });
+        clearFollowUpSuggestionsRef.current();
+        return;
+      }
+      sendGateRef.current = true;
       runWhenModelReady(prompt, () => {
-        if (currentChat && isConnected && !currentChatLoading) {
+        if (currentChat && (isConnected || isConnecting || token)) {
           clearFollowUpSuggestionsRef.current();
           sendMessage(prompt, currentChat.id);
+        } else {
+          sendGateRef.current = false;
         }
       });
     };
-  }, [currentChat, isConnected, currentChatLoading, sendMessage, runWhenModelReady]);
+  }, [
+    currentChat,
+    isConnected,
+    isConnecting,
+    token,
+    currentChatLoading,
+    hasActiveChatStreaming,
+    sendMessage,
+    runWhenModelReady,
+    enqueueUniqueChatMessage,
+  ]);
   
   // Создаем стабильную функцию ОДИН РАЗ (никогда не меняется!)
   const handleSendMessageFromRenderer = useCallback((prompt: string) => {
@@ -2762,6 +2827,7 @@ export default function UnifiedChatPage({
   const [isMultiLlmMode, setIsMultiLlmMode] = useState<boolean>(
     () => localStorage.getItem('model_comparison_enabled') === 'true',
   );
+  isMultiLlmModeRef.current = isMultiLlmMode;
   const multiLlmHasSelection = useMemo(
     () => modelWindows.some((w) => Boolean(w.selectedModel)),
     [modelWindows],
@@ -2914,11 +2980,11 @@ export default function UnifiedChatPage({
     chainThinkingName,
   ]);
   const socketBlocksChatInput = !isConnected && !isConnecting && !token;
+  // Как Open WebUI: во время генерации можно печатать и ставить в очередь (chatAwaitingTokens не блокирует).
   const chatSendDisabled =
     (!inputMessage.trim() && inlineAttachments.length === 0 && !isUploading)
     || socketBlocksChatInput
     || multiLlmInputBlocked
-    || chatAwaitingTokens
     || ragSendBlocked;
   const prevAgentModeRef = useRef<string | undefined>(undefined);
   const skipNextMultiLlmChatResetRef = useRef(false);
@@ -3511,6 +3577,29 @@ export default function UnifiedChatPage({
     );
   }, [modelWindows]);
 
+  const buildInlinePayloadFrom = useCallback((files: InlineAttachment[]) => {
+    if (!files.length) return undefined;
+    return {
+      inline_context:
+        files
+          .filter((f) => f.contentType === 'text')
+          .map((f) => `[${f.name}]\n${f.content}`)
+          .join('\n\n') || undefined,
+      inline_images: files.filter((f) => f.contentType === 'image').map((f) => f.content),
+      attachments_meta: files.map((f) => ({
+        name: f.name,
+        contentType: f.contentType as 'text' | 'image',
+        preview: f.contentType === 'image' ? f.content : undefined,
+        minio_object: f.minioObject,
+        minio_bucket: f.minioBucket,
+        ...(typeof f.size === 'number' && f.size > 0 ? { size: f.size } : {}),
+        ...(typeof f.tokenEstimate === 'number' && f.tokenEstimate > 0
+          ? { tokenEstimate: f.tokenEstimate }
+          : {}),
+      })),
+    };
+  }, []);
+
   const handleSendMessageMultiLLM = async (): Promise<void> => {
     if (isUploading) {
       setAttachErrorBanner(INLINE_ATTACH_WAIT_BEFORE_SEND_MESSAGE);
@@ -3520,10 +3609,7 @@ export default function UnifiedChatPage({
     if (!inputMessage.trim() || (!isConnected && !isConnecting && !token)) {
       return;
     }
-
-    if (currentChatLoading || hasActiveChatStreaming) {
-      return;
-    }
+    if (sendGateRef.current) return;
 
     const selectedModels = getSelectedModels();
     if (selectedModels.length === 0) {
@@ -3536,6 +3622,25 @@ export default function UnifiedChatPage({
       chatId = createChat('Новый чат');
       skipNextMultiLlmChatResetRef.current = true;
       setCurrentChat(chatId);
+    }
+
+    const messageSnapshot = inputMessage.trim();
+    const inlineSnapshot = [...inlineAttachments];
+    // Сразу закрываем ворота и чистим инпут — до любых await/setState.
+    sendGateRef.current = true;
+    setInlineAttachments([]);
+    setInputMessage('');
+
+    const busy = currentChatLoading || hasActiveChatStreaming;
+    if (busy) {
+      enqueueUniqueChatMessage(chatId, {
+        text: messageSnapshot,
+        inlineAttachments: inlineSnapshot,
+        expectMultiLlm: true,
+      });
+      sendGateRef.current = false;
+      setTimeout(() => inputRef.current?.focus(), 10);
+      return;
     }
 
     setLoading(true);
@@ -3556,32 +3661,19 @@ export default function UnifiedChatPage({
         lastMultiLlmPostedKeyRef.current = modelsKey;
       }
 
-      const inlinePayload = inlineAttachments.length
-        ? {
-            inline_context: inlineAttachments.filter(f => f.contentType === 'text').map(f => `[${f.name}]\n${f.content}`).join('\n\n') || undefined,
-            inline_images: inlineAttachments.filter(f => f.contentType === 'image').map(f => f.content),
-            attachments_meta: inlineAttachments.map(f => ({
-              name: f.name,
-              contentType: f.contentType as 'text' | 'image',
-              preview: f.contentType === 'image' ? f.content : undefined,
-              minio_object: f.minioObject,
-              minio_bucket: f.minioBucket,
-              ...(typeof f.size === 'number' && f.size > 0 ? { size: f.size } : {}),
-              ...(typeof f.tokenEstimate === 'number' && f.tokenEstimate > 0 ? { tokenEstimate: f.tokenEstimate } : {}),
-            })),
-          }
-        : undefined;
-      sendMessage(inputMessage.trim(), chatId, true, undefined, true, inlinePayload);
-      setInlineAttachments([]);
-
-      setInputMessage('');
-
-      setTimeout(() => {
-        inputRef.current?.focus();
-      }, 10);
+      sendMessage(
+        messageSnapshot,
+        chatId,
+        true,
+        undefined,
+        true,
+        buildInlinePayloadFrom(inlineSnapshot),
+      );
+      setTimeout(() => inputRef.current?.focus(), 10);
     } catch {
       setLoading(false);
       showNotification('error', 'Ошибка отправки сообщения');
+      sendGateRef.current = false;
     }
   };
 
@@ -3590,14 +3682,15 @@ export default function UnifiedChatPage({
       setAttachErrorBanner(INLINE_ATTACH_WAIT_BEFORE_SEND_MESSAGE);
       return;
     }
+    if (sendGateRef.current) return;
 
     // Если режим multi-llm, используем специальную функцию
     if (isMultiLlmMode) {
-      handleSendMessageMultiLLM();
+      void handleSendMessageMultiLLM();
       return;
     }
 
-    if ((!inputMessage.trim() && inlineAttachments.length === 0) || currentChatLoading) {
+    if (!inputMessage.trim() && inlineAttachments.length === 0) {
       return;
     }
     if (!isConnected && !isConnecting) {
@@ -3610,88 +3703,236 @@ export default function UnifiedChatPage({
 
     const messageSnapshot = inputMessage.trim();
     const inlineSnapshot = [...inlineAttachments];
-    const chatSnapshot = currentChat;
+    let chatId = currentChat?.id;
+    if (!chatId) {
+      chatId = createChat('Новый чат');
+      setCurrentChat(chatId);
+    }
 
-    runWhenModelReady(messageSnapshot, () => {
-      if (currentChatLoading) {
+    // Синхронно: один Enter = одно действие, инпут пустой до key-repeat.
+    sendGateRef.current = true;
+    setInlineAttachments([]);
+    setInputMessage('');
+
+    const busy = currentChatLoading || hasActiveChatStreaming;
+    if (busy) {
+      enqueueUniqueChatMessage(chatId, {
+        text: messageSnapshot,
+        inlineAttachments: inlineSnapshot,
+        expectMultiLlm: false,
+      });
+      sendGateRef.current = false;
+      setTimeout(() => inputRef.current?.focus(), 10);
+      return;
+    }
+
+    const syncReady = resolveModelReadySync(messageSnapshot);
+    if (syncReady === false) {
+      sendGateRef.current = false;
+      return;
+    }
+
+    const commitSend = () => {
+      if (currentChatLoading || hasActiveChatStreaming) {
+        enqueueUniqueChatMessage(chatId!, {
+          text: messageSnapshot,
+          inlineAttachments: inlineSnapshot,
+          expectMultiLlm: false,
+        });
+        sendGateRef.current = false;
         return;
       }
 
-      // Автоматически создаем новый чат, если его нет
-      if (!chatSnapshot) {
-        const newChatId = createChat('Новый чат');
-        setCurrentChat(newChatId);
-        setInputMessage('');
-        const inlinePayloadNew = inlineSnapshot.length
-          ? {
-              inline_context:
-                inlineSnapshot
-                  .filter((f) => f.contentType === 'text')
-                  .map((f) => `[${f.name}]\n${f.content}`)
-                  .join('\n\n') || undefined,
-              inline_images: inlineSnapshot
-                .filter((f) => f.contentType === 'image')
-                .map((f) => f.content),
-              attachments_meta: inlineSnapshot.map((f) => ({
-                name: f.name,
-                contentType: f.contentType as 'text' | 'image',
-                preview: f.contentType === 'image' ? f.content : undefined,
-                minio_object: f.minioObject,
-                minio_bucket: f.minioBucket,
-                ...(typeof f.size === 'number' && f.size > 0 ? { size: f.size } : {}),
-                ...(typeof f.tokenEstimate === 'number' && f.tokenEstimate > 0
-                  ? { tokenEstimate: f.tokenEstimate }
-                  : {}),
-              })),
-            }
-          : undefined;
-        setTimeout(() => {
-          clearFollowUpSuggestions();
-          sendMessage(messageSnapshot, newChatId, true, undefined, undefined, inlinePayloadNew);
-          setInlineAttachments([]);
-          inputRef.current?.focus();
-        }, 50);
-        return;
-      }
-
-      const inlinePayload = inlineSnapshot.length
-        ? {
-            inline_context:
-              inlineSnapshot
-                .filter((f) => f.contentType === 'text')
-                .map((f) => `[${f.name}]\n${f.content}`)
-                .join('\n\n') || undefined,
-            inline_images: inlineSnapshot
-              .filter((f) => f.contentType === 'image')
-              .map((f) => f.content),
-            attachments_meta: inlineSnapshot.map((f) => ({
-              name: f.name,
-              contentType: f.contentType as 'text' | 'image',
-              preview: f.contentType === 'image' ? f.content : undefined,
-              minio_object: f.minioObject,
-              minio_bucket: f.minioBucket,
-              ...(typeof f.size === 'number' && f.size > 0 ? { size: f.size } : {}),
-              ...(typeof f.tokenEstimate === 'number' && f.tokenEstimate > 0
-                ? { tokenEstimate: f.tokenEstimate }
-                : {}),
-            })),
-          }
-        : undefined;
       clearFollowUpSuggestions();
-      sendMessage(messageSnapshot, chatSnapshot.id, true, undefined, undefined, inlinePayload);
-      setInlineAttachments([]);
-      setInputMessage('');
+      sendMessage(
+        messageSnapshot,
+        chatId!,
+        true,
+        undefined,
+        undefined,
+        buildInlinePayloadFrom(inlineSnapshot),
+      );
+      // Gate снимет эффект, когда чат станет busy / idle.
+      setTimeout(() => inputRef.current?.focus(), 10);
+    };
 
-      setTimeout(() => {
-        inputRef.current?.focus();
-      }, 10);
+    if (syncReady === true) {
+      commitSend();
+      return;
+    }
+
+    void ensureModelReadyForSend(messageSnapshot).then((ok) => {
+      if (!ok) {
+        sendGateRef.current = false;
+        return;
+      }
+      commitSend();
     });
   };
-  const handleKeyPress = (event: React.KeyboardEvent): void => {
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault();
-      handleSendMessage();
+
+  // Снимаем send-gate, когда генерация реально стартовала или чат снова idle без очереди.
+  useEffect(() => {
+    if (currentChatLoading || hasActiveChatStreaming) {
+      sendGateRef.current = false;
+      return;
     }
+    const chatId = currentChat?.id;
+    if (chatId && peekQueuedChatMessage(chatId)) return;
+    // Idle и очередь пуста — можно снова слать с клавиатуры.
+    const t = window.setTimeout(() => {
+      sendGateRef.current = false;
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [
+    currentChat?.id,
+    currentChatLoading,
+    hasActiveChatStreaming,
+    peekQueuedChatMessage,
+    chatMessageQueue.length,
+  ]);
+
+  // Дренаж очереди сообщений (Open WebUI-like) после завершения генерации.
+  useEffect(() => {
+    const chatId = currentChat?.id;
+    if (!chatId) return;
+    if (currentChatLoading || hasActiveChatStreaming) {
+      // Не сбрасываем drain-lock здесь: иначе при кратком мигании busy
+      // эффект успевает отправить следующий элемент очереди повторно.
+      return;
+    }
+    if (!isConnected && !isConnecting && !token) return;
+    if (sendGateRef.current) return;
+
+    const next = peekQueuedChatMessage(chatId);
+    if (!next) {
+      endChatQueueDrain(chatId);
+      queueDispatchLockRef.current = null;
+      return;
+    }
+    if (queueDispatchLockRef.current === next.id) return;
+    if (!beginChatQueueDrain(chatId)) return;
+
+    queueDispatchLockRef.current = next.id;
+    const item = shiftQueuedChatMessage(chatId);
+    if (!item) {
+      endChatQueueDrain(chatId);
+      queueDispatchLockRef.current = null;
+      return;
+    }
+
+    const failDrain = () => {
+      endChatQueueDrain(chatId);
+      queueDispatchLockRef.current = null;
+      sendGateRef.current = false;
+    };
+
+    const dispatch = () => {
+      clearFollowUpSuggestions();
+      sendGateRef.current = true;
+      setLoading(true);
+      sendMessage(
+        item.text,
+        chatId,
+        true,
+        undefined,
+        item.expectMultiLlm ? true : undefined,
+        buildInlinePayloadFrom(item.inlineAttachments),
+      );
+      // Lock держим до перехода в busy; снимет соседний эффект / idle-ветка.
+    };
+
+    if (item.expectMultiLlm) {
+      dispatch();
+      return;
+    }
+
+    const syncReady = resolveModelReadySync(item.text);
+    if (syncReady === false) {
+      failDrain();
+      return;
+    }
+    if (syncReady === true) {
+      dispatch();
+      return;
+    }
+
+    void ensureModelReadyForSend(item.text).then((ok) => {
+      if (!ok) {
+        failDrain();
+        return;
+      }
+      if (currentChatLoading || hasActiveChatStreaming) {
+        // Вернём в очередь один раз — не дублируя.
+        enqueueUniqueChatMessage(chatId, {
+          text: item.text,
+          inlineAttachments: item.inlineAttachments,
+          expectMultiLlm: item.expectMultiLlm,
+        });
+        failDrain();
+        return;
+      }
+      dispatch();
+    });
+  }, [
+    currentChat?.id,
+    currentChatLoading,
+    hasActiveChatStreaming,
+    isConnected,
+    isConnecting,
+    token,
+    peekQueuedChatMessage,
+    shiftQueuedChatMessage,
+    beginChatQueueDrain,
+    endChatQueueDrain,
+    enqueueUniqueChatMessage,
+    sendMessage,
+    buildInlinePayloadFrom,
+    resolveModelReadySync,
+    ensureModelReadyForSend,
+    clearFollowUpSuggestions,
+    setLoading,
+  ]);
+
+  const renderMessageQueueChips = (maxWidth: string | number) => {
+    if (!chatMessageQueue.length) return null;
+    return (
+      <Box
+        data-testid="chat-message-queue"
+        sx={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: 0.75,
+          maxWidth,
+          width: '100%',
+          mx: 'auto',
+          mb: 1,
+          px: interfaceSettings.widescreenMode ? 4 : 2,
+        }}
+      >
+        {chatMessageQueue.map((item, idx) => (
+          <Chip
+            key={item.id}
+            size="small"
+            label={`${idx + 1}. ${item.text.trim() || 'вложение'}`.slice(0, 72)}
+            onDelete={() => currentChat?.id && removeQueuedChatMessage(currentChat.id, item.id)}
+            sx={{
+              maxWidth: '100%',
+              bgcolor: isDarkMode ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+            }}
+          />
+        ))}
+      </Box>
+    );
+  };
+  const handleKeyPress = (event: React.KeyboardEvent): void => {
+    if (event.key !== 'Enter' || event.shiftKey) return;
+    // key-repeat Enter иначе заливает очередь/чат десятками копий.
+    if ('repeat' in event && event.repeat) {
+      event.preventDefault();
+      return;
+    }
+    event.preventDefault();
+    handleSendMessage();
   };
 
   // Вставка из буфера: скриншоты (Ctrl+V) и большой текст как файл
@@ -5561,6 +5802,7 @@ export default function UnifiedChatPage({
                            </Typography>
                          </Box>
                          {renderMultiLlmModelToolbar()}
+                         {renderMessageQueueChips(interfaceSettings.widescreenMode ? '100%' : '800px')}
                          <ChatInputBar
                            toolsMenuAnchorRef={chatInputToolsAnchorRef}
                            value={inputMessage}
@@ -5568,7 +5810,7 @@ export default function UnifiedChatPage({
                            onKeyPress={handleKeyPress}
                            onPaste={(e) => handlePaste(e as React.ClipboardEvent<HTMLDivElement>)}
                            placeholder={chatMainPlaceholder}
-                          inputDisabled={socketBlocksChatInput || multiLlmInputBlocked || chatAwaitingTokens}
+                          inputDisabled={socketBlocksChatInput || multiLlmInputBlocked}
                               inputRef={inputRef}
                               isDarkMode={isDarkMode}
                               solidWorkZoneBackground={workZoneAnimated}
@@ -5589,17 +5831,17 @@ export default function UnifiedChatPage({
                            onYandexDiskClick={() => { void handleYandexDiskClick(); }}
                            isUploading={isUploading}
                            uploadingFile={uploadingFile}
-                           attachDisabled={isUploading || multiLlmInputBlocked || chatAwaitingTokens}
+                           attachDisabled={isUploading || multiLlmInputBlocked}
                               inlineFiles={inlineAttachments}
                               onInlineFileRemove={(idx) => setInlineAttachments(prev => prev.filter((_, i) => i !== idx))}
                               onSettingsClick={handleMenuOpen}
-                             settingsDisabled={multiLlmInputBlocked || chatAwaitingTokens}
+                             settingsDisabled={multiLlmInputBlocked}
                               showStopButton={currentChatLoading || hasActiveChatStreaming}
                               onStopClick={handleStopGeneration}
                               onSendClick={handleSendMessage}
                              sendDisabled={chatSendDisabled}
                               onVoiceClick={() => setShowVoiceDialog(true)}
-                             voiceDisabled={multiLlmInputBlocked || chatAwaitingTokens}
+                             voiceDisabled={multiLlmInputBlocked}
                            voiceTooltip="Голосовой ввод"
                            libraryBadge={libraryInputBadge}
                            inputSuggestions={mcpInputSuggestions}
@@ -5785,6 +6027,8 @@ export default function UnifiedChatPage({
                  </Box>
                </Box>
              ) : (
+             <>
+             {renderMessageQueueChips('100%')}
              <ChatInputBar
                toolsMenuAnchorRef={chatInputToolsAnchorRef}
                value={inputMessage}
@@ -5792,7 +6036,7 @@ export default function UnifiedChatPage({
                onKeyPress={handleKeyPress}
                onPaste={(e) => handlePaste(e as React.ClipboardEvent<HTMLDivElement>)}
                placeholder={chatMainPlaceholder}
-                          inputDisabled={socketBlocksChatInput || multiLlmInputBlocked || chatAwaitingTokens}
+                          inputDisabled={socketBlocksChatInput || multiLlmInputBlocked}
                               inputRef={inputRef}
                               isDarkMode={isDarkMode}
                               solidWorkZoneBackground={workZoneAnimated}
@@ -5813,23 +6057,24 @@ export default function UnifiedChatPage({
                onYandexDiskClick={() => { void handleYandexDiskClick(); }}
                isUploading={isUploading}
                uploadingFile={uploadingFile}
-                           attachDisabled={isUploading || multiLlmInputBlocked || chatAwaitingTokens}
+                           attachDisabled={isUploading || multiLlmInputBlocked}
                               inlineFiles={inlineAttachments}
                               onInlineFileRemove={(idx) => setInlineAttachments(prev => prev.filter((_, i) => i !== idx))}
                               onSettingsClick={handleMenuOpen}
-                             settingsDisabled={multiLlmInputBlocked || chatAwaitingTokens}
+                             settingsDisabled={multiLlmInputBlocked}
                               showStopButton={currentChatLoading || hasActiveChatStreaming}
                               onStopClick={handleStopGeneration}
                               onSendClick={handleSendMessage}
                              sendDisabled={chatSendDisabled}
                               onVoiceClick={() => setShowVoiceDialog(true)}
-                             voiceDisabled={multiLlmInputBlocked || chatAwaitingTokens}
+                             voiceDisabled={multiLlmInputBlocked}
                voiceTooltip="Голосовой ввод"
                libraryBadge={libraryInputBadge}
                inputSuggestions={mcpInputSuggestions}
                extraActions={multiLlmSettingsExtraAction}
                contextCounter={chatContextCounter}
              />
+             </>
              )}
              </Box>
            </>

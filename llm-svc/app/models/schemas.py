@@ -168,7 +168,7 @@ class ModelInfoResponse(BaseModel):
 
 
 class ModelLoadRequest(BaseModel):
-    model: str
+    model: str = ""
 
 class ModelLoadResponse(BaseModel):
     success: bool
@@ -180,5 +180,13 @@ class ModelPoolTrimResponse(BaseModel):
     success: bool
     message: str
     remaining_models: Optional[List[str]] = None
+
+
+class ModelWarmupResponse(BaseModel):
+    success: bool
+    message: str
+    model_name: Optional[str] = None
+    elapsed_ms: Optional[float] = None
+
 
 ChatRequest = ChatCompletionRequest
