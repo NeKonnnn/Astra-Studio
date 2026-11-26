@@ -472,8 +472,8 @@ services:
     image: pgsty/silo:RELEASE.2026-11-12T00-00-00Z
     container_name: astrachat-minio
     ports:
-      - "${MINIO_API_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "9000:9000"  # API порт
+      - "9001:9001"  # Console порт
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
