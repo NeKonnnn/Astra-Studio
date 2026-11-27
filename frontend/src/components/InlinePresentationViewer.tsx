@@ -1,17 +1,17 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, CircularProgress, IconButton, Tooltip, Typography, Collapse, useTheme } from '@mui/material';
 import {
-  OpenInNew as OpenInNewIcon,
+  OpenInFull as OpenInFullIcon,
   Code as CodeIcon,
   ExpandLess as ExpandLessIcon,
 } from '@mui/icons-material';
 import {
   getStablePresentationSnapshot,
-  openPresentationViewer,
   presentationLog,
 } from '../utils/presentationViewer';
 import { useInViewport } from '../hooks/useInViewport';
 import ThinkingShimmerText from './chat/ThinkingShimmerText';
+import { useChatWorkspaceViewer } from '../contexts/ChatWorkspaceViewerContext';
 
 /** Номинальный размер слайда GPB (как в presentation-viewer.html). */
 const SLIDE_W_MM = 297;
@@ -435,6 +435,7 @@ export default function InlinePresentationViewer({
 }: InlinePresentationViewerProps) {
   const theme = useTheme();
   const isDarkMode = theme.palette.mode === 'dark';
+  const { expand } = useChatWorkspaceViewer();
   const [showSource, setShowSource] = useState(false);
   const [committedHtml, setCommittedHtml] = useState<string | null>(null);
   // readyCount = слайды, ФАКТИЧЕСКИ отрисованные в iframe (по ack от него),
@@ -587,12 +588,12 @@ export default function InlinePresentationViewer({
     return 'Презентация · генерация…';
   })();
 
-  const handleOpenExternal = () => {
-    try {
-      openPresentationViewer(html);
-    } catch (e) {
-      console.error('Failed to open presentation viewer:', e);
-    }
+  const handleExpandWorkspace = () => {
+    expand({
+      kind: 'presentation',
+      title: 'Презентация',
+      html,
+    });
   };
 
   const stage = (
@@ -747,9 +748,13 @@ export default function InlinePresentationViewer({
             </Tooltip>
           ) : null}
           {!pending ? (
-            <Tooltip title="Открыть в новой вкладке">
-              <IconButton size="small" onClick={handleOpenExternal}>
-                <OpenInNewIcon fontSize="small" />
+            <Tooltip title="Открыть на всю рабочую зону">
+              <IconButton
+                size="small"
+                onClick={handleExpandWorkspace}
+                aria-label="Открыть на всю рабочую зону"
+              >
+                <OpenInFullIcon fontSize="small" />
               </IconButton>
             </Tooltip>
           ) : null}

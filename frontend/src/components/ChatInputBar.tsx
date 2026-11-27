@@ -88,7 +88,7 @@ export interface ChatInputBarProps {
   onFileSelect?: (files: FileList) => void;
   attachDisabled?: boolean;
   accept?: string;
-  /** Показать пункт «Яндекс.Диск» в меню вложений (как Google Drive в Open WebUI) */
+  /** Показать пункт «Яндекс.Диск» в меню вложений */
   yandexDiskEnabled?: boolean;
   onYandexDiskClick?: () => void;
 
@@ -730,7 +730,7 @@ export default function ChatInputBar({
   const CHARS_FIRST_LINE = 100;   // примерно столько символов влезает в одну строку (шрифт 0.875rem, кнопки по бокам)
   const CHARS_SINGLE_BACK = 100;  // обратно в одну строку только когда короче (гистерезис)
   const [compactMultiline, setCompactMultiline] = useState(false);
-  /** Как в ChatGPT: развернуть поле ввода, когда текст упёрся в maxRows */
+  /** Развернуть поле ввода, когда текст упёрся в maxRows */
   const [composerExpanded, setComposerExpanded] = useState(false);
   const [showExpandToggle, setShowExpandToggle] = useState(false);
   const [skillMention, setSkillMention] = useState<{ open: boolean; query: string; start: number }>({
@@ -889,7 +889,7 @@ export default function ChatInputBar({
       </Tooltip>
     ) : null;
 
-  // ChatGPT: ~26 строк ≈ половина экрана (1.45em × 26 ≈ 50vh на типичном мониторе)
+  // ~26 строк ≈ половина экрана (1.45em × 26 ≈ 50vh на типичном мониторе)
   const COMPOSER_EXPANDED_LINES = 26;
   const composerExpandedHeight = `min(50dvh, calc(1.45em * ${COMPOSER_EXPANDED_LINES}))`;
 
@@ -1091,7 +1091,7 @@ export default function ChatInputBar({
     </Tooltip>
   ) : null;
 
-  // Как Open WebUI: Stop во время генерации, Send рядом — если уже набран следующий текст (в очередь).
+  // Stop во время генерации; Send рядом — если уже набран следующий текст (в очередь).
   const stopOrSendBtn = showStopButton && onStopClick ? (
     <>
       <Tooltip title="Прервать генерацию">

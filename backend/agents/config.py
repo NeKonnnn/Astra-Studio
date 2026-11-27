@@ -1,4 +1,4 @@
-"""Лимиты шагов агентного графа (аналог LibreChat recursion_limit)."""
+"""Лимиты шагов агентного графа (recursion_limit)."""
 
 from __future__ import annotations
 

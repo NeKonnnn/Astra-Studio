@@ -485,7 +485,7 @@ function McpToolCallRow({
   );
 }
 
-/** Панель MCP/native/subagent в стиле Open WebUI: компактные строки + группа Exploring/Explored. */
+/** Панель MCP/native/subagent: компактные строки + группа Exploring/Explored. */
 export default function McpToolCallsPanel({
   toolCalls,
   serverLabels,

@@ -1,5 +1,5 @@
 """
-System-prompt для режима Artifacts (по мотивам LibreChat).
+System-prompt для режима Artifacts.
 
 Инжектится в чат, когда у активного агента config.artifacts_enabled=true.
 При shadcn_enabled дополнительно дописываются инструкции по shadcn/ui.
@@ -273,7 +273,7 @@ def maybe_artifacts_prompt_for_agent(agent_profile: Optional[dict]) -> Optional[
         return None
     if not agent_profile.get("artifacts_enabled"):
         return None
-    # Как LibreChat CUSTOM: формат описывает сам агент / пользовательский промпт
+    # CUSTOM: формат описывает сам агент / пользовательский промпт
     if agent_profile.get("user_prompt_mode"):
         return None
     return build_artifacts_prompt(shadcn_enabled=bool(agent_profile.get("shadcn_enabled")))

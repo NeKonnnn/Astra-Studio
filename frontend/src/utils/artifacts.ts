@@ -70,7 +70,7 @@ const ATTR_RE = /(\w+)=["']([^"']*)["']/g;
 const ARTIFACT_FENCED_RE =
   /:::artifact\{([^}]*)\}\s*\r?\n([`~]{3,})([^\r\n]*)\r?\n([\s\S]*?)(?:\2\s*\r?\n:::|$)/g;
 
-/** Без fence: :::artifact{…}\ncontent\n::: (формат LibreChat / часть моделей). */
+/** Без fence: :::artifact{…}\ncontent\n::: (часть моделей). */
 const ARTIFACT_UNFENCED_RE =
   /:::artifact\{([^}]*)\}\s*\r?\n([\s\S]*?)(?:\r?\n:::\s*(?:\r?\n|$)|$)/g;
 

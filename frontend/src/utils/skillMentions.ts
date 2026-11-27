@@ -1,4 +1,4 @@
-/** Mentions skills: <$slug|Name> — Open WebUI parity */
+/** Mentions skills: <$slug|Name> */
 
 export const SKILL_MENTION_RE = /<\$([^|>]+)\|?([^>]*)>/g;
 

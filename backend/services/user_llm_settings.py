@@ -147,6 +147,49 @@ async def get_user_model_settings(user_id: Optional[str]) -> Dict[str, Any]:
     return _merge_model_settings(row.get("model_settings"))
 
 
+async def get_user_selected_model_path(user_id: Optional[str]) -> str:
+    """Последняя выбранная пользователем модель (per-user, PostgreSQL)."""
+    if not user_id:
+        return ""
+    repo = _get_repo()
+    if repo is None:
+        return ""
+    row = await repo.get(user_id)
+    if not row:
+        return ""
+    return str(row.get("selected_model_path") or "").strip()
+
+
+async def save_user_selected_model_path(user_id: str, model_path: str) -> str:
+    """Сохранить выбор модели пользователя без трогания temperature/промптов."""
+    uid = (user_id or "").strip()
+    path = (model_path or "").strip()
+    if not uid:
+        raise RuntimeError("user_id пуст")
+    if not path:
+        raise RuntimeError("model_path пуст")
+    repo = _get_repo()
+    if repo is None:
+        raise RuntimeError("Хранилище пользовательских настроек недоступно")
+    saved = await repo.upsert(uid, selected_model_path=path)
+    if not saved:
+        raise RuntimeError("Не удалось сохранить выбранную модель")
+    return str(saved.get("selected_model_path") or path).strip()
+
+
+async def get_latest_selected_model_path() -> str:
+    """Самая свежая выбранная модель среди всех пользователей (прогрев при старте)."""
+    repo = _get_repo()
+    if repo is None:
+        return ""
+    try:
+        path = await repo.get_latest_selected_model_path()
+    except Exception:
+        logger.exception("get_latest_selected_model_path failed")
+        return ""
+    return str(path or "").strip()
+
+
 async def save_user_model_settings(user_id: str, settings: Dict[str, Any]) -> Dict[str, Any]:
     merged = _merge_model_settings(settings)
     repo = _get_repo()

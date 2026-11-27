@@ -63,7 +63,7 @@ describe('UnifiedChatPage: отправка сообщения', () => {
     expect(hx.socket.sendMessage).not.toHaveBeenCalled();
   });
 
-  it('пока чат генерирует, сообщение ставится в очередь (Open WebUI-like)', () => {
+  it('пока чат генерирует, сообщение ставится в очередь', () => {
     hx.state.loadingChatIds = ['c1']; // генерация в текущем чате
     renderPage();
     type('привет');
@@ -86,7 +86,7 @@ describe('UnifiedChatPage: отправка сообщения', () => {
     fireEvent.click(screen.getByTestId('ib-send'));
     const queue = screen.getByTestId('chat-message-queue');
     // Один уникальный текст в хвосте, не десятки копий.
-    expect(queue.querySelectorAll('.MuiChip-root').length).toBe(1);
+    expect(queue.querySelectorAll('[data-testid^="chat-queue-item-"]').length).toBe(1);
     expect(hx.socket.sendMessage).not.toHaveBeenCalled();
   });
 

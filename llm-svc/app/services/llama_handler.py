@@ -384,38 +384,21 @@ class LlamaHandler(BaseLLMHandler):
             self._ensure_keep_alive_loop()
             return
 
-        default_id = self.normalize_model_id(self._config_model_name)
-        if not os.path.isfile(self._config_model_path):
-            logger.warning(
-                "Default model file not found: %s. "
-                "Load via POST /v1/models/load or first chat (ollama-style).",
-                self._config_model_path,
-            )
-            self.is_initialized = False
-            self._ensure_keep_alive_loop()
-            return
-
+        # Не греем model.path из конфига: в RAM должна быть только последняя
+        # выбранная пользователем модель (backend restore → POST /v1/models/load).
+        # HTTP (/v1/models, /health) поднимается сразу — каталог GGUF с диска.
+        self.is_initialized = False
         if self.eager_load:
             logger.info(
-                "Eager-loading default model '%s' (Open WebUI/Ollama-style warm start)",
-                default_id or self._config_model_name,
-            )
-            ok = await self.load_model_by_name(default_id or self._config_model_name)
-            if not ok:
-                logger.warning(
-                    "Eager load failed for %s — chat will load on demand",
-                    default_id,
-                )
-                self.is_initialized = False
-            else:
-                self.is_initialized = True
-        else:
-            logger.info(
-                "LLM handler ready (lazy). Default '%s' — load on first chat "
-                "or POST /v1/models/load",
+                "LLM_EAGER_LOAD=1 ignored for config default '%s' — "
+                "warmup is driven by last selected model via /v1/models/load",
                 self._config_model_name,
             )
-            self.is_initialized = False
+        else:
+            logger.info(
+                "LLM handler ready (lazy). Weights load via POST /v1/models/load "
+                "(last user-selected model)",
+            )
 
         self._ensure_keep_alive_loop()
 
@@ -629,7 +612,7 @@ class LlamaHandler(BaseLLMHandler):
         self._keep_alive_task = loop.create_task(self._keep_alive_loop())
 
     async def _keep_alive_loop(self) -> None:
-        """Как Ollama keep_alive: выгружать idle-модели после таймаута."""
+        """Keep-alive: выгружать idle-модели после таймаута."""
         logger.info(
             "Keep-alive sweeper started (idle=%ss, interval=%ss)",
             self.keep_alive_seconds,
@@ -648,12 +631,11 @@ class LlamaHandler(BaseLLMHandler):
         if self.keep_alive_seconds <= 0:
             return
         now = time.time()
-        default_id = self.normalize_model_id(self._config_model_name)
         idle_ids: List[str] = []
         async with self._registry_lock:
             for mid in list(self._model_slots.keys()):
-                # Дефолтную/primary модель не выгружаем — иначе «модель пропала» через keep_alive.
-                if mid == default_id or mid == self._primary_model_id:
+                # Держим только текущую (последнюю выбранную) primary-модель.
+                if mid == self._primary_model_id:
                     continue
                 if len(self._model_slots) <= 1:
                     continue
@@ -756,30 +738,48 @@ class LlamaHandler(BaseLLMHandler):
     async def load_model(self, model_name: str) -> bool:
         return await self.load_model_by_name(model_name)
 
-    async def _restore_default_after_failed_load(self, failed_id: str) -> None:
-        dname = self.normalize_model_id(settings.model.name)
-        dpath = settings.model.path
-        if not os.path.isfile(dpath) or dname == failed_id:
-            return
+    async def _keep_only_model(self, keep_id: str) -> None:
+        """Выгрузить из пула всё, кроме keep_id (одна активная модель)."""
+        dispose: List[_Slot] = []
         async with self._registry_lock:
-            if dname in self._model_slots:
-                self._primary_model_id = dname
-                return
-        try:
-            replicas = await self._instantiate_replicas(dpath, INFERENCE_REPLICAS)
-            async with self._registry_lock:
-                self._model_slots[dname] = replicas
-                self._model_slots.move_to_end(dname)
-                self._primary_model_id = dname
-                self.is_initialized = True
+            for mid in list(self._model_slots.keys()):
+                if mid == keep_id:
+                    continue
+                dispose.extend(self._model_slots.pop(mid) or [])
+                self._last_used.pop(mid, None)
+            if keep_id in self._model_slots:
+                self._primary_model_id = keep_id
+                self._model_slots.move_to_end(keep_id)
+            else:
+                self._primary_model_id = next(iter(self._model_slots.keys()), None)
+            self.is_initialized = bool(self._model_slots)
+        for slot in dispose:
+            await self._dispose_slot(slot)
+        if dispose:
             logger.info(
-                "Restored default model %s after failed load of %s (replicas=%s)",
-                dname,
-                failed_id,
-                len(replicas),
+                "Exclusive pool: kept %s, unloaded %s other slot-group(s)",
+                keep_id,
+                len(dispose),
             )
-        except Exception as e:
-            logger.error(f"Failed to restore default model: {e}")
+
+    async def _restore_default_after_failed_load(self, failed_id: str) -> None:
+        # Не подставляем model.path из конфига — только последняя выбранная primary.
+        async with self._registry_lock:
+            if self._primary_model_id and self._primary_model_id in self._model_slots:
+                logger.info(
+                    "Load of %s failed; keeping primary %s in pool",
+                    failed_id,
+                    self._primary_model_id,
+                )
+                return
+            self._primary_model_id = next(iter(self._model_slots.keys()), None)
+            self.is_initialized = bool(self._model_slots)
+            logger.info(
+                "Load of %s failed; pool primary=%s remaining=%s",
+                failed_id,
+                self._primary_model_id,
+                list(self._model_slots.keys()),
+            )
 
     async def load_model_by_name(self, model_name: str) -> bool:
         model_id = self.normalize_model_id(model_name)
@@ -791,28 +791,54 @@ class LlamaHandler(BaseLLMHandler):
             logger.error(f"Model file not found for id {model_id!r} (resolved={model_path!r})")
             return False
 
+        already = False
+        victim_group: Optional[List[_Slot]] = None
+        evicted_id: Optional[str] = None
         async with self._model_switch_lock:
             async with self._registry_lock:
                 if model_id in self._model_slots:
                     self._primary_model_id = model_id
                     self.is_initialized = True
                     self._touch_lru(model_id)
-                    logger.info(f"Model {model_id} already in pool (LRU touch, set primary)")
-                    return True
+                    already = True
 
-            victim_group: Optional[List[_Slot]] = None
-            evicted_id: Optional[str] = None
-            async with self._registry_lock:
-                if len(self._model_slots) >= MAX_LOADED_MODELS:
-                    evicted_id, victim_group = self._model_slots.popitem(last=False)
-                    if self._primary_model_id == evicted_id:
-                        self._primary_model_id = next(iter(self._model_slots.keys()), None)
+            if already:
+                await self._keep_only_model(model_id)
+                logger.info(f"Model {model_id} already in pool (set primary, exclusive)")
+            else:
+                async with self._registry_lock:
+                    # Exclusive: заранее выгружаем всех, кто не нужен (или LRU при лимите).
+                    if MAX_LOADED_MODELS <= 1:
+                        for mid in list(self._model_slots.keys()):
+                            if mid == model_id:
+                                continue
+                            group = self._model_slots.pop(mid)
+                            if group:
+                                if victim_group is None:
+                                    victim_group = []
+                                    evicted_id = mid
+                                victim_group.extend(group)
+                            self._last_used.pop(mid, None)
+                        if self._primary_model_id not in self._model_slots:
+                            self._primary_model_id = next(iter(self._model_slots.keys()), None)
+                    elif len(self._model_slots) >= MAX_LOADED_MODELS:
+                        evicted_id, victim_group = self._model_slots.popitem(last=False)
+                        if self._primary_model_id == evicted_id:
+                            self._primary_model_id = next(iter(self._model_slots.keys()), None)
+
+        if already:
+            if self.warmup_on_load:
+                try:
+                    await self.warmup_model(model_id)
+                except Exception as e:
+                    logger.warning("Post-load warmup skipped for %s: %s", model_id, e)
+            return True
 
         # Дальше — долгий I/O/CPU; без удержания _model_switch_lock, чтобы не блокировать
         # /v1/health, чат с уже загруженной моделью и второй параллельный /load
 
         if victim_group is not None:
-            logger.info(f"LRU evict from pool: {evicted_id} (max={MAX_LOADED_MODELS})")
+            logger.info(f"LRU/exclusive evict before load: {evicted_id} (max={MAX_LOADED_MODELS})")
             for victim_slot in victim_group:
                 await self._dispose_slot(victim_slot)
 
@@ -834,7 +860,7 @@ class LlamaHandler(BaseLLMHandler):
                     self.is_initialized = True
                     logger.info(f"Model {model_id} уже в пуле (параллельная загрузка), отбрасываем дубликат")
                 else:
-                    while len(self._model_slots) >= MAX_LOADED_MODELS:
+                    while len(self._model_slots) >= max(1, MAX_LOADED_MODELS):
                         ev2, vic2 = self._model_slots.popitem(last=False)
                         dispose_after.extend(vic2)
                         if self._primary_model_id == ev2:
@@ -849,6 +875,7 @@ class LlamaHandler(BaseLLMHandler):
                         len(self._model_slots),
                         len(new_replicas),
                     )
+            await self._keep_only_model(model_id)
 
         for s in dispose_after:
             await self._dispose_slot(s)
@@ -862,50 +889,15 @@ class LlamaHandler(BaseLLMHandler):
         return True
 
     async def trim_pool_to_config_default(self) -> bool:
-        """
-        Оставить в RAM только модель из config 
-        Остальные GGUF выгружаются после выхода из multi-LLM на бэкенде
-        """
-        dname = self.normalize_model_id(settings.model.name)
-        dpath = settings.model.path
+        """Оставить в RAM только текущую primary (последнюю выбранную) модель."""
         async with self._model_switch_lock:
-            to_dispose: List[_Slot] = []
+            keep = self._primary_model_id
             async with self._registry_lock:
-                keys_to_remove = [k for k in self._model_slots.keys() if k != dname]
-                for k in keys_to_remove:
-                    to_dispose.extend(self._model_slots.pop(k))
-            for slot in to_dispose:
-                await self._dispose_slot(slot)
-
-            async with self._registry_lock:
-                have_default = dname in self._model_slots
-
-            if not have_default and os.path.isfile(dpath):
-                try:
-                    replicas = await self._instantiate_replicas(dpath, INFERENCE_REPLICAS)
-                    async with self._registry_lock:
-                        self._model_slots[dname] = replicas
-                        self._primary_model_id = dname
-                        self._model_slots.move_to_end(dname)
-                        self.is_initialized = True
-                    logger.info(
-                        "trim_pool: загружена модель из конфига %s (replicas=%s)",
-                        dname,
-                        len(replicas),
-                    )
-                except Exception as e:
-                    logger.error(f"trim_pool: не удалось загрузить дефолт {dname}: {e}")
-                    async with self._registry_lock:
-                        self._primary_model_id = next(iter(self._model_slots.keys()), None)
-                        self.is_initialized = bool(self._model_slots)
-                    return False
-            else:
-                async with self._registry_lock:
-                    if dname in self._model_slots:
-                        self._primary_model_id = dname
-                        self._model_slots.move_to_end(dname)
-                    else:
-                        self._primary_model_id = next(iter(self._model_slots.keys()), None)
-                    self.is_initialized = bool(self._model_slots)
-
-        return True
+                if not keep:
+                    keep = next(iter(self._model_slots.keys()), None)
+            if not keep:
+                logger.info("trim_pool: пул пуст — нечего оставлять")
+                return True
+            await self._keep_only_model(keep)
+            logger.info("trim_pool: оставлена primary %s", keep)
+            return True

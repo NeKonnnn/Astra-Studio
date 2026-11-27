@@ -4,14 +4,20 @@ import '@testing-library/jest-dom';
 import InlinePresentationViewer, { buildInlinePresentationViewerSrcDoc } from '@/components/InlinePresentationViewer';
 
 const mockSnapshot = jest.fn();
-const mockOpenPresentationViewer = jest.fn();
+const mockExpand = jest.fn();
 const mockPresentationLog = jest.fn();
 let mockInView = true;
 
 jest.mock('@/utils/presentationViewer', () => ({
   getStablePresentationSnapshot: (...a: unknown[]) => mockSnapshot(...a),
-  openPresentationViewer: (...a: unknown[]) => mockOpenPresentationViewer(...a),
   presentationLog: (...a: unknown[]) => mockPresentationLog(...a),
+}));
+jest.mock('@/contexts/ChatWorkspaceViewerContext', () => ({
+  useChatWorkspaceViewer: () => ({
+    session: null,
+    expand: (...a: unknown[]) => mockExpand(...a),
+    collapse: jest.fn(),
+  }),
 }));
 jest.mock('@/hooks/useInViewport', () => ({
   useInViewport: () => ({ ref: { current: null }, inView: mockInView }),
@@ -115,7 +121,7 @@ describe('InlinePresentationViewer', () => {
     jest.useFakeTimers('modern');
     jest.setSystemTime(new Date('2024-01-01T00:00:00Z'));
     mockSnapshot.mockReset();
-    mockOpenPresentationViewer.mockReset();
+    mockExpand.mockReset();
     mockPresentationLog.mockReset();
     mockInView = true;
     fullReady = 3;
@@ -135,7 +141,7 @@ describe('InlinePresentationViewer', () => {
       expect(frame()).toHaveAttribute('title', 'Просмотр презентации');
       expect(screen.getByText('Презентация')).toBeInTheDocument();
       expect(screen.queryByRole('progressbar')).toBeNull();
-      expect(screen.getByLabelText('Открыть в новой вкладке')).toBeInTheDocument();
+      expect(screen.getByLabelText('Открыть на всю рабочую зону')).toBeInTheDocument();
       expect(mockSnapshot).toHaveBeenCalledWith("<div class='slide'>1</div>", false);
     });
 
@@ -179,20 +185,14 @@ describe('InlinePresentationViewer', () => {
       expect(mockPresentationLog.mock.calls[0][1].htmlLen).toBe(0);
     });
 
-    it('открытие во внешней вкладке передаёт исходный html в openPresentationViewer', () => {
+    it('открытие на рабочую зону передаёт html в expand', () => {
       render(<InlinePresentationViewer html="<div>исходник</div>" />);
-      fireEvent.click(screen.getByLabelText('Открыть в новой вкладке'));
-      expect(mockOpenPresentationViewer).toHaveBeenCalledWith('<div>исходник</div>');
-    });
-
-    it('сбой при открытии логируется и не пробрасывается', () => {
-      const err = jest.spyOn(console, 'error').mockImplementation(() => {});
-      mockOpenPresentationViewer.mockImplementation(() => {
-        throw new Error('popup');
+      fireEvent.click(screen.getByLabelText('Открыть на всю рабочую зону'));
+      expect(mockExpand).toHaveBeenCalledWith({
+        kind: 'presentation',
+        title: 'Презентация',
+        html: '<div>исходник</div>',
       });
-      render(<InlinePresentationViewer html="x" />);
-      fireEvent.click(screen.getByLabelText('Открыть в новой вкладке'));
-      expect(err).toHaveBeenCalledWith('Failed to open presentation viewer:', expect.any(Error));
     });
 
     it('sourceSlot: кнопка «Показать HTML» раскрывает и скрывает исходник', () => {
@@ -340,7 +340,7 @@ describe('InlinePresentationViewer', () => {
       render(<InlinePresentationViewer html="" isStreaming />);
       expect(screen.getAllByText('Презентация · генерация…').length).toBeGreaterThan(0);
       expect(screen.getByRole('progressbar')).toBeInTheDocument();
-      expect(screen.queryByLabelText('Открыть в новой вкладке')).toBeNull();
+      expect(screen.queryByLabelText('Открыть на всю рабочую зону')).toBeNull();
       expect(frame()).toBeNull(); // нечего показывать: committedHtml пуст
       expect(screen.queryByText('Не удалось собрать слайды презентации')).toBeNull();
     });
@@ -453,10 +453,10 @@ describe('InlinePresentationViewer', () => {
 
     it('окончание стрима снимает «ожидание», показывает кнопки и итоговый статус', () => {
       const { rerender } = render(<InlinePresentationViewer html="x" isStreaming />);
-      expect(screen.queryByLabelText('Открыть в новой вкладке')).toBeNull();
+      expect(screen.queryByLabelText('Открыть на всю рабочую зону')).toBeNull();
       rerender(<InlinePresentationViewer html="xfinal" isStreaming={false} />);
       expect(screen.getByText('Презентация')).toBeInTheDocument();
-      expect(screen.getByLabelText('Открыть в новой вкладке')).toBeInTheDocument();
+      expect(screen.getByLabelText('Открыть на всю рабочую зону')).toBeInTheDocument();
       expect(screen.queryByRole('progressbar')).toBeNull();
     });
 
@@ -476,7 +476,7 @@ describe('InlinePresentationViewer', () => {
       render(<InlinePresentationViewer html="x" embedded />);
       expect(frame()).not.toBeNull();
       expect(screen.queryByText('Презентация')).toBeNull();
-      expect(screen.queryByLabelText('Открыть в новой вкладке')).toBeNull();
+      expect(screen.queryByLabelText('Открыть на всю рабочую зону')).toBeNull();
     });
 
     it('embedded без слайдов показывает сообщение об ошибке', () => {

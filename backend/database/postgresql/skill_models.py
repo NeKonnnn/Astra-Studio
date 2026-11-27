@@ -1,4 +1,4 @@
-"""Pydantic-модели Skills (LibreChat-like Agent Skills)."""
+"""Pydantic-модели Skills (Agent Skills)."""
 
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -54,7 +54,7 @@ def infer_skill_file_category(relative_path: str) -> str:
 
 
 class Skill(BaseModel):
-    """Skill entity (LibreChat-like)."""
+    """Skill entity."""
 
     id: Optional[int] = None
     slug: str = Field(

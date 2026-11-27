@@ -267,7 +267,7 @@ describe('UnifiedChatPage: якорение ленты и режим «вопр�
     renderPage();
     hx.virt.scrollToIndex.mockClear();
     advance(800);
-    // только Grok-вызовы с align=start, ни одного align=end
+    // только вызовы с align=start, ни одного align=end
     expect(hx.virt.scrollToIndex.mock.calls.every((c: any[]) => c[0].align === 'start')).toBe(true);
   });
 

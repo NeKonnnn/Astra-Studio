@@ -12,10 +12,7 @@ function newQueueId(): string {
   return `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/**
- * Очередь сообщений на чат (как в Open WebUI):
- * можно набирать следующее, пока идёт ответ; после завершения уходит само.
- */
+/** Очередь сообщений на чат: набор во время ответа, автоотправка после завершения. */
 export function useChatMessageQueue() {
   const queuesRef = useRef<Record<string, QueuedChatMessage[]>>({});
   const [queues, setQueues] = useState<Record<string, QueuedChatMessage[]>>({});
@@ -49,6 +46,25 @@ export function useChatMessageQueue() {
         sync(rest);
         return;
       }
+      sync({ ...queuesRef.current, [chatId]: nextList });
+    },
+    [sync],
+  );
+
+  const update = useCallback(
+    (
+      chatId: string,
+      itemId: string,
+      patch: Partial<Omit<QueuedChatMessage, 'id'>>,
+    ) => {
+      const prev = queuesRef.current[chatId] || [];
+      let changed = false;
+      const nextList = prev.map((item) => {
+        if (item.id !== itemId) return item;
+        changed = true;
+        return { ...item, ...patch, id: item.id };
+      });
+      if (!changed) return;
       sync({ ...queuesRef.current, [chatId]: nextList });
     },
     [sync],
@@ -111,6 +127,7 @@ export function useChatMessageQueue() {
     queues,
     enqueue,
     remove,
+    update,
     clear,
     shift,
     peek,

@@ -50,8 +50,9 @@ class ModelConfig(BaseModel):
     n_threads_batch: int = 0  # 0 = как n_thread
     n_batch: int = 512
     n_ubatch: int = 512
-    # Как у Ollama/Open WebUI: прогреть дефолт при старте; idle-unload
-    eager_load: bool = True
+    # Прогреть дефолт при старте; idle-unload
+    # Config-default eager-load off: last user-selected model via /v1/models/load.
+    eager_load: bool = False
     warmup_on_load: bool = True
     # Секунды без запросов до выгрузки. <=0 — держать в RAM всегда (keep_alive -1).
     keep_alive_seconds: int = 300

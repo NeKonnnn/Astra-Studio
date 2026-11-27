@@ -1,4 +1,4 @@
-/** Per-chat MCP tool_ids (OWUI-compatible: server:mcp:{id}). */
+/** Per-chat MCP tool_ids (server:mcp:{id}). */
 
 export const MCP_SELECTION_CHANGED_EVENT = 'astrachatMcpSelectionChanged';
 

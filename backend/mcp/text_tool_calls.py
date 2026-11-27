@@ -1,4 +1,4 @@
-"""Парсинг tool calls из текста ответа модели (Qwen / Hermes XML / OWUI JSON)."""
+"""Парсинг tool calls из текста ответа модели (Qwen / Hermes XML / JSON)."""
 
 from __future__ import annotations
 
@@ -184,7 +184,7 @@ def _extract_partial_tool_calls_regex(text: str) -> List[ToolCall]:
 
 
 def extract_owui_tool_calls(text: str) -> Tuple[str, List[ToolCall]]:
-    """Разбирает OWUI-формат {"tool_calls":[{"name","parameters"|"arguments"}]}.
+    """Разбирает формат {"tool_calls":[{"name","parameters"|"arguments"}]}.
 
     Возвращает (очищенный текст без JSON FC, список ToolCall).
     Умеет чинить обрезанный JSON (finish_reason=length).
@@ -301,7 +301,7 @@ def extract_tool_calls_from_content(text: str) -> Tuple[str, List[ToolCall]]:
             )
         cleaned = cleaned.strip()
 
-    # OWUI JSON FC: {"tool_calls":[{"name","parameters"}]} в content.
+    # JSON FC: {"tool_calls":[{"name","parameters"}]} в content.
     if not tool_calls:
         cleaned, owui_calls = extract_owui_tool_calls(text)
         if owui_calls:

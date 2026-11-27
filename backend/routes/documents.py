@@ -1064,7 +1064,7 @@ async def _ocr_pdf_payload_if_needed(
                         )
                         return idx, (ocr.get("text") or "").strip()
                     except Exception as exc:
-                        logger.debug(
+                        logger.warning(
                             "[ChatAttach] PDF page OCR failed p%s: %s", idx + 1, exc
                         )
                         return idx, ""
@@ -1079,7 +1079,7 @@ async def _ocr_pdf_payload_if_needed(
                         )
                         return idx, seq, (ocr.get("text") or "").strip()
                     except Exception as exc:
-                        logger.debug(
+                        logger.warning(
                             "[ChatAttach] PDF inline image OCR failed p%s img%s: %s",
                             idx + 1,
                             seq + 1,

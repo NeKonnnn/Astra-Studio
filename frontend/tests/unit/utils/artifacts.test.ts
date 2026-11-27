@@ -152,7 +152,7 @@ describe('splitContentWithArtifacts', () => {
     expect(artifact.content).toContain('<p>частично');
   });
 
-  it('parses an unfenced artifact (LibreChat format)', () => {
+  it('parses an unfenced artifact (:::artifact without fence)', () => {
     const text = ':::artifact{identifier="u" type="text/html" title="U"}\n<p>тело</p>\n:::\nпосле';
 
     const segments = splitContentWithArtifacts(text);

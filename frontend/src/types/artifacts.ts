@@ -1,4 +1,4 @@
-/** Типы артефактов чата (протокол :::artifact как в LibreChat). */
+/** Типы артефактов чата (протокол :::artifact). */
 
 export type ArtifactMimeType =
   | 'text/html'

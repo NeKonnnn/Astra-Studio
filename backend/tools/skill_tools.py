@@ -1,4 +1,4 @@
-"""Builtin tool view_skill — lazy-load skill content (Open WebUI parity)."""
+"""Builtin tool view_skill — lazy-load skill content."""
 
 from __future__ import annotations
 

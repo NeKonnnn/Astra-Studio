@@ -5,7 +5,7 @@
 # (удалены); таймауты и прочие параметры — в microservices.
 #
 # ========================================================
-# Цепочка агентов (Mixture-of-Agents) и субагенты — только ENV / ConfigMap.
+# Цепочка агентов и субагенты — только ENV / ConfigMap.
 # В YAML этих ключей нет, они перечислены здесь как документация.
 #
 #   AGENT_CHAIN_MAX_AGENTS          — 10   платформенный максимум следующих в цепочке
@@ -204,7 +204,7 @@ minio:
   use_ssl: false
 
 # ========================================================
-# ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ (ComfyUI, как Open WebUI)
+# ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ (ComfyUI)
 # В Docker: сервис comfyui в docker-compose, URL бэкенда: http://comfyui:8188 (см. IMAGE_GEN_COMFYUI_URL).
 # Локально: python main.py --listen 0.0.0.0 --port 8188
 # Ноды: ComfyUI-GGUF (Unet Loader), workflow экспорт «Save (API Format)».

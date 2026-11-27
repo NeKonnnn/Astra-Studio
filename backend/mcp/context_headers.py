@@ -28,7 +28,7 @@ def _render_template(value: str, context: McpCallContext) -> str:
 
 
 def build_mcp_context_headers(context: McpCallContext) -> Dict[str, str]:
-    """LDAP user + OWUI session headers (GPB naming из config)."""
+    """LDAP user + session headers (naming из config)."""
     settings = get_settings()
     fh = settings.mcp.forward_headers
     headers: Dict[str, str] = {}

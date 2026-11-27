@@ -1,0 +1,17 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: default
+  group_by: ["alertname", "service"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: default
+    # По умолчанию только webhook-заглушка / логи контейнера.
+    # Для prod добавьте email_configs / slack_configs / telegram.
+    webhook_configs:
+      - url: "http://127.0.0.1:5001/"
+        send_resolved: true

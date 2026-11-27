@@ -61,6 +61,18 @@ import { authFetch, getApiUrl, getWsUrl, API_ENDPOINTS } from '../config/api';
 import MessageRenderer from '../components/MessageRenderer';
 import UserAvatar from '../components/UserAvatar';
 import { DocumentSearchPanel } from '../components/DocumentSearchPanel';
+import {
+  ChatWorkspaceViewerProvider,
+  useChatWorkspaceViewer,
+} from '../contexts/ChatWorkspaceViewerContext';
+import ChatWorkspaceViewerOverlay from '../components/chat/ChatWorkspaceViewerOverlay';
+
+/** Селектор модели (z-index 1200) не должен перекрывать expand-оверлей. */
+function HideWhenWorkspaceViewerExpanded({ children }: { children: React.ReactNode }) {
+  const { session } = useChatWorkspaceViewer();
+  if (session) return null;
+  return <>{children}</>;
+}
 import { useNavigate } from 'react-router-dom';
 import ModelSelector from '../components/ModelSelector';
 import MessageNavigationBar from '../components/MessageNavigationBar';
@@ -151,6 +163,7 @@ import { getChatInputSuggestions } from '../chat/getChatInputSuggestions';
 import { loadFollowUpSettings } from '../chat/followUpSettings';
 import { useFollowUpSuggestions } from '../hooks/useFollowUpSuggestions';
 import { useChatMessageQueue } from '../hooks/useChatMessageQueue';
+import ChatMessageQueuePanel from '../components/ChatMessageQueuePanel';
 import { formatGenerationDuration, useElapsedSeconds } from '../hooks/useElapsedSeconds';
 import { extractReasoningBlock as extractReasoningBlockShared } from '../utils/reasoningSplit';
 import {
@@ -495,7 +508,7 @@ interface MessageCardProps {
   shareMode: boolean;
   isSpeaking: boolean;
   isDarkMode: boolean;
-  /** Сообщение — последнее в чате (как history.currentId в Open WebUI). */
+  /** Сообщение — последнее в чате. */
   isLastChatMessage: boolean;
   /**
    * Ждём первые токены ответа: «думает…» рисуется внутри этой же карточки
@@ -664,7 +677,7 @@ const virtuosoMessagesEndRefHolder: {
   current: React.RefObject<HTMLDivElement | null> | null;
 } = { current: null };
 
-/** Footer Virtuoso: нижний спейсер (Grok-style) + якорь скролла. */
+/** Footer Virtuoso: нижний спейсер + якорь скролла. */
 type VirtuosoListContext = {
   bottomSpacerPx: number;
 };
@@ -973,7 +986,7 @@ const MessageCardComponent = ({
       : null;
   const inlineAwaitingLabel = formatGenerationDuration(inlineAwaitingSec ?? 0);
 
-  // Как в Open WebUI: пока крутится tool — не «думает», а имя инструмента.
+  // Пока крутится tool — показываем имя инструмента, а не «думает».
   const runningToolLabel = useMemo(() => {
     if (isUser || !message.mcpToolCalls?.length) return null;
     const running = mergeMcpToolCalls(message.mcpToolCalls).filter((x) => x.status === 'running');
@@ -1825,7 +1838,7 @@ export default function UnifiedChatPage({
   const [queryResponse, setQueryResponse] = useState('');
   const [showDocumentDialog, setShowDocumentDialog] = useState(false);
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
-  /** Раскрытый подпункт меню «Инструменты» (колонка справа, как в LeChat). */
+  /** Раскрытый подпункт меню «Инструменты» (колонка справа). */
   const [gearToolsPanel, setGearToolsPanel] = useState<
     'main' | 'agents' | 'artifacts' | 'skills' | 'knowledge-bases' | 'mcp' | 'integrations' | 'coding' | 'generation' | 'model-mode'
   >('main');
@@ -1913,7 +1926,7 @@ export default function UnifiedChatPage({
 
   useEffect(() => {
     if (!shareMode) return;
-    // Grok-spacer под инпут в share не нужен — иначе дыра над кнопками.
+    // Spacer под инпут в share не нужен — иначе дыра над кнопками.
     setGrokBottomSpacerPx(0);
   }, [shareMode]);
   
@@ -2218,6 +2231,8 @@ export default function UnifiedChatPage({
   const {
     enqueue: enqueueChatMessage,
     remove: removeQueuedChatMessage,
+    update: updateQueuedChatMessage,
+    clear: clearQueuedChatMessages,
     shift: shiftQueuedChatMessage,
     peek: peekQueuedChatMessage,
     getQueue: getChatMessageQueue,
@@ -2263,7 +2278,7 @@ export default function UnifiedChatPage({
   }, [messages]);
 
   /**
-   * Virtuoso с полным списком. Grok-style: новый вопрос у верха экрана (спейсер в Footer),
+   * Virtuoso с полным списком: новый вопрос у верха экрана (спейсер в Footer),
    * «Думает»/ответ ниже, ручной скролл свободный. Без plain/handoff/#185-петель.
    */
   const streamingActive = hasActiveChatStreaming || currentChatLoading;
@@ -2311,7 +2326,7 @@ export default function UnifiedChatPage({
   const virtuosoViewportPadding = VIRTUOSO_VIEWPORT_PADDING;
   const virtuosoFollowOutput = false as const;
 
-  // === Grok-style: новый вопрос у верха экрана, ответ печатается вниз, скролл свободный ===
+  // === Новый вопрос у верха экрана, ответ печатается вниз, скролл свободный ===
   const grokTurnActiveRef = useRef(false);
   const grokAnchorVisibleIndexRef = useRef<number | null>(null);
   const prevTurnActiveForGrokRef = useRef(false);
@@ -2326,7 +2341,7 @@ export default function UnifiedChatPage({
 
   /**
    * User-вопрос активного стрима. При перегенерации середины ленты это НЕ
-   * последний user — иначе Grok-скролл утаскивает вьюпорт к хвосту чата.
+   * последний user — иначе автоскролл утаскивает вьюпорт к хвосту чата.
    */
   const activeTurnUserVisibleIndex = useMemo(() => {
     let streamId: string | null = null;
@@ -2376,7 +2391,7 @@ export default function UnifiedChatPage({
     setGrokBottomSpacerPx(0);
   }, [currentChat?.id]);
 
-  // Старт хода → вопрос активного стрима к верху (как в Grok).
+  // Старт хода → вопрос активного стрима к верху.
   useEffect(() => {
     const was = prevTurnActiveForGrokRef.current;
     prevTurnActiveForGrokRef.current = streamingActive;
@@ -2474,7 +2489,7 @@ export default function UnifiedChatPage({
     if (!chatId) return;
     if (visibleMessages.length === 0) return;
     if (initialAnchorDoneRef.current) return;
-    // Живой ход (Grok): не тянем к низу при появлении первых сообщений.
+    // Живой ход: не тянем к низу при появлении первых сообщений.
     if (streamingActive || grokTurnActiveRef.current) {
       initialAnchorDoneRef.current = true;
       return;
@@ -2980,7 +2995,7 @@ export default function UnifiedChatPage({
     chainThinkingName,
   ]);
   const socketBlocksChatInput = !isConnected && !isConnecting && !token;
-  // Как Open WebUI: во время генерации можно печатать и ставить в очередь (chatAwaitingTokens не блокирует).
+  // Во время генерации можно печатать и ставить в очередь (chatAwaitingTokens не блокирует).
   const chatSendDisabled =
     (!inputMessage.trim() && inlineAttachments.length === 0 && !isUploading)
     || socketBlocksChatInput
@@ -3321,7 +3336,7 @@ export default function UnifiedChatPage({
     voice_speaker: localStorage.getItem('voice_speaker') || 'baya',
   }));
 
-  // Новый вопрос пользователя → Grok (не «к низу»). Иначе при росте ленты — «у дна».
+  // Новый вопрос пользователя → к верху (не «к низу»). Иначе при росте ленты — «у дна».
   const prevMessagesLengthRef = useRef(0);
   useEffect(() => {
     const len = messages.length;
@@ -3396,7 +3411,7 @@ export default function UnifiedChatPage({
     !interfaceSettings.autoScrollWhileStreaming;
 
   useEffect(() => {
-    // Grok-ход: вопрос у верха — не тянем ленту к низу.
+    // Ход: вопрос у верха — не тянем ленту к низу.
     if (grokTurnActiveRef.current) return;
     if (!interfaceSettings.autoScrollWhileStreaming) return;
     if (Date.now() < autoScrollPauseUntilRef.current) return;
@@ -3791,7 +3806,7 @@ export default function UnifiedChatPage({
     chatMessageQueue.length,
   ]);
 
-  // Дренаж очереди сообщений (Open WebUI-like) после завершения генерации.
+  // Дренаж очереди сообщений после завершения генерации.
   useEffect(() => {
     const chatId = currentChat?.id;
     if (!chatId) return;
@@ -3893,37 +3908,26 @@ export default function UnifiedChatPage({
     setLoading,
   ]);
 
-  const renderMessageQueueChips = (maxWidth: string | number) => {
-    if (!chatMessageQueue.length) return null;
-    return (
-      <Box
-        data-testid="chat-message-queue"
-        sx={{
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: 0.75,
-          maxWidth,
-          width: '100%',
-          mx: 'auto',
-          mb: 1,
-          px: interfaceSettings.widescreenMode ? 4 : 2,
-        }}
-      >
-        {chatMessageQueue.map((item, idx) => (
-          <Chip
-            key={item.id}
-            size="small"
-            label={`${idx + 1}. ${item.text.trim() || 'вложение'}`.slice(0, 72)}
-            onDelete={() => currentChat?.id && removeQueuedChatMessage(currentChat.id, item.id)}
-            sx={{
-              maxWidth: '100%',
-              bgcolor: isDarkMode ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-            }}
-          />
-        ))}
-      </Box>
-    );
-  };
+  const renderMessageQueuePanel = (maxWidth: string | number) => (
+    <ChatMessageQueuePanel
+      items={chatMessageQueue}
+      isDarkMode={isDarkMode}
+      maxWidth={maxWidth}
+      widescreen={Boolean(interfaceSettings.widescreenMode)}
+      onUpdateText={(itemId, text) => {
+        if (!currentChat?.id) return;
+        updateQueuedChatMessage(currentChat.id, itemId, { text });
+      }}
+      onRemove={(itemId) => {
+        if (!currentChat?.id) return;
+        removeQueuedChatMessage(currentChat.id, itemId);
+      }}
+      onClearAll={() => {
+        if (!currentChat?.id) return;
+        clearQueuedChatMessages(currentChat.id);
+      }}
+    />
+  );
   const handleKeyPress = (event: React.KeyboardEvent): void => {
     if (event.key !== 'Enter' || event.shiftKey) return;
     // key-repeat Enter иначе заливает очередь/чат десятками копий.
@@ -5428,6 +5432,7 @@ export default function UnifiedChatPage({
         />
       ) : null}
       {/* Основной контент */}
+      <ChatWorkspaceViewerProvider>
       <Box 
         className="fullscreen-chat" 
         sx={{ 
@@ -5455,6 +5460,7 @@ export default function UnifiedChatPage({
       {workZoneMode === 'starry' ? <WorkZoneStarrySky isDarkMode={isDarkMode} /> : null}
       {workZoneMode === 'snowfall' ? <WorkZoneSnowfall isDarkMode={isDarkMode} /> : null}
       {/* Заголовок с информацией о проекте и модели */}
+      <HideWhenWorkspaceViewerExpanded>
       {currentChat && project && (
         <Box sx={{ 
           position: 'absolute',
@@ -5575,6 +5581,7 @@ export default function UnifiedChatPage({
           )}
         </Box>
       )}
+      </HideWhenWorkspaceViewerExpanded>
 
 
       {/* Область сообщений */}
@@ -5802,7 +5809,7 @@ export default function UnifiedChatPage({
                            </Typography>
                          </Box>
                          {renderMultiLlmModelToolbar()}
-                         {renderMessageQueueChips(interfaceSettings.widescreenMode ? '100%' : '800px')}
+                         {renderMessageQueuePanel(interfaceSettings.widescreenMode ? '100%' : '800px')}
                          <ChatInputBar
                            toolsMenuAnchorRef={chatInputToolsAnchorRef}
                            value={inputMessage}
@@ -6028,7 +6035,7 @@ export default function UnifiedChatPage({
                </Box>
              ) : (
              <>
-             {renderMessageQueueChips('100%')}
+             {renderMessageQueuePanel('100%')}
              <ChatInputBar
                toolsMenuAnchorRef={chatInputToolsAnchorRef}
                value={inputMessage}
@@ -6087,7 +6094,7 @@ export default function UnifiedChatPage({
        />
        <DocumentDialog />
 
-       {/* Инструменты: колонка как в LeChat — «Агенты» + правая панель с вкладками; БЗ и очистка в левой колонке */}
+       {/* Инструменты: «Агенты» + правая панель с вкладками; БЗ и очистка в левой колонке */}
        <Popover
          open={Boolean(anchorEl)}
          anchorEl={anchorEl}
@@ -6578,6 +6585,8 @@ export default function UnifiedChatPage({
 
       </Box>
 
+      <ChatWorkspaceViewerOverlay />
+
       {/* Навигационная панель для сообщений (панель с диалогами) */}
       {messages.length > 0 && showDialoguesPanel && (
         <MessageNavigationBar
@@ -6615,6 +6624,7 @@ export default function UnifiedChatPage({
         }}
       />
       </Box>
+      </ChatWorkspaceViewerProvider>
     </Box>
   );
 }

@@ -2,7 +2,7 @@ import { act, renderHook } from '@testing-library/react';
 import { useChatMessageQueue } from '@/hooks/useChatMessageQueue';
 
 describe('useChatMessageQueue', () => {
-  it('enqueue / shift / remove работают per chatId', () => {
+  it('enqueue / shift / remove / update работают per chatId', () => {
     const { result } = renderHook(() => useChatMessageQueue());
 
     act(() => {
@@ -14,7 +14,7 @@ describe('useChatMessageQueue', () => {
     expect(result.current.getQueue('c1')).toHaveLength(2);
     expect(result.current.peek('c1')?.text).toBe('a');
 
-    let first: { text: string } | undefined;
+    let first: { text: string; id: string } | undefined;
     act(() => {
       first = result.current.shift('c1');
     });
@@ -22,6 +22,11 @@ describe('useChatMessageQueue', () => {
     expect(result.current.getQueue('c1')).toHaveLength(1);
 
     const restId = result.current.getQueue('c1')[0].id;
+    act(() => {
+      result.current.update('c1', restId, { text: 'b-edited' });
+    });
+    expect(result.current.getQueue('c1')[0].text).toBe('b-edited');
+
     act(() => {
       result.current.remove('c1', restId);
     });

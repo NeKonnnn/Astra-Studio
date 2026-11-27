@@ -97,22 +97,29 @@ function normalizeForLoad(mp: string): string {
 }
 
 async function resolveDefaultModelPath(token: string): Promise<string> {
-  const stored = localStorage.getItem(LAST_SELECTED_MODEL_PATH_STORAGE_KEY);
-  if (isValidSelectedModelPath(stored)) {
-    return normalizeForLoad(stored!);
-  }
+  // Сначала per-user выбор из БД (/api/models/current), затем localStorage.
   try {
     const curRes = await authFetch(getApiUrl('/api/models/current'), {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (curRes.ok) {
-      const cur = (await curRes.json().catch(() => ({}))) as { path?: string };
-      if (isValidSelectedModelPath(cur.path)) {
-        return normalizeForLoad(String(cur.path));
+      const cur = (await curRes.json().catch(() => ({}))) as {
+        path?: string;
+        selected_model_path?: string;
+      };
+      const preferred = cur.selected_model_path || cur.path;
+      if (isValidSelectedModelPath(preferred)) {
+        const normalized = normalizeForLoad(String(preferred));
+        rememberSelectedModelPath(normalized);
+        return normalized;
       }
     }
   } catch {
     /* */
+  }
+  const stored = localStorage.getItem(LAST_SELECTED_MODEL_PATH_STORAGE_KEY);
+  if (isValidSelectedModelPath(stored)) {
+    return normalizeForLoad(stored!);
   }
   return '';
 }

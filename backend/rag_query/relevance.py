@@ -1,6 +1,6 @@
-"""Relevance для UI карточек чанков — абсолютная шкала, как в LibreChat.
+"""Relevance для UI карточек чанков — абсолютная шкала.
 
-LibreChat: 'relevance = 1.0 - distance' (cosine similarity ∈ [0, 1]),
+'relevance = 1.0 - distance' (cosine similarity ∈ [0, 1]),
 в UI: 'Math.round(relevance * 100)%'. Число не зависит ни от того, что
 ещё нашлось по этому запросу, ни от того, сколько чанков вернулось — его
 можно сравнивать между запросами и с либрой.
@@ -49,7 +49,7 @@ def _finite(value: Number) -> Optional[float]:
     return f
 
 def cosine_to_relevance_percent(cosine: Number) -> int:
-    """Формула LibreChat: cosine ∈ [0, 1] → 1..100%.
+    """Формула: cosine ∈ [0, 1] → 1..100%.
 
     Отрицательный cosine (вектора направлены в разные стороны) — это 0
     близости, а не «немного похоже»: зажимаем в минимум шкалы.
@@ -91,7 +91,7 @@ def relevance_percent_or_none(hit: object) -> Optional[int]:
 def hits_to_relevance_percents(hits: Sequence[object]) -> List[int]:
     """Хиты → проценты для карточек чанков.
 
-    Cosine есть — абсолютная шкала LibreChat. Нет ни у одного хита (старый
+    Cosine есть — абсолютная шкала. Нет ни у одного хита (старый
     SVC-RAG, лексический поиск) — откат на 'scores_to_relevance_percents',
     чтобы карточки не остались без чисел. Смешанный случай: у кого cosine
     есть — по нему, остальным ставится оценка по score, приведённая к той же

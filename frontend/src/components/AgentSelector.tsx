@@ -325,8 +325,11 @@ export default function AgentSelector({
         fetchJsonWithTimeout(getApiUrl('/api/models/current'), 5000),
         fetchJsonWithTimeout(getApiUrl('/api/llm-providers?include_health=false'), 8000),
       ]);
-      if (currentData?.path) {
-        const normalizedPath = normalizeModelPath(currentData.path);
+      const preferredRaw =
+        (typeof currentData?.selected_model_path === 'string' && currentData.selected_model_path) ||
+        currentData?.path;
+      if (preferredRaw) {
+        const normalizedPath = normalizeModelPath(preferredRaw);
         if (isValidSelectedModelPath(normalizedPath)) {
           setSelectedModelPath(normalizedPath);
           localStorage.setItem(LAST_SELECTED_MODEL_PATH_STORAGE_KEY, normalizedPath);
@@ -346,11 +349,14 @@ export default function AgentSelector({
       setModelsLoadedOnce(true);
 
       // 2) Список моделей (на бэкенде провайдеры опрашиваются параллельно).
+      // Пустой ответ при прогреве llm-svc не затирает кэш/UI — «установленные» уже известны.
       const modelsData = await fetchAvailableCatalog();
-      if (modelsData?.models) {
-        const nextModels = (modelsData.models as ModelItem[]) || [];
-        setModels(nextModels);
-        writeTimedCache(MODELS_CACHE_KEY, nextModels);
+      const fetched = Array.isArray(modelsData?.models)
+        ? (modelsData!.models as ModelItem[])
+        : null;
+      if (fetched && fetched.length > 0) {
+        setModels(fetched);
+        writeTimedCache(MODELS_CACHE_KEY, fetched);
       }
     } catch {
       /* silent */
@@ -366,13 +372,13 @@ export default function AgentSelector({
     void (async () => {
       try {
         const modelsData = await fetchAvailableCatalog();
-        if (cancelled || !modelsData?.models) return;
-        const nextModels = (modelsData.models as ModelItem[]) || [];
+        const nextModels = Array.isArray(modelsData?.models)
+          ? (modelsData!.models as ModelItem[])
+          : null;
+        if (cancelled || !nextModels || nextModels.length === 0) return;
         setModels(nextModels);
         writeTimedCache(MODELS_CACHE_KEY, nextModels);
-        if (nextModels.length > 0) {
-          setModelsLoadedOnce(true);
-        }
+        setModelsLoadedOnce(true);
       } catch {
         /* ignore */
       }
@@ -415,14 +421,19 @@ export default function AgentSelector({
     authFetch(getApiUrl('/api/models/current'), { headers })
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
-        if (!cancelled && data?.path) {
-          const normalizedPath = normalizeModelPath(data.path);
-          if (isValidSelectedModelPath(normalizedPath)) {
-            setSelectedModelPath(normalizedPath);
-            localStorage.setItem(LAST_SELECTED_MODEL_PATH_STORAGE_KEY, normalizedPath);
-          } else {
-            setSelectedModelPath('');
-            localStorage.removeItem(LAST_SELECTED_MODEL_PATH_STORAGE_KEY);
+        if (!cancelled) {
+          const preferredRaw =
+            (typeof data?.selected_model_path === 'string' && data.selected_model_path) ||
+            data?.path;
+          if (preferredRaw) {
+            const normalizedPath = normalizeModelPath(preferredRaw);
+            if (isValidSelectedModelPath(normalizedPath)) {
+              setSelectedModelPath(normalizedPath);
+              localStorage.setItem(LAST_SELECTED_MODEL_PATH_STORAGE_KEY, normalizedPath);
+            } else {
+              setSelectedModelPath('');
+              localStorage.removeItem(LAST_SELECTED_MODEL_PATH_STORAGE_KEY);
+            }
           }
         }
       })

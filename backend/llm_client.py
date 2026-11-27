@@ -347,12 +347,12 @@ class LLMClient:
                 logger.exception("Optional service url not set /")
                 return None
 
-        # ВРЕМЕННО: OCR через мультимодальную LLM, пока нет отдельного ocr-service.
-        # Переменные берутся из ConfigMap.
+        # Основной OCR — ocr-service (Surya). Vision-LLM — только fallback.
         self.ocr_vision_model_path = os.getenv("OCR_VISION_MODEL_PATH")
         if self.ocr_vision_model_path:
             logger.debug(
-                f"LLMClient: OCR vision fallback configured model_path={self.ocr_vision_model_path}"
+                "LLMClient: OCR vision fallback configured model_path=%s",
+                self.ocr_vision_model_path,
             )
 
         self.stt_url = _optional_url("stt_service_docker", "stt_service_port")
@@ -361,6 +361,8 @@ class LLMClient:
         self.diarization_url = _optional_url(
             "diarization_service_docker", "diarization_service_port"
         )
+        if self.ocr_url:
+            logger.info("LLMClient: OCR service url=%s", self.ocr_url)
         if "1lm-svc" in self.llm_url or "11m-svc" in self.llm_url:
             logger.error(f"ОБНАРУЖЕНА ОПЕЧАТКА В URL: {self.llm_url}. Исправляем.")
             self.llm_url = self.llm_url.replace("1lm-svc", "llm-svc").replace(
@@ -1161,31 +1163,66 @@ class LLMClient:
     async def recognize_text_from_image(
         self, image_file: bytes, filename: str = "image.jpg", languages: str = "ru,en"
     ) -> Dict[str, Any]:
-        """Распознавание текста с изображения через ocr-service (Surya). Сейчас временный fallback на мультимодальную LLM."""
+        """Распознавание текста: сначала ocr-service (Surya), иначе vision-LLM fallback."""
+        if self.ocr_url:
+            return await self.recognize_text_from_image_via_ocr_service(
+                image_file, filename, languages=languages
+            )
         if self.ocr_vision_model_path:
             return await self.recognize_text_from_image_via_llm(image_file, filename)
-        raise RuntimeError("OCR не настроен: не настроен OCR_VISION_MODEL_PATH")
-        # Временно убираем логику с отдельным эндпоинтом.
-        # try:
-        #     mime = "image/jpeg"
-        #     if filename.lower().endswith(".png"):
-        #         mime = "image/png"
-        #     files = {"file": (filename, io.BytesIO(image_file), mime)}
-        #     data = {"languages": languages}
-        #     async with httpx.AsyncClient(verify=self._verify, timeout=300.0) as client:
-        #         response = await client.post(
-        #             f"{self.ocr_url}/v1/ocr", files=files, data=data, headers={"Accept": "application/json"}
-        #         )
-        #         response.raise_for_status()
-        #         return response.json()
-        # except Exception:
-        #     logger.exception("Ошибка OCR")
-        #     raise
+        raise RuntimeError(
+            "OCR не настроен: нет ocr-service URL и не задан OCR_VISION_MODEL_PATH"
+        )
+
+    async def recognize_text_from_image_via_ocr_service(
+        self,
+        image_file: bytes,
+        filename: str = "image.jpg",
+        languages: str = "ru,en",
+    ) -> Dict[str, Any]:
+        """OCR через отдельный ocr-service (Surya), POST /v1/ocr."""
+        if not self.ocr_url:
+            raise RuntimeError("OCR service URL не настроен")
+        mime = "image/jpeg"
+        lower = (filename or "").lower()
+        if lower.endswith(".png"):
+            mime = "image/png"
+        elif lower.endswith(".webp"):
+            mime = "image/webp"
+        elif lower.endswith(".bmp"):
+            mime = "image/bmp"
+        files = {"file": (filename or "image.jpg", io.BytesIO(image_file), mime)}
+        data = {"languages": languages}
+        try:
+            async with httpx.AsyncClient(verify=self._verify, timeout=300.0) as client:
+                response = await client.post(
+                    f"{self.ocr_url.rstrip('/')}/v1/ocr",
+                    files=files,
+                    data=data,
+                    headers={"Accept": "application/json"},
+                )
+                response.raise_for_status()
+                payload = response.json()
+            text = ""
+            if isinstance(payload, dict):
+                text = str(payload.get("text") or "").strip()
+            logger.info(
+                "[OCR-service] file=%s text_len=%s status=%s",
+                filename,
+                len(text),
+                response.status_code,
+            )
+            if isinstance(payload, dict):
+                return payload
+            return {"text": text, "success": True}
+        except Exception:
+            logger.exception("Ошибка OCR через ocr-service (%s)", self.ocr_url)
+            raise
 
     async def recognize_text_from_image_via_llm(
         self, image_file: bytes, filename: str = "image.png"
     ) -> Dict[str, Any]:
-        """ВРЕМЕННОЕ решение: OCR через мультимодальную LLM вместо отдельного ocr-service."""
+        """Fallback: OCR через мультимодальную LLM, если ocr-service недоступен."""
         if not self.ocr_vision_model_path:
             raise RuntimeError(
                 "OCR vision fallback не настроен: OCR_VISION_MODEL_PATH не заданы"

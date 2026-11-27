@@ -1,0 +1,10 @@
+apiVersion: 1
+providers:
+  - name: astra
+    orgId: 1
+    folder: AstraStudio
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards

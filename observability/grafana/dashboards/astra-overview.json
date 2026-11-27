@@ -1,0 +1,86 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "HTTP RPS",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(rate(astra_http_requests_total[1m])) by (status)",
+          "legendFormat": "{{status}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP latency p95",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(astra_http_request_duration_seconds_bucket[5m])) by (le, route))",
+          "legendFormat": "{{route}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "LLM requests",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(astra_llm_requests_total[1m])) by (status)",
+          "legendFormat": "{{status}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "RAG searches",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(astra_rag_searches_total[1m])) by (scope, status)",
+          "legendFormat": "{{scope}}/{{status}}"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Active sessions",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 16 },
+      "targets": [{ "expr": "astra_active_sessions" }]
+    },
+    {
+      "type": "stat",
+      "title": "Queue depth",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 16 },
+      "targets": [{ "expr": "sum(astra_queue_depth)" }]
+    },
+    {
+      "type": "stat",
+      "title": "Rate limit hits (5m)",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 16 },
+      "targets": [{ "expr": "increase(astra_rate_limit_hits_total[5m])" }]
+    },
+    {
+      "type": "stat",
+      "title": "Quota exceeded (5m)",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 16 },
+      "targets": [{ "expr": "sum(increase(astra_quota_exceeded_total[5m]))" }]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["astra", "overview"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "browser",
+  "title": "AstraStudio Overview",
+  "uid": "astra-overview",
+  "version": 1
+}

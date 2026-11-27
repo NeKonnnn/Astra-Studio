@@ -1,4 +1,4 @@
-"""MCP SDK client wrapper (паттерн Open WebUI, LIFO disconnect без shield)."""
+"""MCP SDK client wrapper (LIFO disconnect без shield)."""
 
 from __future__ import annotations
 

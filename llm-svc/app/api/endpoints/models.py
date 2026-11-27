@@ -99,8 +99,8 @@ async def unload_excess_models(
     llama_service: BaseLLMHandler = Depends(get_llm_handler_without_loaded_gate),
 ):
     """
-    Оставить в пуле только модель из конфига сервиса; остальные выгрузить
-    Вызывается бэкендом при выходе из режима multi-LLM
+    Оставить в пуле только текущую (последнюю выбранную) модель; остальные выгрузить.
+    Вызывается бэкендом при выходе из режима multi-LLM.
     """
     if not isinstance(llama_service, LlamaHandler):
         return ModelPoolTrimResponse(
@@ -113,7 +113,7 @@ async def unload_excess_models(
         remaining = llama_service.get_loaded_model_ids()
         return ModelPoolTrimResponse(
             success=ok,
-            message="Pool trimmed to config default model" if ok else "Trim completed with warnings",
+            message="Pool trimmed to last selected model" if ok else "Trim completed with warnings",
             remaining_models=remaining or None,
         )
     except Exception as e:

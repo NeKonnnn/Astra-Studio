@@ -107,30 +107,23 @@ _app_cfg = settings.app
 
 async def _restore_saved_model_after_startup() -> None:
     """
-    После пересборки контейнеров пул llm-svc пуст, а в app settings остаётся
-    last ``current_model_path`` (или дефолт провайдера). Подтягиваем веса
-    с ретраями, пока сервис моделей прогревается.
+    После пересборки пул llm-svc пуст. Греем самую свежую выбранную модель
+    из PostgreSQL (per-user). Fallback — current_model_path в settings.json.
     """
     saved = ""
     try:
-        saved = str(load_app_settings().get("current_model_path") or "").strip()
+        from backend.services.user_llm_settings import get_latest_selected_model_path
+
+        saved = await get_latest_selected_model_path()
     except Exception:
-        logger.exception("restore model: не удалось прочитать settings")
+        logger.exception("restore model: не удалось прочитать selected_model_path из БД")
     if not saved:
         try:
-            default_provider = str(
-                getattr(settings, "default_llm_provider", "") or ""
-            ).strip()
-            default_model = str(
-                getattr(getattr(settings, "llm_service", None), "default_model", "")
-                or ""
-            ).strip()
-            if default_provider and default_model:
-                saved = f"{default_provider}/{default_model}"
+            saved = str(load_app_settings().get("current_model_path") or "").strip()
         except Exception:
-            logger.exception("restore model: не удалось взять default model")
+            logger.exception("restore model: не удалось прочитать settings.json")
     if not saved:
-        logger.debug("restore model: нет сохранённой/дефолтной модели — пропуск")
+        logger.debug("restore model: нет выбранной модели — пропуск прогрева")
         return
 
     delays = (2, 5, 10, 20, 30, 45)

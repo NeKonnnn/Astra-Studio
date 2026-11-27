@@ -97,7 +97,7 @@ async def run_direct_or_chain(
     knowledge_base_ids=None,
     legacy_kb_doc_ids=None,
 ):
-    """Один агент или последовательная цепочка Mixture-of-Agents.
+    """Один агент или последовательная цепочка агентов.
 
     Один агент - обычный _handle_direct. Цепочка - _handle_direct на каждый
     шаг, итог одним ответом. Сокет, стрим и сохранение - хелперы handlers.

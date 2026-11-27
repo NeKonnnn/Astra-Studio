@@ -1,0 +1,60 @@
+groups:
+  - name: astra-platform
+    rules:
+      - alert: AstraBackendDown
+        expr: up{job="astrachat-backend"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Astra backend недоступен"
+          description: "Prometheus не видит astrachat-backend более 2 минут."
+
+      - alert: AstraHighHTTPErrorRate
+        expr: |
+          sum(rate(astra_http_requests_total{status=~"5.."}[5m]))
+            /
+          clamp_min(sum(rate(astra_http_requests_total[5m])), 0.001)
+            > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Высокий % 5xx на backend"
+          description: "Доля HTTP 5xx > 5% за 5 минут."
+
+      - alert: AstraLLMErrors
+        expr: increase(astra_llm_requests_total{status="error"}[10m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ошибки LLM"
+          description: "Более 10 ошибок LLM за 10 минут."
+
+      - alert: AstraRAGErrors
+        expr: increase(astra_rag_searches_total{status="error"}[10m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ошибки RAG search"
+          description: "Более 10 ошибок RAG за 10 минут."
+
+      - alert: AstraRateLimitSpike
+        expr: increase(astra_rate_limit_hits_total[5m]) > 50
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Всплеск rate limit"
+          description: "Более 50 срабатываний rate limit за 5 минут."
+
+      - alert: AstraQueueBacklog
+        expr: astra_queue_depth > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Очередь растёт"
+          description: "Глубина очереди {{ $labels.queue }} > 100 дольше 10 минут."

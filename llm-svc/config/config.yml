@@ -60,11 +60,11 @@ model:
   # 0 = auto (cpu_count-1). Env: LLM_N_THREADS / LLM_N_THREADS_BATCH.
   n_thread: 0
   n_threads_batch: 0
-  # Как Ollama/Open WebUI: прогреть дефолт при старте; keep_alive idle-unload.
-  eager_load: true
+  # Config-default eager-load отключён: прогрев — последняя выбранная (backend restore).
+  eager_load: false
   warmup_on_load: true
   # Секунды без запросов до выгрузки лишних моделей. 0 = не выгружать.
-  # Дефолтная/primary модель keep-alive не трогает.
+  # Primary (последняя выбранная) keep-alive не трогает.
   keep_alive_seconds: 0
   # name: "qwen3-vl-30b-awq"  # Изменено на Qwen3-VL (поддерживается vLLM)
   # # Выбор бэкенда: "llama.cpp" или "vllm"

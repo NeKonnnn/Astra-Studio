@@ -1,4 +1,4 @@
-"""Lightweight prompt+JSON function calling fallback (порт OWUI B-42)."""
+"""Lightweight prompt+JSON function calling fallback."""
 
 from __future__ import annotations
 
@@ -282,7 +282,7 @@ async def run_prompt_json_fc(
             request_extra=req_extra,
         )
         llm_ms = int((time.perf_counter() - t_llm) * 1000)
-        # openai_compat уже мог разобрать OWUI JSON в result.tool_calls и очистить content.
+        # openai_compat уже мог разобрать JSON tool_calls в result.tool_calls и очистить content.
         # Без этого ветка видит пустой content → «unparsed» и MCP не вызывается.
         payload = None
         structured_calls = list(getattr(result, "tool_calls", None) or [])
@@ -302,7 +302,7 @@ async def run_prompt_json_fc(
         if not payload:
             payload = _extract_json_object(result.content)
         if not payload:
-            # Fallback: OWUI/XML tool calls из content (не отдаём сырой JSON в чат).
+            # Fallback: JSON/XML tool calls из content (не отдаём сырой JSON в чат).
             from backend.mcp.text_tool_calls import extract_tool_calls_from_content
 
             _cleaned, text_calls = extract_tool_calls_from_content(result.content or "")
@@ -660,7 +660,7 @@ async def run_prompt_json_fc(
 
         # Один вызов шага → строка результата для модели. Вызовы subagent
         # шага идут одновременно (run_tool_calls), остальные - по очереди.
-        # Как OWUI: весь батч сразу pending в UI (emit start до исполнения).
+        # Весь батч сразу pending в UI (emit start до исполнения).
         items = []
         for call in calls:
             if not isinstance(call, dict):

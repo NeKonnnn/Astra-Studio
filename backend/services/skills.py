@@ -1,4 +1,4 @@
-"""Skills activation — LibreChat-like (manual / always-apply / model catalog)."""
+"""Skills activation (manual / always-apply / model catalog)."""
 
 from __future__ import annotations
 
@@ -133,7 +133,7 @@ def collect_allowed_tools(skills: Sequence[Any]) -> List[str]:
 def resolve_agent_skill_scope(agent_profile: Optional[Dict[str, Any]]) -> Tuple[bool, List[str]]:
     """
     Returns (skills_enabled, allowlist_slugs).
-    LibreChat: skills_enabled gate + optional skills[] allowlist.
+    skills_enabled gate + optional skills[] allowlist.
     Backward-compat: skill_ids alone implies enabled.
     """
     if not isinstance(agent_profile, dict):

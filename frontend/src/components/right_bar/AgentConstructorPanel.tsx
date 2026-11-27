@@ -498,7 +498,7 @@ export default function AgentConstructorPanel({ isDarkMode, isOpen }: AgentConst
     useState<HTMLElement | null>(null);
   const knowledgeBasesTriggerRef = useRef<HTMLDivElement>(null);
 
-  // Sequential agent chain (config.agent_ids — LibreChat Mixture-of-Agents)
+  // Sequential agent chain (config.agent_ids)
   const [chainAgentIds, setChainAgentIds] = useState<number[]>([]);
   const [hideSequentialOutputs, setHideSequentialOutputs] = useState(false);
   const [sharedChainRag, setSharedChainRag] = useState(false);

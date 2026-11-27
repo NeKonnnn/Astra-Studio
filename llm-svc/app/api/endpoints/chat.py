@@ -28,7 +28,7 @@ async def chat_completion(
     """
     Эндпоинт совместимый с OpenAI API для обработки запросов чата.
     Поддерживает как обычные запросы, так и потоковую передачу.
-    Как Ollama/Open WebUI: пустой пул не 503 — грузим модель on-demand.
+    Пустой пул не 503 — грузим модель on-demand.
     """
     enable_thinking = _resolve_enable_thinking(request)
     logger.info(f"Chat request Model: {request.model}, "

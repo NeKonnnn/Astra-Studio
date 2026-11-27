@@ -4,22 +4,20 @@ import '@testing-library/jest-dom';
 import ArtifactCard from '@/components/artifacts/ArtifactCard';
 import type { ChatArtifact } from '@/types/artifacts';
 
-const mockOpenArtifactViewer = jest.fn();
 const mockExportPng = jest.fn();
 const mockExportJpg = jest.fn();
-const mockOpenPresentationViewer = jest.fn();
+const mockExpand = jest.fn();
 
-jest.mock('@/utils/artifactViewer', () => ({
-  ...jest.requireActual('@/utils/artifactViewer'),
-  openArtifactViewer: (...a: unknown[]) => mockOpenArtifactViewer(...a),
-}));
 jest.mock('@/utils/artifactDownload', () => ({
   exportArtifactPreviewAsPng: (...a: unknown[]) => mockExportPng(...a),
   exportArtifactPreviewAsJpg: (...a: unknown[]) => mockExportJpg(...a),
 }));
-jest.mock('@/utils/presentationViewer', () => ({
-  ...jest.requireActual('@/utils/presentationViewer'),
-  openPresentationViewer: (...a: unknown[]) => mockOpenPresentationViewer(...a),
+jest.mock('@/contexts/ChatWorkspaceViewerContext', () => ({
+  useChatWorkspaceViewer: () => ({
+    session: null,
+    expand: (...a: unknown[]) => mockExpand(...a),
+    collapse: jest.fn(),
+  }),
 }));
 jest.mock('@/components/artifacts/ArtifactPreview', () => ({
   __esModule: true,
@@ -76,10 +74,9 @@ describe('ArtifactCard', () => {
   beforeEach(() => {
     ioCallbacks = [];
     ioDisconnect.mockReset();
-    mockOpenArtifactViewer.mockReset().mockResolvedValue(undefined);
+    mockExpand.mockReset();
     mockExportPng.mockReset().mockResolvedValue(undefined);
     mockExportJpg.mockReset().mockResolvedValue(undefined);
-    mockOpenPresentationViewer.mockReset();
     (globalThis as any).__editorLayout = jest.fn();
     (window as any).IntersectionObserver = class {
       constructor(cb: IOCallback) {
@@ -121,7 +118,7 @@ describe('ArtifactCard', () => {
       expect(screen.getByTestId('preview')).toHaveAttribute('data-streaming', 'true');
       expect(screen.getAllByText('Отчёт · генерация…')).toHaveLength(2); // база + блик (aria-hidden)
       expect(screen.queryByLabelText('Скачать артефакт')).toBeNull();
-      expect(screen.queryByLabelText('Открыть в новой вкладке')).toBeNull();
+      expect(screen.queryByLabelText('Открыть на всю рабочую зону')).toBeNull();
       expect(screen.queryByLabelText('Показать HTML')).toBeNull();
       expect(screen.getByRole('progressbar')).toBeInTheDocument();
     });
@@ -375,41 +372,37 @@ describe('ArtifactCard', () => {
     });
   });
 
-  describe('открытие в новой вкладке', () => {
-    it('обычный артефакт открывается через openArtifactViewer с типом, кодом и заголовком', async () => {
+  describe('открытие на всю рабочую зону', () => {
+    it('обычный артефакт передаётся в expand как kind=artifact', () => {
       render(<ArtifactCard artifact={art({ title: 'Т', content: 'код' })} />);
-      fireEvent.click(screen.getByLabelText('Открыть в новой вкладке'));
-      await waitFor(() => expect(mockOpenArtifactViewer).toHaveBeenCalledTimes(1));
-      expect(mockOpenArtifactViewer).toHaveBeenCalledWith({
-        type: 'text/html',
-        content: 'код',
+      fireEvent.click(screen.getByLabelText('Открыть на всю рабочую зону'));
+      expect(mockExpand).toHaveBeenCalledTimes(1);
+      expect(mockExpand).toHaveBeenCalledWith({
+        kind: 'artifact',
         title: 'Т',
-        previewRoot: expect.any(HTMLElement),
+        artifact: expect.objectContaining({
+          type: 'text/html',
+          content: 'код',
+          closed: true,
+        }),
       });
-      expect(mockOpenPresentationViewer).not.toHaveBeenCalled();
     });
 
-    it('без заголовка название берётся из типа', async () => {
+    it('без заголовка название берётся из типа', () => {
       render(<ArtifactCard artifact={art({ title: '', type: 'application/vnd.mermaid' })} />);
-      fireEvent.click(screen.getByLabelText('Открыть в новой вкладке'));
-      await waitFor(() => expect(mockOpenArtifactViewer).toHaveBeenCalled());
-      expect(mockOpenArtifactViewer.mock.calls[0][0].title).toBe('Mermaid');
+      fireEvent.click(screen.getByLabelText('Открыть на всю рабочую зону'));
+      expect(mockExpand.mock.calls[0][0].title).toBe('Mermaid');
     });
 
-    it('HTML-презентация (.slide) открывается своим viewer, а не generic', async () => {
+    it('HTML-презентация (.slide) открывается как kind=presentation', () => {
       const deck = '<div class="slide"><h1>Заголовок презентации</h1></div><div class="slide">x</div>';
       render(<ArtifactCard artifact={art({ content: deck })} />);
-      fireEvent.click(screen.getByLabelText('Открыть в новой вкладке'));
-      await waitFor(() => expect(mockOpenPresentationViewer).toHaveBeenCalledWith(deck));
-      expect(mockOpenArtifactViewer).not.toHaveBeenCalled();
-    });
-
-    it('ошибка открытия viewer логируется и не пробрасывается', async () => {
-      const err = jest.spyOn(console, 'error').mockImplementation(() => {});
-      mockOpenArtifactViewer.mockRejectedValue(new Error('popup blocked'));
-      render(<ArtifactCard artifact={art()} />);
-      fireEvent.click(screen.getByLabelText('Открыть в новой вкладке'));
-      await waitFor(() => expect(err).toHaveBeenCalledWith('Failed to open artifact viewer:', expect.any(Error)));
+      fireEvent.click(screen.getByLabelText('Открыть на всю рабочую зону'));
+      expect(mockExpand).toHaveBeenCalledWith({
+        kind: 'presentation',
+        title: expect.any(String),
+        html: deck,
+      });
     });
   });
 });

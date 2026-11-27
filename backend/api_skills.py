@@ -1,4 +1,4 @@
-"""API endpoints для Skills (аналог Open WebUI /api/v1/skills)."""
+"""API endpoints для Skills (/api/v1/skills)."""
 
 from typing import Annotated, List, Optional, Union
 

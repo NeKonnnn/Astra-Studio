@@ -1,7 +1,7 @@
 """
 Публичный конфиг внешних интеграций + OAuth code exchange (Notion/GitHub).
 
-Паттерн Open WebUI: фронт читает client_id / feature flags и сам делает OAuth/picker.
+Фронт читает client_id / feature flags и сам делает OAuth/picker.
 Для Notion/GitHub нужен client_secret — обмен code→token на backend.
 """
 

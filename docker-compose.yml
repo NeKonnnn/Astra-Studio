@@ -17,11 +17,11 @@ services:
       # Параллельные стримы в разных чатах: независимые Llama-реплики одной модели.
       # При нехватке VRAM поставьте LLM_INFERENCE_REPLICAS=1.
       - LLM_INFERENCE_REPLICAS=${LLM_INFERENCE_REPLICAS:-2}
-      # Ollama/Open WebUI-стиль: прогрев дефолта, idle-unload, потоки CPU.
-      - LLM_EAGER_LOAD=${LLM_EAGER_LOAD:-1}
+      # Прогрев последней выбранной модели делает backend; в пуле — одна модель.
+      - LLM_EAGER_LOAD=${LLM_EAGER_LOAD:-0}
       - LLM_WARMUP_ON_LOAD=${LLM_WARMUP_ON_LOAD:-1}
       - LLM_KEEP_ALIVE_SECONDS=${LLM_KEEP_ALIVE_SECONDS:-0}
-      - LLM_MAX_LOADED_MODELS=${LLM_MAX_LOADED_MODELS:-4}
+      - LLM_MAX_LOADED_MODELS=${LLM_MAX_LOADED_MODELS:-1}
       - LLM_N_THREADS=${LLM_N_THREADS:-}
       - LLM_N_THREADS_BATCH=${LLM_N_THREADS_BATCH:-}
     volumes:

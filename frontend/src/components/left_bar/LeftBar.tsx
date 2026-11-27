@@ -903,7 +903,7 @@ export default function Sidebar({ open, onToggle, isDarkMode, onToggleTheme, onH
             </Tooltip>
           </>
         ) : (
-          // Как в ChatGPT: логотип на месте кнопки; при hover — «Открыть панель»
+          // Логотип на месте кнопки; при hover — «Открыть панель»
           <Tooltip title="Открыть панель" placement="right">
             <IconButton
               onClick={onToggle}

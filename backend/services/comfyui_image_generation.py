@@ -1,7 +1,7 @@
 """
 Клиент HTTP API ComfyUI для постановки workflow в очередь и получения PNG/JPEG.
 
-Аналогично Open WebUI: отдельный процесс ComfyUI (--listen), бэкенд только дергает /prompt и /history.
+Отдельный процесс ComfyUI (--listen), бэкенд только дергает /prompt и /history.
 """
 
 from __future__ import annotations

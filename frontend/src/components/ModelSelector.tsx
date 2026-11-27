@@ -113,7 +113,9 @@ export default function ModelSelector({ isDarkMode, onModelSelect }: ModelSelect
         const data = await response.json();
         
         setCurrentModel(data);
-        const path = typeof data.path === 'string' ? data.path : '';
+        const path =
+          (typeof data.selected_model_path === 'string' && data.selected_model_path) ||
+          (typeof data.path === 'string' ? data.path : '');
         if (isValidSelectedModelPath(path)) {
           setSelectedModelPath(path);
           localStorage.setItem(LAST_SELECTED_MODEL_PATH_STORAGE_KEY, path);

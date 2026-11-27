@@ -20,7 +20,7 @@ def resolve_chat_tool_ids(payload_tool_ids: Optional[List[str]] = None) -> List[
 
 
 def parse_mcp_server_ids(tool_ids: Optional[List[str]]) -> List[str]:
-    """OWUI-compatible: ``server:mcp:{id}`` | ``mcp:{id}`` | plain ``{id}``."""
+    """Форматы id: ``server:mcp:{id}`` | ``mcp:{id}`` | plain ``{id}``."""
     result: List[str] = []
     for raw in tool_ids or []:
         tid = str(raw or "").strip()

@@ -12,7 +12,7 @@ export const sidebarRailItemEnter = keyframes`
   }
 `;
 
-/** «Новый чат»: плюс поворачивается на 90° (как у Grok). */
+/** «Новый чат»: плюс поворачивается на 90°. */
 export const sidebarRailNewChatIconHover = keyframes`
   0% {
     transform: rotate(0deg) scale(1);

@@ -281,6 +281,14 @@ jest.mock('../../components/UserAvatar', () => ({
   __esModule: true,
   default: (p: any) => <span data-testid="user-avatar">{p.username}</span>,
 }));
+jest.mock('../../contexts/ChatWorkspaceViewerContext', () => ({
+  ChatWorkspaceViewerProvider: ({ children }: any) => <>{children}</>,
+  useChatWorkspaceViewer: () => ({ session: null }),
+}));
+jest.mock('../../components/chat/ChatWorkspaceViewerOverlay', () => ({
+  __esModule: true,
+  default: () => null,
+}));
 jest.mock('../../mcp/components/McpToolCallsPanel', () => ({
   __esModule: true,
   default: (p: any) => <div data-testid="mcp-panel">{p.toolCalls.length}</div>,

@@ -20,7 +20,7 @@ interface Props {
 }
 
 /**
- * React-артефакт через Sandpack (как LibreChat): shadcn shared files при shadcn_enabled.
+ * React-артефакт через Sandpack: shadcn shared files при shadcn_enabled.
  * На стриме не монтируем (remount → Virtuoso #185).
  */
 export default function ArtifactReactPreview({ content, isStreaming = false }: Props) {

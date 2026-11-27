@@ -13,6 +13,8 @@ export const RIGHT_SIDEBAR_INSET_CSS_VAR = '--right-sidebar-inset';
 export const RIGHT_SIDEBAR_RAIL_OVERLAP_CSS_VAR = '--right-sidebar-rail-overlap';
 /** Доп. padding контента только при margin-left:-64px у main (свёрнутый left rail). */
 export const LEFT_SIDEBAR_RAIL_OVERLAP_CSS_VAR = '--left-sidebar-rail-overlap';
+/** Зазор под fixed-кнопку «показать панель», когда sidebar полностью скрыт. */
+export const SIDEBAR_SHOW_CHEVRON_INSET_PX = 40;
 
 export function getRightSidebarInsetPx(
   open: boolean,
@@ -23,14 +25,19 @@ export function getRightSidebarInsetPx(
   return open ? clampRightSidebarWidthPx(expandedWidthPx) : RIGHT_SIDEBAR_COLLAPSED_WIDTH_PX;
 }
 
-/** Перекрытие main под свёрнутым rail — не путать с полной шириной панели. */
+/**
+ * Перекрытие main: свёрнутый rail (margin ±64) или fixed-шеврон «показать»,
+ * когда панель полностью скрыта. 0 — панель развёрнута и занимает своё место.
+ */
 export function getRightSidebarRailOverlapPx(open: boolean, hidden: boolean): number {
-  if (hidden || open) return 0;
+  if (open) return 0;
+  if (hidden) return SIDEBAR_SHOW_CHEVRON_INSET_PX;
   return RIGHT_SIDEBAR_COLLAPSED_WIDTH_PX;
 }
 
 export function getLeftSidebarRailOverlapPx(open: boolean, hidden: boolean): number {
-  if (hidden || open) return 0;
+  if (open) return 0;
+  if (hidden) return SIDEBAR_SHOW_CHEVRON_INSET_PX;
   return LEFT_SIDEBAR_COLLAPSED_WIDTH_PX;
 }
 

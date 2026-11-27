@@ -132,7 +132,7 @@ class SkillRepository:
                         updated_at TIMESTAMP DEFAULT NOW()
                     )
                     """)
-                # Soft-migrate existing OWUI-like tables
+                # Soft-migrate existing skill tables
                 for stmt in (
                     "ALTER TABLE skills ADD COLUMN IF NOT EXISTS display_title VARCHAR(128)",
                     "ALTER TABLE skills ADD COLUMN IF NOT EXISTS user_invocable BOOLEAN DEFAULT true",

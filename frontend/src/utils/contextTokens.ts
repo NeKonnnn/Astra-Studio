@@ -27,7 +27,7 @@ export function estimateTokens(text: string): number {
   return baseTokens + Math.ceil(specialChars / 2) + Math.ceil(newlines / 2);
 }
 
-/** Формат как в LibreChat: 115500 → «115,5 тыс.», 2048 → «2048». */
+/** Формат тысяч: 115500 → «115,5 тыс.», 2048 → «2048». */
 export function formatContextTokenLimit(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return '—';
   if (value >= 1_000_000) {

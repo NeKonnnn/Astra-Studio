@@ -154,7 +154,7 @@ class LlmSvcProvider(OpenAICompatProvider):
             return models
 
     async def unload_excess(self) -> bool:
-        """Оставить в llm-svc только default-модель из конфига сервиса."""
+        """Оставить в llm-svc только текущую (последнюю выбранную) модель."""
         t = httpx.Timeout(1200.0, connect=10.0, read=1200.0, write=60.0)
         try:
             async with httpx.AsyncClient(timeout=t) as client:

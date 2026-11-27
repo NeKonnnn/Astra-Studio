@@ -714,12 +714,31 @@ class TestOcr:
 
     async def test_recognize_without_configuration_is_an_error(self, client):
         client.ocr_vision_model_path = None
+        client.ocr_url = None
         with pytest.raises(RuntimeError, match="OCR не настроен"):
             await client.recognize_text_from_image(b"x")
         with pytest.raises(RuntimeError, match="не настроен"):
             await client.recognize_text_from_image_via_llm(b"x")
 
+    async def test_ocr_service_is_preferred_over_vision(self, client):
+        client.ocr_url = "http://ocr.test"
+        client.ocr_vision_model_path = "llm-svc://vision"
+        ROUTER.post("http://ocr.test/v1/ocr").respond(
+            200, json={"success": True, "text": "  из Surya  ", "words_count": 2}
+        )
+        out = await client.recognize_text_from_image(self.png(), "scan.png")
+        assert out["text"] == "  из Surya  "
+        assert out["success"] is True
+
+    async def test_ocr_service_error_propagates(self, client):
+        client.ocr_url = "http://ocr.test"
+        client.ocr_vision_model_path = None
+        ROUTER.post("http://ocr.test/v1/ocr").respond(500, json={"detail": "boom"})
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.recognize_text_from_image(self.png(), "scan.png")
+
     async def test_vision_fallback_sends_the_image_and_strips_text(self, client, monkeypatch):
+        client.ocr_url = None
         client.ocr_vision_model_path = "llm-svc://vision"
         seen = {}
 

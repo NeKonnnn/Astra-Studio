@@ -231,7 +231,7 @@ function splitBodyByChainHeaders(body: string): Array<{ agentName: string; conte
 }
 
 /**
- * Сегменты UI для Mixture-of-Agents: либо из metadata.chain_steps / chainCurrentAgent,
+ * Сегменты UI для цепочки агентов: либо из metadata.chain_steps / chainCurrentAgent,
  * либо разбор заголовков `**▸ Name**` в теле (стрим / старые сообщения).
  * null — обычный одиночный ответ без цепочки.
  */

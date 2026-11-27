@@ -21,6 +21,7 @@ import {
   RIGHT_SIDEBAR_EXPANDED_WIDTH_PX,
   RIGHT_SIDEBAR_INSET_CSS_VAR,
   RIGHT_SIDEBAR_RAIL_OVERLAP_CSS_VAR,
+  SIDEBAR_SHOW_CHEVRON_INSET_PX,
   getRightSidebarInsetPx,
   getRightSidebarRailOverlapPx,
   useRightRailOffsetPx,
@@ -414,10 +415,10 @@ describe('useRightSidebarInsetCssVar', () => {
     expect(getRightSidebarInsetPx(false, false)).toBe(RIGHT_SIDEBAR_COLLAPSED_WIDTH_PX);
   });
 
-  it('getRightSidebarRailOverlapPx: перекрытие только у свёрнутой видимой панели', () => {
+  it('getRightSidebarRailOverlapPx: rail 64 / open 0 / hidden — зазор под шеврон', () => {
     expect(getRightSidebarRailOverlapPx(false, false)).toBe(RIGHT_SIDEBAR_COLLAPSED_WIDTH_PX);
     expect(getRightSidebarRailOverlapPx(true, false)).toBe(0);
-    expect(getRightSidebarRailOverlapPx(false, true)).toBe(0);
+    expect(getRightSidebarRailOverlapPx(false, true)).toBe(SIDEBAR_SHOW_CHEVRON_INSET_PX);
   });
 
   it('публикует CSS-переменные и обнуляет их при размонтировании', () => {

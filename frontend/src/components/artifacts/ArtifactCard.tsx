@@ -12,7 +12,7 @@ import {
 import {
   Code as CodeIcon,
   ExpandLess as ExpandLessIcon,
-  OpenInNew as OpenInNewIcon,
+  OpenInFull as OpenInFullIcon,
   ContentCopy as CopyIcon,
   Check as CheckIcon,
   GetApp as DownloadIcon,
@@ -20,15 +20,12 @@ import {
   Photo as JpgIcon,
 } from '@mui/icons-material';
 import Editor from '@monaco-editor/react';
-import {
-  openArtifactViewer,
-  sourceLabelForArtifactType,
-} from '../../utils/artifactViewer';
+import { sourceLabelForArtifactType } from '../../utils/artifactViewer';
 import {
   exportArtifactPreviewAsJpg,
   exportArtifactPreviewAsPng,
 } from '../../utils/artifactDownload';
-import { isDeckPresentationHtml, openPresentationViewer } from '../../utils/presentationViewer';
+import { isDeckPresentationHtml } from '../../utils/presentationViewer';
 import ArtifactPreview from './ArtifactPreview';
 import type { ChatArtifact } from '../../types/artifacts';
 import { artifactTypeLabel, guessCodeLanguage } from '../../utils/artifacts';
@@ -39,6 +36,7 @@ import {
 } from '../../constants/menuStyles';
 import { useInViewport } from '../../hooks/useInViewport';
 import ThinkingShimmerText from '../chat/ThinkingShimmerText';
+import { useChatWorkspaceViewer } from '../../contexts/ChatWorkspaceViewerContext';
 
 const DOWNLOAD_PANEL_W = 160;
 
@@ -70,11 +68,12 @@ function extensionForType(type: string): string {
 
 /**
  * Viewer артефакта в чате — UX как InlinePresentationViewer:
- * превью + «Показать Mermaid/HTML/…» (Collapse снизу) + «Открыть в новой вкладке».
+ * превью + «Показать Mermaid/HTML/…» (Collapse снизу) + expand на рабочую зону чата.
  */
 export default function ArtifactCard({ artifact, isStreaming = false }: Props) {
   const theme = useTheme();
   const isDarkMode = theme.palette.mode === 'dark';
+  const { expand } = useChatWorkspaceViewer();
   const [showSource, setShowSource] = useState(false);
   const [localContent, setLocalContent] = useState(artifact.content || '');
   const [copied, setCopied] = useState(false);
@@ -163,25 +162,22 @@ export default function ArtifactCard({ artifact, isStreaming = false }: Props) {
     });
   }, [safeArtifactBase]);
 
-  const handleOpenExternal = useCallback(() => {
-    void (async () => {
-      try {
-        // GPB-презентации открываем своим viewer'ом (слайды / PPTX), не generic HTML.
-        if (isDeckPresentationHtml(localContent)) {
-          openPresentationViewer(localContent);
-          return;
-        }
-        await openArtifactViewer({
-          type: artifact.type,
-          content: localContent,
-          title: artifact.title || artifactTypeLabel(artifact.type),
-          previewRoot: previewRootRef.current,
-        });
-      } catch (e) {
-        console.error('Failed to open artifact viewer:', e);
-      }
-    })();
-  }, [artifact.type, artifact.title, localContent]);
+  const handleExpandWorkspace = useCallback(() => {
+    const title = artifact.title || artifactTypeLabel(artifact.type);
+    if (isDeckPresentationHtml(localContent)) {
+      expand({ kind: 'presentation', title, html: localContent });
+      return;
+    }
+    expand({
+      kind: 'artifact',
+      title,
+      artifact: {
+        ...artifact,
+        content: localContent,
+        closed: true,
+      },
+    });
+  }, [artifact, expand, localContent]);
 
   const codeLineCount = Math.max(1, (localContent || '').split('\n').length);
   const editorHeight = Math.min(480, Math.max(200, Math.min(codeLineCount, 22) * 22 + 18));
@@ -352,9 +348,13 @@ export default function ArtifactCard({ artifact, isStreaming = false }: Props) {
             </Tooltip>
           ) : null}
           {!pending ? (
-            <Tooltip title="Открыть в новой вкладке">
-              <IconButton size="small" onClick={handleOpenExternal}>
-                <OpenInNewIcon fontSize="small" />
+            <Tooltip title="Открыть на всю рабочую зону">
+              <IconButton
+                size="small"
+                onClick={handleExpandWorkspace}
+                aria-label="Открыть на всю рабочую зону"
+              >
+                <OpenInFullIcon fontSize="small" />
               </IconButton>
             </Tooltip>
           ) : null}

@@ -1,5 +1,5 @@
 """
-Генерация изображений через ComfyUI (HTTP API). См. docs Open WebUI + ComfyUI.
+Генерация изображений через ComfyUI (HTTP API).
 
 Фронт и внешние клиенты вызывают только бэкенд; диффузия крутится в ComfyUI.
 Из чата: «нарисуй кота» → backend/services/image_generation_service.py.

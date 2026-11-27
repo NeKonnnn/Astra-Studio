@@ -2,7 +2,7 @@ import type { SandpackProviderProps } from '@codesandbox/sandpack-react';
 import { shadcnComponents } from './sandpackShadcn.generated';
 import { normalizeReactEntry } from './reactPreview';
 
-/** Зависимости Sandpack для React-артефактов (как в LibreChat). */
+/** Зависимости Sandpack для React-артефактов. */
 export const REACT_ARTIFACT_DEPENDENCIES: Record<string, string> = {
   three: '^0.167.1',
   'lucide-react': '^0.394.0',

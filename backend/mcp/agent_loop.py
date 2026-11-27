@@ -415,7 +415,7 @@ class McpAgentLoop:
                 return fallback
             llm_ms = int((time.perf_counter() - t_llm) * 1000)
             if not result.tool_calls:
-                # Модель положила FC в content (OWUI JSON / XML) — исполняем, не в чат.
+                # Модель положила FC в content (JSON / XML) — исполняем, не в чат.
                 from backend.mcp.text_tool_calls import extract_tool_calls_from_content
 
                 cleaned_content, text_calls = extract_tool_calls_from_content(
@@ -519,7 +519,7 @@ class McpAgentLoop:
             
             # Один вызов шага -> tool-сообщение для модели. Вызовы subagent
             # шага идут одновременно (run_tool_calls), остальные - по очереди.
-            # Как OWUI: весь батч сразу pending в UI (emit start до исполнения).
+            # Весь батч сразу pending в UI (emit start до исполнения).
             async def _run_call(item) -> Dict[str, Any]:
                 nonlocal tool_calls_executed
                 tc, tool_info, sub_call, call_id, tool_args = item

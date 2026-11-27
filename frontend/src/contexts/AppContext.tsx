@@ -131,7 +131,7 @@ export interface Message {
     hideSequential?: boolean;
     isLast?: boolean;
   };
-  /** Шаги Mixture-of-Agents (сохраняются в metadata). */
+  /** Шаги цепочки агентов (сохраняются в metadata). */
   chainSteps?: Array<{
     agentId: number;
     agentName: string;

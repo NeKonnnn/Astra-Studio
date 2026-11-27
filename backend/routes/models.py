@@ -20,8 +20,10 @@ from backend.auth.jwt_handler import get_current_user
 from backend.schemas import ModelLoadRequest, ModelLoadResponse, ModelSettings
 from backend.services.user_llm_settings import (
     get_user_model_settings,
+    get_user_selected_model_path,
     reset_user_model_settings,
     save_user_model_settings,
+    save_user_selected_model_path,
 )
 from backend.settings import get_settings
 from backend.settings.logging import get_logger
@@ -115,44 +117,71 @@ def _uid(current_user: dict) -> str:
     ).strip()
 
 
-def _uid(current_user: dict) -> str:
-    return str(
-        current_user.get("user_id") or current_user.get("username") or ""
-    ).strip()
+def _model_display_name(path: str) -> str:
+    raw = (path or "").strip().replace("\\", "/")
+    if not raw:
+        return "Unknown"
+    tail = raw.split("/")[-1]
+    if tail.lower().endswith(".gguf"):
+        tail = tail[:-5]
+    return tail or raw
 
 
 @router.get("/current")
 async def get_current_model(
     current_user: Annotated[dict, Depends(get_current_user)],
 ):
+    """Выбранная модель пользователя (БД) + что сейчас в RAM на сервере."""
+    uid = _uid(current_user)
+    preferred = ""
+    try:
+        preferred = await get_user_selected_model_path(uid)
+    except Exception:
+        logger.exception("get_current_model: selected_model_path failed")
+
+    loaded: dict = {}
     if get_model_info:
         try:
-            result = get_model_info()
-            if result and "path" in result:
+            info = get_model_info()
+            if isinstance(info, dict) and info.get("path"):
+                loaded = dict(info)
                 save_app_settings(
                     {
-                        "current_model_path": result["path"],
-                        "current_model_name": result.get("name", "Unknown"),
-                        "current_model_status": result.get("status", "loaded"),
+                        "current_model_path": info["path"],
+                        "current_model_name": info.get("name", "Unknown"),
+                        "current_model_status": info.get("status", "loaded"),
                     }
                 )
-            return result
         except Exception:
             logger.exception("get_model_info error")
-    with logged_suppress(logger):
-        s = load_app_settings()
-        p = s.get("current_model_path")
-        if p and os.path.exists(p):
-            sz = os.path.getsize(p)
-            return {
-                "name": s.get("current_model_name", os.path.basename(p)),
-                "path": p,
-                "status": "loaded_from_settings",
-                "size": sz,
-                "size_mb": round(sz / 1024 / 1024, 2),
-                "type": "gguf",
-            }
-    return {"name": "Модель не загружена", "path": "", "status": "not_loaded"}
+    if not loaded.get("path"):
+        with logged_suppress(logger):
+            s = load_app_settings()
+            p = s.get("current_model_path")
+            if p and (os.path.exists(p) or str(p).startswith("llm-svc") or "/" in str(p)):
+                loaded = {
+                    "name": s.get("current_model_name", _model_display_name(str(p))),
+                    "path": p,
+                    "status": s.get("current_model_status") or "loaded_from_settings",
+                }
+
+    # Для UI path = персональный выбор; server_loaded_path = фактический пул.
+    path = preferred or str(loaded.get("path") or "")
+    if not path:
+        return {"name": "Модель не загружена", "path": "", "status": "not_loaded"}
+
+    status = str(loaded.get("status") or "selected")
+    loaded_path = str(loaded.get("path") or "")
+    if preferred and loaded_path and preferred != loaded_path:
+        status = "selected_not_loaded"
+
+    return {
+        "name": _model_display_name(path),
+        "path": path,
+        "status": status,
+        "server_loaded_path": loaded_path or None,
+        "selected_model_path": preferred or None,
+    }
 
 
 @router.get("")
@@ -276,8 +305,16 @@ async def get_available_models(
             if warnings:
                 response["warning"] = "; ".join(warnings)
 
-            _models_available_cache_payload = response
-            _models_available_cache_ts = time.monotonic()
+            # Пустой каталог при недоступном llm-svc не должен вытеснять
+            # последний успешный снимок (иначе UI мигает «Нет моделей»).
+            if result_models:
+                _models_available_cache_payload = response
+                _models_available_cache_ts = time.monotonic()
+            elif (
+                _models_available_cache_payload is not None
+                and _models_available_cache_payload.get("models")
+            ):
+                return _models_available_cache_payload
             return response
         except Exception as e:
             logger.exception("get_available_models error")
@@ -340,7 +377,15 @@ async def load_model(
                 "current_model_status": "loaded",
             }
         )
-        logger.info("POST /api/models/load OK: %s", selected)
+        # Per-user выбор в PostgreSQL (разные пользователи — разные модели).
+        try:
+            await save_user_selected_model_path(_uid(current_user), selected)
+        except Exception:
+            logger.exception(
+                "POST /api/models/load: не удалось сохранить selected_model_path user=%s",
+                _uid(current_user),
+            )
+        logger.info("POST /api/models/load OK: %s user=%s", selected, _uid(current_user))
         return ModelLoadResponse(message="Модель успешно загружена", success=True)
     except Exception as e:
         logger.exception("POST /api/models/load error")
